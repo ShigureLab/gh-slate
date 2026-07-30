@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "kind": {
+      "const": "pull_request"
+    },
+    "rows": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "field": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "value": {
+            "oneOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "type": "object"
+      },
+      "maxItems": 12,
+      "minItems": 1,
+      "type": "array"
+    }
+  },
+  "required": [
+    "kind",
+    "rows"
+  ],
+  "type": "object"
+}

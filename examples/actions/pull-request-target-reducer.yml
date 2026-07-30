@@ -1,0 +1,140 @@
+name: gh-slate pull request payload reducer
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, edited, ready_for_review, converted_to_draft, closed]
+
+# This workflow receives a write-capable event, but deliberately receives no
+# repository permission and performs no checkout. It only reduces event JSON.
+permissions: {}
+
+concurrency:
+  group: gh-slate-${{ github.repository_id }}-pr-${{ github.event.pull_request.number }}-payload-reducer
+  cancel-in-progress: false
+
+jobs:
+  reduce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Reduce untrusted event fields to bounded JSON
+        shell: bash
+        env:
+          REDUCED_PATH: ${{ runner.temp }}/gh-slate-reduced/pull-request.json
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          MAX_EVENT_BYTES = 1024 * 1024
+          MAX_ARTIFACT_BYTES = 16 * 1024
+          MAX_TARGET_NUMBER = 2**63 - 1
+          ALLOWED_ACTIONS = {
+              "closed",
+              "converted_to_draft",
+              "edited",
+              "opened",
+              "ready_for_review",
+              "reopened",
+              "synchronize",
+          }
+
+
+          def fail(message: str) -> None:
+              raise SystemExit(f"unsafe pull_request_target payload: {message}")
+
+
+          def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+              result: dict[str, object] = {}
+              for key, value in pairs:
+                  if key in result:
+                      fail(f"duplicate JSON key: {key}")
+                  result[key] = value
+              return result
+
+
+          def object_at(value: object, field: str) -> dict[str, object]:
+              if not isinstance(value, dict):
+                  fail(f"{field} must be an object")
+              return value
+
+
+          def text_at(value: object, field: str, maximum: int) -> str:
+              if not isinstance(value, str) or not value or len(value) > maximum:
+                  fail(f"{field} must be non-empty text of at most {maximum} characters")
+              if any(ord(character) < 0x20 for character in value):
+                  fail(f"{field} contains a control character")
+              return value
+
+
+          event_path = Path(os.environ["GITHUB_EVENT_PATH"])
+          if event_path.stat().st_size > MAX_EVENT_BYTES:
+              fail("event file is too large")
+          try:
+              event = json.loads(
+                  event_path.read_text(encoding="utf-8"),
+                  object_pairs_hook=unique_object,
+              )
+          except (OSError, UnicodeError, json.JSONDecodeError) as error:
+              fail(f"event is not strict JSON: {error}")
+          event = object_at(event, "event")
+          pull_request = object_at(event.get("pull_request"), "pull_request")
+          repository = object_at(event.get("repository"), "repository")
+          user = object_at(pull_request.get("user"), "pull_request.user")
+          head = object_at(pull_request.get("head"), "pull_request.head")
+
+          repository_name = text_at(repository.get("full_name"), "repository.full_name", 201)
+          if re.fullmatch(r"[^/\s]{1,100}/[^/\s]{1,100}", repository_name) is None:
+              fail("repository.full_name must use OWNER/REPO form")
+          number = pull_request.get("number")
+          if (
+              isinstance(number, bool)
+              or not isinstance(number, int)
+              or not 1 <= number <= MAX_TARGET_NUMBER
+          ):
+              fail("pull_request.number must be a positive integer")
+          action = text_at(event.get("action"), "action", 64)
+          if action not in ALLOWED_ACTIONS:
+              fail("action is not allowed")
+          head_sha = text_at(head.get("sha"), "pull_request.head.sha", 64)
+          if re.fullmatch(r"[0-9a-f]{40,64}", head_sha) is None:
+              fail("pull_request.head.sha must be a hexadecimal commit id")
+          author = text_at(user.get("login"), "pull_request.user.login", 100)
+          draft = pull_request.get("draft")
+          if not isinstance(draft, bool):
+              fail("pull_request.draft must be a boolean")
+
+          reduced = {
+              "action": action,
+              "author": author,
+              "draft": draft,
+              "head_sha": head_sha,
+              "repository": repository_name,
+              "schema_version": 1,
+              "target_number": number,
+          }
+          encoded = json.dumps(
+              reduced,
+              ensure_ascii=False,
+              separators=(",", ":"),
+              sort_keys=True,
+          ).encode("utf-8") + b"\n"
+          if len(encoded) > MAX_ARTIFACT_BYTES:
+              fail("reduced artifact is too large")
+          output = Path(os.environ["REDUCED_PATH"])
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_bytes(encoded)
+          PY
+
+      - name: Upload only the bounded reducer output
+        uses: actions/upload-artifact@v7
+        with:
+          name: gh-slate-pr-reduced-${{ github.run_id }}
+          path: ${{ runner.temp }}/gh-slate-reduced/pull-request.json
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0

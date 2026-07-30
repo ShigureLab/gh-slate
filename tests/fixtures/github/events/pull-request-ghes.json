@@ -1,0 +1,12 @@
+{
+  "action": "synchronize",
+  "number": 73,
+  "pull_request": {
+    "number": 73,
+    "html_url": "https://github.enterprise.example/acme/widgets/pull/73"
+  },
+  "repository": {
+    "full_name": "acme/widgets",
+    "html_url": "https://github.enterprise.example/acme/widgets"
+  }
+}

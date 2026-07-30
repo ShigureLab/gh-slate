@@ -5,6 +5,7 @@ import sys
 from typing import TYPE_CHECKING
 
 from gh_slate import __version__
+from gh_slate.codec import canonical_json_bytes
 from gh_slate.errors import GhSlateError, format_error
 from gh_slate.invocation import display_command
 
@@ -229,6 +230,43 @@ def build_parser(*, prog: str | None = None) -> argparse.ArgumentParser:
         help="emit a JSON array",
     )
     list_parser.set_defaults(handler=run_list)
+
+    from gh_slate.commands.recovery import run_delete, run_repair
+
+    repair_parser = commands.add_parser(
+        "repair",
+        help="restore visible Markdown from canonical stored state",
+    )
+    repair_parser.add_argument("name", help="stable lowercase slate name")
+    repair_parser.add_argument(
+        "--from-state",
+        action="store_true",
+        required=True,
+        help="discard visible edits and rerender canonical stored state",
+    )
+    _add_target_options(repair_parser)
+    _add_mutation_options(repair_parser)
+    repair_parser.set_defaults(handler=run_repair)
+
+    delete_parser = commands.add_parser(
+        "delete",
+        help="delete one complete managed slate comment",
+    )
+    delete_parser.add_argument("name", help="stable lowercase slate name")
+    _add_target_options(delete_parser)
+    _add_mutation_options(delete_parser)
+    confirmation = delete_parser.add_mutually_exclusive_group(required=True)
+    confirmation.add_argument(
+        "--confirm",
+        metavar="NAME",
+        help="confirm deletion by repeating the exact slate name",
+    )
+    confirmation.add_argument(
+        "--yes",
+        action="store_true",
+        help="confirm deletion non-interactively",
+    )
+    delete_parser.set_defaults(handler=run_delete)
 
     from gh_slate.commands.data import (
         run_data_delete,
@@ -487,6 +525,9 @@ def run(argv: Sequence[str], *, prog: str | None = None) -> int:
     try:
         return int(handler(args))
     except GhSlateError as error:
+        if getattr(args, "json", False):
+            sys.stderr.write(canonical_json_bytes(error.as_dict()).decode("utf-8") + "\n")
+            return int(error.exit_code)
         for line in format_error(error):
             print(line, file=sys.stderr)
         return int(error.exit_code)

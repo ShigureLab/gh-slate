@@ -43,6 +43,18 @@ from gh_slate.github.process import (
     ProcessRunner,
     SubprocessRunner,
 )
+from gh_slate.github.recovery import (
+    DeleteRequest,
+    RecoveryAction,
+    RecoveryError,
+    RecoveryResult,
+    RecoveryTransaction,
+    RecoveryWriteClient,
+    RepairRequest,
+    delete,
+    repair,
+    validate_delete_confirmation,
+)
 from gh_slate.github.store import CommentStore, ReadClient, TargetLike
 from gh_slate.github.target import (
     DEFAULT_HOST,
@@ -81,6 +93,7 @@ __all__ = [
     "MAX_EVENT_BYTES",
     "MAX_TARGET_NUMBER",
     "CommentStore",
+    "DeleteRequest",
     "GhProcess",
     "GhProcessLimits",
     "GitHubActor",
@@ -103,7 +116,13 @@ __all__ = [
     "ProcessRunner",
     "ProcessTargetLookup",
     "ReadClient",
+    "RecoveryAction",
+    "RecoveryError",
+    "RecoveryResult",
+    "RecoveryTransaction",
+    "RecoveryWriteClient",
     "ResolvedTarget",
+    "RepairRequest",
     "SchemaInput",
     "SchemaDirective",
     "SchemaMutation",
@@ -116,8 +135,11 @@ __all__ = [
     "TargetLookup",
     "WriteProcessRunner",
     "apply",
+    "delete",
     "mutate",
+    "repair",
     "resolve_host_context",
     "resolve_target",
     "target_from_comment_url",
+    "validate_delete_confirmation",
 ]

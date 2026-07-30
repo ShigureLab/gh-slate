@@ -240,6 +240,7 @@ def _conflict(
     message: str,
     *,
     code: str,
+    hints: tuple[str, ...] = (),
     **details: object,
 ) -> ApplyError:
     return ApplyError(
@@ -247,6 +248,7 @@ def _conflict(
         code=code,
         exit_code=ExitCode.CONFLICT,
         details=details,
+        hints=hints,
     )
 
 
@@ -303,6 +305,7 @@ def _read_existing(
         raise _conflict(
             f"multiple comments match slate '{request.name}'",
             code="duplicate_slate",
+            hints=("inspect the matching comments and delete the duplicate intentionally before retrying",),
             name=request.name,
             comment_ids=[candidate.comment.id for candidate in candidates],
         )
@@ -317,11 +320,13 @@ def _read_existing(
                 "comment_id": candidate.comment.id,
                 "cause_code": candidate.error_code,
             },
+            hints=("inspect the raw comment and delete it with exact confirmation if it cannot be recovered",),
         )
     if candidate.decoded.drifted:
         raise _conflict(
             f"slate '{request.name}' has visible Markdown drift",
             code="render_drift",
+            hints=("run repair --from-state to restore the projection, or edit canonical typed data instead",),
             name=request.name,
             comment_id=candidate.comment.id,
             expected=candidate.decoded.expected_render_sha256,

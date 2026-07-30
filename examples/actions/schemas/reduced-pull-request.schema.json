@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "enum": [
+        "closed",
+        "converted_to_draft",
+        "edited",
+        "opened",
+        "ready_for_review",
+        "reopened",
+        "synchronize"
+      ]
+    },
+    "author": {
+      "maxLength": 100,
+      "minLength": 1,
+      "type": "string"
+    },
+    "draft": {
+      "type": "boolean"
+    },
+    "head_sha": {
+      "pattern": "^[0-9a-f]{40,64}$",
+      "type": "string"
+    },
+    "repository": {
+      "maxLength": 201,
+      "pattern": "^[^/\\s]{1,100}/[^/\\s]{1,100}$",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "target_number": {
+      "maximum": 9223372036854775807,
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "repository",
+    "target_number",
+    "action",
+    "head_sha",
+    "author",
+    "draft"
+  ],
+  "type": "object"
+}

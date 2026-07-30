@@ -168,11 +168,59 @@ def test_write_uses_exact_argv_and_canonical_json_stdin(
     ]
 
 
+def test_delete_uses_exact_comment_route_without_an_input_payload() -> None:
+    runner = FakeWriteRunner(results=[success(b"")])
+    process = writer(runner)
+
+    assert (
+        process.delete(
+            "repos/owner/repo/issues/comments/123",
+            hostname="github.example.com",
+        )
+        is None
+    )
+
+    assert runner.calls == [
+        (
+            (
+                "gh",
+                "api",
+                "--hostname",
+                "github.example.com",
+                "--method",
+                "DELETE",
+                "repos/owner/repo/issues/comments/123",
+            ),
+            b"",
+            30.0,
+            "github.example.com",
+            8 * 1024 * 1024,
+            64 * 1024,
+        )
+    ]
+
+
+@pytest.mark.parametrize("stdout", [b"{}", b"null", b"\n"])
+def test_delete_treats_every_nonempty_stdout_as_an_unknown_outcome(
+    stdout: bytes,
+) -> None:
+    runner = FakeWriteRunner(results=[success(stdout)])
+
+    with pytest.raises(GhWriteOutcomeUnknown) as caught:
+        writer(runner).delete(
+            "repos/owner/repo/issues/comments/123",
+        )
+
+    assert caught.value.code == "gh_write_delete_output_invalid"
+    assert caught.value.details == {"stdout_bytes": len(stdout)}
+    assert len(runner.calls) == 1
+
+
 @pytest.mark.parametrize(
     "method",
-    ["GET", "DELETE", "PUT", "OPTIONS", "POST --input payload.json"],
+    ["GET", "PUT", "OPTIONS", "POST --input payload.json"],
 )
-def test_internal_request_rejects_every_method_outside_post_and_patch(
+def test_internal_request_rejects_every_method_outside_comment_writes(
     method: str,
 ) -> None:
     runner = FakeWriteRunner()
@@ -223,6 +271,7 @@ def test_endpoint_and_option_injection_are_rejected(endpoint: str) -> None:
     [
         ("POST", "repos/owner/repo/issues/comments/123"),
         ("PATCH", "repos/owner/repo/issues/42/comments"),
+        ("DELETE", "repos/owner/repo/issues/42/comments"),
     ],
 )
 def test_method_must_match_the_exact_comment_route(
@@ -233,6 +282,41 @@ def test_method_must_match_the_exact_comment_route(
 
     with pytest.raises(GhSlateError) as caught:
         writer(runner)._request(method, endpoint, {"body": "safe"})
+
+    assert caught.value.code == "gh_write_endpoint_invalid"
+    assert runner.calls == []
+
+
+def test_delete_rejects_any_payload_before_starting_the_runner() -> None:
+    runner = FakeWriteRunner()
+
+    with pytest.raises(GhSlateError) as caught:
+        writer(runner)._request(
+            "DELETE",
+            "repos/owner/repo/issues/comments/123",
+            {"body": "not-allowed"},
+        )
+
+    assert caught.value.code == "gh_write_payload_invalid"
+    assert runner.calls == []
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "--input",
+        "repos/owner/repo/issues/42/comments",
+        "repos/owner/repo/issues/comments/0",
+        "repos/owner/repo/issues/comments/123?force=true",
+        "repos/owner/repo/issues/comments/123/../456",
+        "https://api.github.com/repos/owner/repo/issues/comments/123",
+    ],
+)
+def test_delete_rejects_every_non_comment_endpoint(endpoint: str) -> None:
+    runner = FakeWriteRunner()
+
+    with pytest.raises(GhSlateError) as caught:
+        writer(runner).delete(endpoint)
 
     assert caught.value.code == "gh_write_endpoint_invalid"
     assert runner.calls == []

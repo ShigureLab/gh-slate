@@ -198,6 +198,7 @@ def _read_snapshot(
                 "expected": managed.decoded.expected_render_sha256,
                 "actual": managed.decoded.actual_render_sha256,
             },
+            hints=("run repair --from-state to restore the projection, or edit canonical typed data instead",),
         )
     return MutationSnapshot(
         target=validation.target,
