@@ -17,7 +17,7 @@ from gh_slate.github.errors import GitHubReadError
 MAX_EVENT_BYTES = 1024 * 1024
 MAX_TARGET_NUMBER = 2**63 - 1
 DEFAULT_HOST = "github.com"
-_COMMENT_FRAGMENT = re.compile(r"\Aissuecomment-[1-9][0-9]*\Z")
+_COMMENT_FRAGMENT = re.compile(r"\Aissuecomment-(?P<identifier>[1-9][0-9]*)\Z")
 
 
 class TargetLookup(Protocol):
@@ -305,6 +305,7 @@ def target_from_comment_url(
     value: str,
     *,
     expected: TargetIdentity | None = None,
+    expected_comment_id: int | None = None,
 ) -> ResolvedTarget:
     """Recover canonical target context from a GitHub comment HTML URL."""
 
@@ -321,6 +322,7 @@ def target_from_comment_url(
             "comment URL must be an absolute GitHub comment URL",
             code="comment_url_invalid",
         ) from None
+    fragment = _COMMENT_FRAGMENT.fullmatch(parsed.fragment)
     if (
         parsed.scheme not in {"http", "https"}
         or not parsed.hostname
@@ -329,11 +331,21 @@ def target_from_comment_url(
         or parsed.query
         or port is not None
         and not 1 <= port <= 65535
-        or _COMMENT_FRAGMENT.fullmatch(parsed.fragment) is None
+        or fragment is None
     ):
         raise _error(
             "comment URL must be an absolute GitHub comment URL",
             code="comment_url_invalid",
+        )
+    if expected_comment_id is not None and int(fragment.group("identifier")) != _positive_integer(
+        expected_comment_id,
+        field="comment.id",
+    ):
+        raise _conflict(
+            "comment URL fragment disagrees with the comment identifier",
+            comment_url=value,
+            expected_comment_id=expected_comment_id,
+            actual_comment_id=int(fragment.group("identifier")),
         )
     page_url = urlunsplit(
         (

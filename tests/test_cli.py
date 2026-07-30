@@ -37,7 +37,91 @@ def test_unknown_command_is_usage_error() -> None:
     parser = build_parser(prog="gh-slate")
 
     with pytest.raises(SystemExit) as exit_info:
-        parser.parse_args(["apply"])
+        parser.parse_args(["unknown"])
+
+    assert exit_info.value.code == 2
+
+
+def test_apply_command_surface_parses_full_snapshot_options() -> None:
+    parsed = build_parser(prog="gh slate").parse_args(
+        [
+            "apply",
+            "ci",
+            "--target",
+            "42",
+            "--repo",
+            "owner/repo",
+            "--controller",
+            "ci-bot",
+            "--host",
+            "ghe.example",
+            "--if-revision",
+            "7",
+            "--mode",
+            "update",
+            "--dry-run",
+            "--json",
+            "--data",
+            "data.json",
+            "--schema",
+            "schema.json",
+            "--table",
+            ".jobs",
+            "--columns",
+            "name,status",
+            "--title",
+            "Jobs",
+        ]
+    )
+
+    assert callable(parsed.handler)
+    assert parsed.name == "ci"
+    assert parsed.target == "42"
+    assert parsed.repo == "owner/repo"
+    assert parsed.controller == "ci-bot"
+    assert parsed.host == "ghe.example"
+    assert parsed.if_revision == 7
+    assert parsed.mode == "update"
+    assert parsed.dry_run is True
+    assert parsed.json is True
+    assert parsed.quiet is False
+    assert parsed.data == "data.json"
+    assert parsed.schema == "schema.json"
+    assert parsed.template is None
+    assert parsed.table == ".jobs"
+    assert parsed.list is None
+    assert parsed.columns == "name,status"
+    assert parsed.title == "Jobs"
+
+
+@pytest.mark.parametrize(
+    "revision",
+    ["0", "-1", str(2**63), "not-an-integer"],
+)
+def test_apply_if_revision_must_be_a_positive_integer(revision: str) -> None:
+    parser = build_parser(prog="gh slate")
+
+    with pytest.raises(SystemExit) as exit_info:
+        parser.parse_args(["apply", "ci", "--if-revision", revision])
+
+    assert exit_info.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ["--template", "slate.j2", "--table", ".jobs"],
+        ["--table", ".jobs", "--list", ".notes"],
+        ["--json", "--quiet"],
+    ],
+)
+def test_apply_renderer_and_output_modes_are_mutually_exclusive(
+    options: list[str],
+) -> None:
+    parser = build_parser(prog="gh slate")
+
+    with pytest.raises(SystemExit) as exit_info:
+        parser.parse_args(["apply", "ci", *options])
 
     assert exit_info.value.code == 2
 

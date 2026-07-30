@@ -1,5 +1,17 @@
 from __future__ import annotations
 
+from gh_slate.github.apply import (
+    ApplyAction,
+    ApplyError,
+    ApplyMode,
+    ApplyReadClient,
+    ApplyRequest,
+    ApplyResult,
+    ApplyTransaction,
+    ApplyWriteClient,
+    SchemaInput,
+    apply,
+)
 from gh_slate.github.errors import GitHubReadError
 from gh_slate.github.lookup import ProcessTargetLookup
 from gh_slate.github.models import (
@@ -29,9 +41,27 @@ from gh_slate.github.target import (
     resolve_target,
     target_from_comment_url,
 )
+from gh_slate.github.write import (
+    DEFAULT_GH_WRITE_LIMITS,
+    GhWriteLimits,
+    GhWriteOutcomeUnknown,
+    GhWriteProcess,
+    GhWriteTimeout,
+    SubprocessWriteRunner,
+    WriteProcessRunner,
+)
 
 __all__ = [
+    "ApplyAction",
+    "ApplyError",
+    "ApplyMode",
+    "ApplyReadClient",
+    "ApplyRequest",
+    "ApplyResult",
+    "ApplyTransaction",
+    "ApplyWriteClient",
     "DEFAULT_GH_PROCESS_LIMITS",
+    "DEFAULT_GH_WRITE_LIMITS",
     "DEFAULT_HOST",
     "MAX_EVENT_BYTES",
     "MAX_TARGET_NUMBER",
@@ -39,6 +69,10 @@ __all__ = [
     "GhProcess",
     "GhProcessLimits",
     "GitHubActor",
+    "GhWriteLimits",
+    "GhWriteOutcomeUnknown",
+    "GhWriteProcess",
+    "GhWriteTimeout",
     "GitHubComment",
     "GitHubReadError",
     "ManagedSlate",
@@ -47,12 +81,16 @@ __all__ = [
     "ProcessTargetLookup",
     "ReadClient",
     "ResolvedTarget",
+    "SchemaInput",
     "SlateCandidate",
     "SlateReadStatus",
     "SubprocessRunner",
+    "SubprocessWriteRunner",
     "TargetLike",
     "TargetIdentity",
     "TargetLookup",
+    "WriteProcessRunner",
+    "apply",
     "resolve_host_context",
     "resolve_target",
     "target_from_comment_url",

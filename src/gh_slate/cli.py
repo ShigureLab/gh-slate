@@ -12,6 +12,16 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 
+def _positive_integer(value: str) -> int:
+    try:
+        parsed = int(value, 10)
+    except ValueError:
+        raise argparse.ArgumentTypeError("expected a positive integer") from None
+    if not 1 <= parsed <= 2**63 - 1:
+        raise argparse.ArgumentTypeError("expected an integer between 1 and 2^63-1")
+    return parsed
+
+
 def _add_target_options(
     parser: argparse.ArgumentParser,
     *,
@@ -42,6 +52,51 @@ def _add_target_options(
     )
 
 
+def _add_snapshot_options(
+    parser: argparse.ArgumentParser,
+    *,
+    data_defaults_empty: bool = False,
+) -> None:
+    parser.add_argument(
+        "--data",
+        metavar="FILE",
+        help=("strict JSON object input; use - for stdin" + (" (default: {})" if data_defaults_empty else "")),
+    )
+    parser.add_argument(
+        "--schema",
+        metavar="FILE",
+        help="optional draft 2020-12 JSON Schema snapshot",
+    )
+
+
+def _add_renderer_options(parser: argparse.ArgumentParser) -> None:
+    renderer = parser.add_mutually_exclusive_group()
+    renderer.add_argument(
+        "--template",
+        metavar="FILE",
+        help="sandboxed Jinja template source; use - for stdin",
+    )
+    renderer.add_argument(
+        "--table",
+        metavar="FILTER",
+        help="jq selector producing one array of objects",
+    )
+    renderer.add_argument(
+        "--list",
+        metavar="FILTER",
+        help="jq selector producing one JSON value",
+    )
+    parser.add_argument(
+        "--columns",
+        metavar="KEY,...",
+        help="ordered top-level table keys",
+    )
+    parser.add_argument(
+        "--title",
+        help="Markdown heading for a built-in table or list",
+    )
+
+
 def build_parser(*, prog: str | None = None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=display_command() if prog is None else prog,
@@ -65,44 +120,55 @@ def build_parser(*, prog: str | None = None) -> argparse.ArgumentParser:
     )
     render_parser.add_argument("name", help="stable lowercase slate name")
     _add_target_options(render_parser)
-    render_parser.add_argument(
-        "--data",
-        metavar="FILE",
-        help="strict JSON object input; use - for stdin (default: {})",
+    _add_snapshot_options(
+        render_parser,
+        data_defaults_empty=True,
     )
-    render_parser.add_argument(
-        "--schema",
-        metavar="FILE",
-        help="optional draft 2020-12 JSON Schema snapshot",
-    )
-    renderer = render_parser.add_mutually_exclusive_group()
-    renderer.add_argument(
-        "--template",
-        metavar="FILE",
-        help="sandboxed Jinja template source; use - for stdin",
-    )
-    renderer.add_argument(
-        "--table",
-        metavar="FILTER",
-        help="jq selector producing one array of objects",
-    )
-    renderer.add_argument(
-        "--list",
-        metavar="FILTER",
-        help="jq selector producing one JSON value",
-    )
-    render_parser.add_argument(
-        "--columns",
-        metavar="KEY,...",
-        help="ordered top-level table keys",
-    )
-    render_parser.add_argument(
-        "--title",
-        help="Markdown heading for a built-in table or list",
-    )
+    _add_renderer_options(render_parser)
     from gh_slate.commands.render import run_render
 
     render_parser.set_defaults(handler=run_render)
+
+    apply_parser = commands.add_parser(
+        "apply",
+        help="create or update one complete managed slate snapshot",
+    )
+    apply_parser.add_argument("name", help="stable lowercase slate name")
+    _add_target_options(apply_parser)
+    apply_parser.add_argument(
+        "--if-revision",
+        type=_positive_integer,
+        metavar="REV",
+        help="reject a stale read before attempting a write",
+    )
+    apply_parser.add_argument(
+        "--mode",
+        choices=("upsert", "create", "update"),
+        default="upsert",
+        help="create/update behavior (default: upsert)",
+    )
+    apply_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="validate and render without writing GitHub",
+    )
+    apply_output = apply_parser.add_mutually_exclusive_group()
+    apply_output.add_argument(
+        "--json",
+        action="store_true",
+        help="emit an operation result object",
+    )
+    apply_output.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="suppress successful output",
+    )
+    _add_snapshot_options(apply_parser)
+    _add_renderer_options(apply_parser)
+    from gh_slate.commands.apply import run_apply
+
+    apply_parser.set_defaults(handler=run_apply)
 
     from gh_slate.commands.read import (
         run_doctor,

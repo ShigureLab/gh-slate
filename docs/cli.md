@@ -1,7 +1,9 @@
 # gh-slate CLI design
 
-Status: implementation-backed through batch 5; the read-only GitHub foundation
-is complete and batch 6 is the next implementation layer.
+Status: implementation-backed through batch 6; safe full-snapshot apply is
+complete offline, and batch 7 is the next implementation layer. The
+credentialed Issue/PR smoke gate remains open, so the snapshot MVP is not yet
+labelled alpha-ready.
 
 `gh-slate` manages named, data-backed dashboard comments on GitHub Issues and
 Pull Requests.
@@ -1304,8 +1306,9 @@ Acceptance gates:
 Not included: any GitHub API call, arbitrary Markdown reverse parsing, or
 automatic raw-Markdown cells.
 
-Foundation is complete: the wire format and renderer versions are
-implementation-backed, but no remote command is allowed to write yet.
+At this layer, the foundation is complete: the wire format and renderer
+versions are implementation-backed, but no remote command is allowed to write
+until batch 6.
 
 ### 14.6 Batch 5: read-only GitHub comment store
 
@@ -1355,6 +1358,12 @@ mutation.
 ### 14.7 Batch 6: full-snapshot apply
 
 Branch: `codex/github-apply`
+
+Status: implementation and offline contract coverage are complete. The Issue
+and Pull Request fake-`gh` integration paths cover create, update, unchanged,
+and readback. A credentialed disposable-target smoke has not yet been run, so
+the live acceptance gate below remains open and this document does not claim
+alpha readiness.
 
 Goal: reach the first useful product milestone: safely create or update a
 Codecov-style comment from a complete snapshot.
