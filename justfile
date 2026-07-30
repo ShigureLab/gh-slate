@@ -1,18 +1,17 @@
-VERSION := `uv run python -c "import sys; from moelib import __version__ as version; sys.stdout.write(version)"`
+VERSION := `uv run python -c "import sys; from gh_slate import __version__ as version; sys.stdout.write(version)"`
 
 install:
   uv sync --all-extras --dev
 
 test:
   uv run pytest
-  just clean
 
 fmt:
   uv run ruff format .
   prettier --write '**/*.md'
 
 lint:
-  uv run ty check --error-on-warning src/moelib tests
+  uv run ty check --error-on-warning src/gh_slate tests
   uv run ruff check .
 
 fmt-docs:
@@ -45,7 +44,7 @@ clean-builds:
   rm -rf *.egg-info/
 
 ci-install:
-  just install
+  uv sync --locked --all-extras --dev
 
 ci-fmt-check:
   uv run ruff format --check --diff .
@@ -56,4 +55,3 @@ ci-lint:
 
 ci-test:
   uv run pytest --reruns 3 --reruns-delay 1
-  just clean

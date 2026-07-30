@@ -1,15 +1,16 @@
 [project]
-name = "moelib"
+name = "gh-slate"
 version = "0.1.0"
-description = ""
+description = "Manage named, data-backed dashboard comments on GitHub Issues and Pull Requests."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
 authors = [{ name = "Nyakku Shigure", email = "sigure.qaq@gmail.com" }]
-keywords = []
+keywords = ["github", "cli", "dashboard", "issues", "pull-requests", "markdown"]
 license = "MIT"
 license-files = ["LICENSE"]
 classifiers = [
+  "Environment :: Console",
   "Operating System :: OS Independent",
   "Typing :: Typed",
   "Programming Language :: Python",
@@ -23,13 +24,13 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ShigureLab/moelib"
-Documentation = "https://github.com/ShigureLab/moelib"
-Repository = "https://github.com/ShigureLab/moelib"
-Issues = "https://github.com/ShigureLab/moelib/issues"
+Homepage = "https://github.com/ShigureLab/gh-slate"
+Documentation = "https://github.com/ShigureLab/gh-slate"
+Repository = "https://github.com/ShigureLab/gh-slate"
+Issues = "https://github.com/ShigureLab/gh-slate/issues"
 
 [project.scripts]
-moelib = "moelib.__main__:main"
+gh-slate = "gh_slate.__main__:main"
 
 [dependency-groups]
 dev = [
@@ -88,7 +89,7 @@ future-annotations = true
 
 [tool.ruff.lint.isort]
 required-imports = ["from __future__ import annotations"]
-known-first-party = ["moelib"]
+known-first-party = ["gh_slate"]
 combine-as-imports = true
 
 [build-system]

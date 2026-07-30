@@ -41,3 +41,52 @@ jobs:
       - name: unit test
         run: |
           just ci-test
+
+  package-smoke:
+    runs-on: ubuntu-latest
+    name: wheel and sdist smoke
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+
+      - name: Install Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+
+      - name: Build release artifacts without workspace sources
+        run: uv build --no-sources
+
+      - name: Inspect and install wheel and sdist
+        shell: bash
+        run: |
+          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+          sdist="$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)"
+          test -n "$wheel"
+          test -n "$sdist"
+
+          python - "$wheel" "$sdist" <<'PY'
+          from pathlib import Path
+          import sys
+          import tarfile
+          import zipfile
+
+          wheel = Path(sys.argv[1])
+          sdist = Path(sys.argv[2])
+          with zipfile.ZipFile(wheel) as archive:
+              wheel_names = archive.namelist()
+          with tarfile.open(sdist, "r:gz") as archive:
+              sdist_names = archive.getnames()
+
+          assert "gh_slate/py.typed" in wheel_names
+          assert any(name.endswith("/src/gh_slate/py.typed") for name in sdist_names)
+          assert not any("moelib" in name for name in [*wheel_names, *sdist_names])
+          PY
+
+          uvx --from "$wheel" gh-slate --help | grep '^usage: gh-slate'
+          uvx --from "$wheel" gh-slate --version | grep '^gh-slate 0.1.0$'
+          uvx --from "$sdist" gh-slate --help | grep '^usage: gh-slate'
+          uvx --from "$sdist" gh-slate --version | grep '^gh-slate 0.1.0$'
