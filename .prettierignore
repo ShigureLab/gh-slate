@@ -5,3 +5,4 @@ node_modules/
 pnpm-lock.yaml
 .venv/
 tests/fixtures/wire/
+tests/fixtures/rendering/

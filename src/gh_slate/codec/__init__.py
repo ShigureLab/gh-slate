@@ -32,6 +32,7 @@ from gh_slate.codec.model import (
     SchemaSnapshotV1,
     StateDraftV1,
     StateV1,
+    validate_slate_name,
 )
 from gh_slate.codec.revision import RevisionResult, resolve_revision
 
@@ -62,4 +63,5 @@ __all__ = [
     "state_sha256",
     "strict_loads",
     "strict_loads_object",
+    "validate_slate_name",
 ]

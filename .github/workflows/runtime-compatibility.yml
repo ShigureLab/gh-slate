@@ -50,7 +50,7 @@ jobs:
         run: >-
           uv run --isolated --no-project
           --with "jq>=1.12,<2"
-          --with "jinja2>=3.1,<4"
+          --with "jinja2>=3.1.6,<3.2"
           --with "jsonschema>=4.25,<5"
           --with "regex>=2025.7.34,<2027"
           python -c

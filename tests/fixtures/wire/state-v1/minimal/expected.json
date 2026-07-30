@@ -1,14 +1,14 @@
 {
-  "state_sha256": "fbf150a6e9dfb917a4226d8f960c8adfe0b5c7d187df1eb128bc8f5758d82ef5",
+  "state_sha256": "f8af838a14c8dabd90e14235f9318bec4955bbe0ae5bc5f8fdbc7a440aaa1817",
   "render_sha256": "06e6aeb0ab519d41fb7e9bf3ad4d9fe92a1d230b8cb5b2ed25dfcfc7d5faf09d",
   "sizes": {
-    "body_bytes": 670,
+    "body_bytes": 758,
     "visible_bytes": 63,
-    "state_bytes": 421,
-    "compressed_bytes": 355,
-    "encoded_bytes": 476,
+    "state_bytes": 528,
+    "compressed_bytes": 423,
+    "encoded_bytes": 564,
     "data_bytes": 108,
     "schema_bytes": 0,
-    "renderer_bytes": 83
+    "renderer_bytes": 190
   }
 }

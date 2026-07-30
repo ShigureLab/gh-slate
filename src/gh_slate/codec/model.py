@@ -95,7 +95,9 @@ def _require_integer(value: object, *, path: str, minimum: int, maximum: int | N
     return integer
 
 
-def _validate_name(name: object) -> str:
+def validate_slate_name(name: object) -> str:
+    """Validate and return one marker-safe public slate identifier."""
+
     result = _require_string(name, path="name")
     if _SLATE_NAME_RE.fullmatch(result) is None or "--" in result:
         _invalid(
@@ -292,7 +294,7 @@ class StateDraftV1:
                 code="unsupported_state_format",
                 details={"format": self.format},
             )
-        object.__setattr__(self, "name", _validate_name(self.name))
+        object.__setattr__(self, "name", validate_slate_name(self.name))
         if not isinstance(self.controller, ControllerV1):
             _invalid("controller must be a ControllerV1", path="controller")
         object.__setattr__(self, "data", _require_object(self.data, path="data"))
@@ -347,7 +349,7 @@ class StateDraftV1:
         _require_fields(obj, required=required, path="state")
         return cls(
             format=_require_string(obj["format"], path="format"),
-            name=_validate_name(obj["name"]),
+            name=validate_slate_name(obj["name"]),
             controller=ControllerV1.from_json(obj["controller"]),
             data=_require_object(obj["data"], path="data"),
             data_schema=(SchemaSnapshotV1.from_json(obj["data_schema"]) if obj["data_schema"] is not None else None),
@@ -375,7 +377,7 @@ class StateV1:
                 code="unsupported_state_format",
                 details={"format": self.format},
             )
-        object.__setattr__(self, "name", _validate_name(self.name))
+        object.__setattr__(self, "name", validate_slate_name(self.name))
         object.__setattr__(
             self,
             "revision",
@@ -434,7 +436,7 @@ class StateV1:
         _require_fields(obj, required=required, path="state")
         return cls(
             format=_require_string(obj["format"], path="format"),
-            name=_validate_name(obj["name"]),
+            name=validate_slate_name(obj["name"]),
             revision=_require_integer(
                 obj["revision"],
                 path="revision",

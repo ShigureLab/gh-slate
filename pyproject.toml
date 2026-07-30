@@ -5,6 +5,8 @@ description = "Manage named, data-backed dashboard comments on GitHub Issues and
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+  "jinja2>=3.1.6,<3.2",
+  "jq>=1.12,<2",
   "jsonschema>=4.25,<5",
   "referencing>=0.36,<1",
   "regex>=2025.7.34,<2027",
