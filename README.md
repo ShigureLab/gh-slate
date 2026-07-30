@@ -1,5 +1,8 @@
 # Python lib starter
 
+> `gh-slate` is currently in the design phase. See the
+> [CLI and state-model proposal](docs/cli.md).
+
 Just a template for quickly creating a python library.
 
 <p align="center">
