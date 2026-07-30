@@ -111,8 +111,8 @@ def _create(
 
 
 @pytest.mark.skipif(
-    shutil.which("uv") is None,
-    reason="the real gh-slate extension launcher requires uv",
+    os.name == "nt" or shutil.which("uv") is None,
+    reason="the Bash-based gh-slate extension launcher requires Unix and uv",
 )
 @pytest.mark.parametrize(
     "launcher_sandbox",
@@ -287,8 +287,8 @@ def test_real_launcher_issue_and_pr_recovery_lifecycle(
 
 
 @pytest.mark.skipif(
-    shutil.which("uv") is None,
-    reason="the real gh-slate extension launcher requires uv",
+    os.name == "nt" or shutil.which("uv") is None,
+    reason="the Bash-based gh-slate extension launcher requires Unix and uv",
 )
 @pytest.mark.parametrize(
     "launcher_sandbox",

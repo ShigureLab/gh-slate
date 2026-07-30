@@ -45,9 +45,10 @@ unchanged, visible-drift repair, and delete, and attempts direct cleanup in a
 
 Use a least-privilege token that may read the repository and write Issue/PR
 comments. Do not use production Issues or Pull Requests. Opt in with all three
-environment variables and the exact confirmation value:
+target/confirmation variables plus `GH_TOKEN`:
 
 ```bash
+export GH_TOKEN=YOUR_DEDICATED_TEST_REPOSITORY_TOKEN
 export GH_SLATE_LIVE_CONFIRM=I_UNDERSTAND
 export GH_SLATE_LIVE_DISPOSABLE_ISSUE_URL=https://github.com/OWNER/REPO/issues/NUMBER
 export GH_SLATE_LIVE_DISPOSABLE_PR_URL=https://github.com/OWNER/REPO/pull/NUMBER
@@ -65,3 +66,23 @@ The repository's regular CI must not set these environment variables. A live
 run is release evidence only when its command output and target type are
 recorded separately; skipped live tests are not evidence of GitHub or GHES
 compatibility.
+
+## Tagged release gate
+
+The tagged workflow uses a dedicated `GH_SLATE_LIVE_TOKEN` repository secret,
+not the workflow repository's scoped `GITHUB_TOKEN`. Scope that secret only to
+the disposable test repository, give it read access plus Issue/Pull Request
+comment write access, and set
+`GH_SLATE_LIVE_DISPOSABLE_ISSUE_URL` /
+`GH_SLATE_LIVE_DISPOSABLE_PR_URL` to targets that token can access. A missing
+secret or either missing target fails before the live harness starts.
+
+The current remote extension smoke stages the verified assets as a visible
+prerelease, installs the exact platform asset with `gh extension install`, and
+promotes that same release only after the remaining gates pass. The workflow
+therefore uses a separate `GH_SLATE_RELEASE_ADMIN_TOKEN` secret with only
+Administration (read) access to query the workflow repository's
+immutable-release setting. It fails closed when that secret is absent, the
+setting cannot be read, or immutable releases are enabled or enforced by the
+owner. Publishing an immutable stable release requires a future separate
+staging-tag flow rather than mutating the tested prerelease.

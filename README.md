@@ -1,11 +1,14 @@
 # gh-slate
 
-`gh-slate` is a GitHub CLI extension and Python command for named, data-backed
-dashboard comments on GitHub Issues and Pull Requests.
+`gh-slate` creates named, data-backed dashboard comments on GitHub Issues and
+Pull Requests. It keeps typed JSON, an optional JSON Schema, and the renderer
+definition inside the managed comment, then projects that state as Markdown
+with a built-in table/list renderer or a sandboxed Jinja template.
 
-The project is currently under implementation. Its CLI, typed-state format,
-renderer behavior, safety model, and staged implementation plan are specified
-in the [CLI design](docs/cli.md).
+This is a pre-release implementation. The offline codec, renderer, GitHub
+adapter, recovery, fault-injection, packaging, and Actions paths are tested,
+but the credentialed GitHub.com Issue/PR and live GHES gates have not been run.
+The project does not yet claim stable or GA status.
 
 <p align="center">
    <a href="https://python.org/" target="_blank"><img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-blue?logo=python&style=flat-square"></a>
@@ -13,22 +16,36 @@ in the [CLI design](docs/cli.md).
    <br/>
    <a href="https://github.com/astral-sh/uv"><img alt="uv" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json&style=flat-square"></a>
    <a href="https://github.com/astral-sh/ruff"><img alt="ruff" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json&style=flat-square"></a>
-   <a href="https://gitmoji.dev"><img alt="Gitmoji" src="https://img.shields.io/badge/gitmoji-%20😜%20😍-FFDD67?style=flat-square"></a>
 </p>
 
-## Entrypoints
+## Install
 
-The package and extension expose the same parser with invocation-aware help:
+Requirements:
+
+- Python 3.10 or newer;
+- `gh`, authenticated for the target host;
+- `uv` for the Python tool installation and, on supported Unix platforms, the
+  repository-backed GitHub CLI extension launcher.
+
+After a release is published to PyPI, install the Python tool with:
 
 ```bash
-# Python tool
-uv run gh-slate --help
-
-# Repository checkout, using the gh extension spelling
-./gh-slate --help
+uv tool install gh-slate
+gh-slate --help
 ```
 
-The public names map consistently:
+The PyPI package and `gh-slate` Python CLI are runtime-tested on Linux, macOS,
+and Windows. On macOS/Linux or another Unix environment with Bash and `uv`, the
+repository can instead be installed as a GitHub CLI extension:
+
+```bash
+gh extension install ShigureLab/gh-slate
+gh slate --help
+```
+
+The current root extension launcher is a Bash script and is not a supported
+Windows entrypoint; use the Python CLI on Windows. On supported platforms both
+entrypoints expose the same parser. The public names are:
 
 ```text
 PyPI distribution       gh-slate
@@ -37,3 +54,201 @@ console script          gh-slate
 GitHub repository       gh-slate
 gh extension command    gh slate
 ```
+
+### Install the agent skill separately
+
+The bundled skill teaches an agent the safe inspect/dry-run/mutate/verify
+workflow. Installing the CLI does not install the skill, and installing the
+skill does not install the CLI:
+
+```bash
+npx skills add https://github.com/ShigureLab/gh-slate --skill gh-slate
+```
+
+GitHub CLI 2.96 or newer can install the same skill through its native,
+currently preview, skill command:
+
+```bash
+gh skill install ShigureLab/gh-slate gh-slate --agent codex --scope user
+```
+
+## Preflight
+
+Check GitHub authentication first, then exercise the same gh, jq, Jinja, and
+JSON Schema runtime used by normal commands:
+
+```bash
+gh auth status
+gh slate doctor --json
+```
+
+Use `gh-slate doctor --json` instead when installed as a Python tool. A full
+Issue or Pull Request URL is the least ambiguous target; numeric targets also
+accept `--repo OWNER/REPO`, while Actions may use `@event`.
+
+## Quick start
+
+Assume `report.json` contains:
+
+```json
+{
+   "jobs": [
+      { "name": "linux", "status": "passed" },
+      { "name": "windows", "status": "running" }
+   ],
+   "summary": "2 jobs"
+}
+```
+
+Preview a table without writing, then create exactly one named slate:
+
+```bash
+gh slate apply ci-summary --target https://github.com/OWNER/REPO/issues/42 --mode create --data report.json --table '.jobs' --columns name,status --title 'CI summary' --dry-run
+gh slate apply ci-summary --target https://github.com/OWNER/REPO/issues/42 --mode create --data report.json --table '.jobs' --columns name,status --title 'CI summary' --json
+```
+
+List all managed slates on the target:
+
+```bash
+gh slate list --target https://github.com/OWNER/REPO/issues/42 --json
+```
+
+### List and Jinja renderers
+
+The list renderer stores the same typed state and only changes its Markdown
+projection:
+
+```bash
+gh slate apply release-items --target https://github.com/OWNER/REPO/issues/42 --mode create --data release.json --list '.items' --title 'Release items' --json
+```
+
+For a custom layout, pass trusted Jinja source. Template source is embedded in
+the state, so a later update does not depend on the original checkout:
+
+```bash
+gh slate apply deployment --target https://github.com/OWNER/REPO/pull/42 --mode create --data deployment.json --schema deployment.schema.json --template deployment.md.j2 --dry-run
+```
+
+Remove `--dry-run` only after reviewing the rendered Markdown.
+
+### Query and update typed data
+
+Queries use jq syntax and never scrape the visible table:
+
+```bash
+gh slate data get ci-summary '.jobs[] | select(.status != "passed") | .name' --target https://github.com/OWNER/REPO/issues/42 --raw-output
+```
+
+First inspect the slate with `view --json`. If it reports revision `1`, choose
+one of these writes: mutate one exact path, or transform the complete data
+object with jq. Both pin the observed revision and reject an already-stale read:
+
+```bash
+gh slate data set ci-summary '.jobs[1].status' --target https://github.com/OWNER/REPO/issues/42 --value-string passed --if-revision 1 --json
+gh slate data update ci-summary '.jobs |= map(if .name == $name then .status = "passed" else . end)' --target https://github.com/OWNER/REPO/issues/42 --arg name windows --if-revision 1 --json
+```
+
+Refetch before any subsequent write. Inspect and verify the result:
+
+```bash
+gh slate view ci-summary --target https://github.com/OWNER/REPO/issues/42 --json
+gh slate state verify ci-summary --target https://github.com/OWNER/REPO/issues/42 --json
+```
+
+### Repair visible drift and delete a slate
+
+A manual edit to visible Markdown is drift, not new canonical data. Mutations
+fail closed until the projection is explicitly restored:
+
+```bash
+gh slate repair ci-summary --from-state --target https://github.com/OWNER/REPO/issues/42 --if-revision 2 --json
+```
+
+Repair rerenders stored state and may keep the same functional revision.
+Deleting the whole managed comment requires the exact name or an explicit
+non-interactive confirmation:
+
+```bash
+gh slate delete ci-summary --target https://github.com/OWNER/REPO/issues/42 --confirm ci-summary --json
+gh slate delete ci-summary --target https://github.com/OWNER/REPO/issues/42 --yes --quiet
+```
+
+## State and safety model
+
+The hidden typed `StateV1` envelope is the source of truth. Visible Markdown is
+a deterministic, one-way projection:
+
+```text
+managed comment envelope  <-- encode/decode -->  typed StateV1
+                                                    |
+                                                  render
+                                                    v
+                                             visible Markdown
+```
+
+Tables and lists cannot losslessly represent JSON types such as `null`, numeric
+versus string `001`, nested objects, or missing fields. `gh-slate` therefore
+decodes data and schema metadata from the hidden envelope; it does not claim a
+Markdown-to-state round trip. Integrity hashes detect manual projection edits.
+
+Important operational boundaries:
+
+- Do not store tokens, credentials, private logs, or other secrets in data,
+  schemas, or templates. Hidden comment metadata is still GitHub comment data.
+- Use only trusted jq and Jinja source, especially in privileged Actions
+  workflows. Never evaluate a template supplied by an untrusted fork under
+  `pull_request_target`.
+- Prefer a complete `apply --data FILE` snapshot and one writer in CI.
+  Repository workflow `concurrency` prevents more races than incremental
+  updates from multiple jobs.
+- `--if-revision` plus the pre-write refetch detects observed stale state, but
+  GitHub issue-comment updates provide no atomic compare-and-swap (CAS).
+  It is an optimistic guard, not a lock; two writers can still race after their
+  final reads.
+- Treat `created`, `updated`, `repaired`, `deleted`, and `unchanged` as distinct
+  successful outcomes. Do not claim a remote write succeeded until the command
+  returns its verified result.
+- Drift, duplicate names, corrupt state, unknown write outcomes, and revision
+  conflicts fail closed; there is no generic `--force` escape hatch.
+
+See the checked-in [Actions examples](examples/actions/README.md) for minimal
+permissions and trusted-data patterns.
+
+## Verification status
+
+The default suite is offline. It includes canonical state round trips, bounded
+decoder fuzzing, renderer/schema/jq coverage, Issue and Pull Request subprocess
+tests through a persistent fake `gh`, recovery fault injection, Actions static
+validation, and offline artifact layout/entrypoint checks.
+
+Run the local packaging gate against the exact wheel and sdist:
+
+```bash
+just clean-builds
+just build
+just release-verify
+```
+
+`just release` adds all deterministic gates and tag/version verification, then
+pushes only that version tag. The tagged workflow still requires disposable
+live targets and their dedicated least-privilege token, installs the bundled
+skill, stages and remotely installs the verified extension asset, publishes
+the verified Python artifacts, and only then promotes the GitHub Release to
+stable. Direct `just publish` is disabled so it cannot bypass this ordering.
+The staged-promotion workflow fails closed if repository or organization
+immutable releases are enabled; see [testing](docs/testing.md) for the release
+secret and staging constraints.
+
+An opt-in live harness exists for disposable GitHub.com Issue and Pull Request
+targets, but it is skipped unless the exact confirmation and both target URLs
+are supplied. It has not been executed as current release evidence. The GHES
+fixtures prove event and hostname contracts only, not live server
+compatibility. See [testing](docs/testing.md) for the exact gate and cleanup
+procedure.
+
+For the full state format, command contract, safety rationale, and staged
+implementation record, see the [CLI design](docs/cli.md).
+
+## License
+
+[MIT](LICENSE)

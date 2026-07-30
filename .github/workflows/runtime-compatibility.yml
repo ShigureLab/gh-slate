@@ -1,4 +1,4 @@
-name: Planned Runtime Compatibility
+name: Runtime Compatibility
 
 on:
   push:
@@ -60,8 +60,12 @@ jobs:
           assert jsonschema.Draft202012Validator;
           assert regex.search('a+', 'aaa', timeout=0.1)"
 
-      - name: Exercise codec wire and hash compatibility
+      - name: Install the locked project on supported non-Linux platforms
+        if: runner.os != 'Linux'
+        run: uv sync --locked --all-extras --dev
+
+      - name: Run the complete deterministic suite on supported non-Linux platforms
         if: runner.os != 'Linux'
         run: |
           uv run --frozen python -c "import platform, zlib; print(f'python={platform.python_version()} zlib_compiled={zlib.ZLIB_VERSION} zlib_runtime={zlib.ZLIB_RUNTIME_VERSION}')"
-          uv run --frozen pytest tests/unit/codec/test_wire_fixtures.py tests/unit/codec/test_hashes.py
+          uv run --frozen pytest --reruns 3 --reruns-delay 1

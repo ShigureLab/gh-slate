@@ -1,9 +1,10 @@
 # gh-slate CLI design
 
-Status: implementation-backed through batch 8; recovery, deletion, fault
-injection, and Actions examples are complete offline, and batch 9 is the next
-implementation layer. The credentialed GitHub.com Issue/PR and live GHES gates
-have not been run, so the project is not yet labelled alpha- or beta-ready.
+Status: implementation-backed through batch 9. Recovery, Actions examples, the
+bundled skill, artifact verification, and release ordering are complete
+offline. The credentialed GitHub.com Issue/PR, live GHES, tagged release, and
+PyPI publication gates have not been run, so the project remains pre-release
+and is not yet labelled alpha-, beta-, or stable-ready.
 
 `gh-slate` manages named, data-backed dashboard comments on GitHub Issues and
 Pull Requests.
@@ -1000,10 +1001,13 @@ The initial skill identity is:
 ---
 name: gh-slate
 description: Create and safely maintain named, data-backed dashboard comments on GitHub Issues and Pull Requests with gh-slate.
+compatibility: Requires gh, authenticated GitHub access, and gh-slate >=0.1.0.
+license: MIT
 metadata:
    primary-tools:
       - gh-slate
       - gh
+   minimum-gh-slate-version: 0.1.0
 ---
 ```
 
@@ -1011,6 +1015,13 @@ Install it directly from the repository:
 
 ```bash
 npx skills add https://github.com/ShigureLab/gh-slate --skill gh-slate
+```
+
+GitHub CLI 2.96 and newer also provide a native installer, currently in
+preview:
+
+```bash
+gh skill install ShigureLab/gh-slate gh-slate --agent codex --scope user
 ```
 
 Installing the `gh` extension or PyPI tool does not implicitly install the
@@ -1560,6 +1571,14 @@ evidence.
 ### 14.10 Batch 9: bundled skill and release
 
 Branch: `codex/automation-skill-release`
+
+Status: implementation complete offline. The checked-in skill passes its
+layout, parser/help, stale-flag, official dry-run, and local-install checks.
+Release verification clean-installs the exact wheel and sdist and produces
+directly installable macOS/Linux extension assets from the same tagged source.
+The credentialed live targets, tagged workflow, remote extension installation,
+PyPI publication, and stable-release promotion remain real release gates and
+have not been executed.
 
 Goal: package the tested behavior for humans, agents, the `gh` extension
 registry, and PyPI without adding last-minute product features.

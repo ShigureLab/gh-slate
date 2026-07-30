@@ -5,75 +5,315 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  release-build:
+  release-gate:
+    name: Test and verify exact release artifacts
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
-      - name: Checkout
+      - name: Checkout tagged source
         uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v9.0.0
 
-      - name: Install python
+      - name: Install Python
         uses: actions/setup-python@v7
         with:
-          python-version: '3.x'
+          python-version: '3.14'
 
       - name: Install just
         uses: extractions/setup-just@v4
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: build release distributions
-        run: |
-          just ci-install
-          just build
+      - name: Install Prettier
+        run: npm install --global prettier
 
-      - name: upload dists
+      - name: Install locked development dependencies
+        run: just ci-install
+
+      - name: Validate and install the bundled agent skill
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SKILL_INSTALL_DIR: ${{ runner.temp }}/installed-gh-slate-skill
+        run: |
+          gh skill publish --dry-run .
+          gh skill install . gh-slate \
+            --from-local \
+            --dir "${SKILL_INSTALL_DIR}"
+          test -f "${SKILL_INSTALL_DIR}/gh-slate/SKILL.md"
+          uv run python scripts/check_skill.py \
+            "${SKILL_INSTALL_DIR}/gh-slate"
+          gh skill publish --dry-run "${SKILL_INSTALL_DIR}"
+
+      - name: Run formatting and static gates
+        run: |
+          just ci-fmt-check
+          just ci-lint
+
+      - name: Run the complete deterministic suite
+        run: just ci-test
+
+      - name: Require disposable live targets for a tag
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          ISSUE_TARGET: ${{ secrets.GH_SLATE_LIVE_DISPOSABLE_ISSUE_URL }}
+          LIVE_TOKEN: ${{ secrets.GH_SLATE_LIVE_TOKEN }}
+          PR_TARGET: ${{ secrets.GH_SLATE_LIVE_DISPOSABLE_PR_URL }}
+        run: |
+          test -n "${ISSUE_TARGET}"
+          test -n "${LIVE_TOKEN}"
+          test -n "${PR_TARGET}"
+
+      - name: Run credentialed Issue and Pull Request lifecycle gates
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GH_SLATE_LIVE_TOKEN }}
+          GH_SLATE_LIVE_CONFIRM: I_UNDERSTAND
+          GH_SLATE_LIVE_DISPOSABLE_ISSUE_URL: ${{ secrets.GH_SLATE_LIVE_DISPOSABLE_ISSUE_URL }}
+          GH_SLATE_LIVE_DISPOSABLE_PR_URL: ${{ secrets.GH_SLATE_LIVE_DISPOSABLE_PR_URL }}
+        run: uv run pytest -q tests/live/test_github_e2e.py -rs
+
+      - name: Create a clean artifact directory
+        run: |
+          test ! -e release-artifacts
+          mkdir -p release-artifacts/python
+
+      - name: Build wheel and sdist once
+        run: >-
+          uv build --no-sources
+          --out-dir release-artifacts/python
+
+      - name: Verify metadata, clean installs, CLIs, and extension bundles
+        shell: bash
+        run: |
+          arguments=(
+            --project-root .
+            --dist-dir release-artifacts/python
+            --manifest release-artifacts/SHA256SUMS
+          )
+          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            arguments+=(
+              --tag "${GITHUB_REF_NAME}"
+              --extension-dir release-artifacts/github
+            )
+          fi
+          uv run python scripts/release_verify.py "${arguments[@]}"
+
+      - name: Upload the one verified artifact set
         uses: actions/upload-artifact@v7
         with:
-          name: release-dists
-          path: dist/
+          name: verified-release-artifacts
+          path: release-artifacts/
+          if-no-files-found: error
+          retention-days: 7
+
+  stage-release:
+    name: Stage verified GitHub Release assets
+    if: >-
+      github.event_name == 'push' &&
+      github.ref_type == 'tag' &&
+      startsWith(github.ref_name, 'v')
+    needs: release-gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Require mutable staged releases
+        env:
+          GH_TOKEN: ${{ secrets.GH_SLATE_RELEASE_ADMIN_TOKEN }}
+        shell: bash
+        run: |
+          test -n "${GH_TOKEN}"
+          release_policy="$(
+            gh api \
+              --method GET \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "repos/${GITHUB_REPOSITORY}/immutable-releases" \
+              --jq '
+                if (
+                  ((.enabled | type) == "boolean") and
+                  ((.enforced_by_owner | type) == "boolean")
+                ) then
+                  if (.enabled or .enforced_by_owner) then
+                    "immutable"
+                  else
+                    "mutable"
+                  end
+                else
+                  "invalid"
+                end
+              '
+          )"
+          if [[ "${release_policy}" != "mutable" ]]; then
+            echo "::error::The staged prerelease smoke requires immutable releases to be disabled; observed ${release_policy}."
+            exit 1
+          fi
+
+      - name: Download the verified artifact set
+        uses: actions/download-artifact@v8
+        with:
+          name: verified-release-artifacts
+          path: release-artifacts
+
+      - name: Recheck exact artifact hashes
+        working-directory: release-artifacts
+        run: sha256sum --check SHA256SUMS
+
+      - name: Stage a non-latest prerelease for extension installation
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          draft: false
+          prerelease: true
+          make_latest: false
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            release-artifacts/python/*.whl
+            release-artifacts/python/*.tar.gz
+            release-artifacts/github/gh-slate-*
+            release-artifacts/SHA256SUMS
+
+  extension-smoke:
+    name: Install and execute the tagged GitHub CLI extension
+    if: >-
+      github.event_name == 'push' &&
+      github.ref_type == 'tag' &&
+      startsWith(github.ref_name, 'v')
+    needs: stage-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      GH_NO_UPDATE_NOTIFIER: '1'
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Isolate the extension installation
+        run: echo "GH_CONFIG_DIR=${RUNNER_TEMP}/gh-slate-extension-config" >> "${GITHUB_ENV}"
+
+      - name: Install uv for the released source bundle
+        uses: astral-sh/setup-uv@v9.0.0
+
+      - name: Install from the tagged GitHub Release and execute it
+        shell: bash
+        run: |
+          gh extension install "${GITHUB_REPOSITORY}" --pin "${GITHUB_REF_NAME}"
+          expected_version="${GITHUB_REF_NAME#v}"
+          test "$(gh slate --version)" = "gh slate ${expected_version}"
+          gh slate --help | grep -F "usage: gh slate"
+          gh extension list | grep -F "${GITHUB_REPOSITORY}"
+
+      - name: Remove the isolated smoke installation
+        if: always()
+        run: gh extension remove slate || true
 
   publish-pypi:
-    runs-on: ubuntu-latest
-    name: Publish to PyPI
-    if: "startsWith(github.ref, 'refs/tags/')"
+    name: Publish verified Python artifacts to PyPI
+    if: >-
+      github.event_name == 'push' &&
+      github.ref_type == 'tag' &&
+      startsWith(github.ref_name, 'v')
     needs:
-      - release-build
+      - release-gate
+      - extension-smoke
+    runs-on: ubuntu-latest
     permissions:
+      contents: read
       id-token: write
 
     steps:
-      - name: Retrieve release distributions
+      - name: Download the verified artifact set
         uses: actions/download-artifact@v8
         with:
-          name: release-dists
-          path: dist/
+          name: verified-release-artifacts
+          path: release-artifacts
 
-      - name: Publish release distributions to PyPI
+      - name: Recheck exact artifact hashes
+        working-directory: release-artifacts
+        run: sha256sum --check SHA256SUMS
+
+      - name: Publish the already-verified wheel and sdist
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: release-artifacts/python
 
   publish-release:
-    runs-on: ubuntu-latest
-    name: Publish to GitHub
-    if: "startsWith(github.ref, 'refs/tags/')"
+    name: Promote the verified prerelease to stable
+    if: >-
+      github.event_name == 'push' &&
+      github.ref_type == 'tag' &&
+      startsWith(github.ref_name, 'v')
     needs:
-      - release-build
+      - release-gate
+      - stage-release
+      - extension-smoke
+      - publish-pypi
+    runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+
     steps:
-      - uses: actions/download-artifact@v8
+      - name: Download the same verified artifact set
+        uses: actions/download-artifact@v8
         with:
-          name: release-dists
-          path: dist/
-      - name: Get tag name
-        run: echo "RELEASE_VERSION=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
-      - name: Publish to GitHub
-        uses: softprops/action-gh-release@v3
-        with:
-          draft: true
-          files: dist/*
-          tag_name: ${{ env.RELEASE_VERSION }}
+          name: verified-release-artifacts
+          path: release-artifacts
+
+      - name: Recheck exact artifact hashes
+        working-directory: release-artifacts
+        run: sha256sum --check SHA256SUMS
+
+      - name: Download the staged GitHub Release assets
+        run: |
+          mkdir released-assets
+          gh release download "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --dir released-assets
+
+      - name: Prove staged assets are the exact verified files
+        shell: bash
+        run: |
+          expected_assets=(
+            release-artifacts/python/*.whl
+            release-artifacts/python/*.tar.gz
+            release-artifacts/github/gh-slate-*
+            release-artifacts/SHA256SUMS
+          )
+          printf '%s\n' "${expected_assets[@]##*/}" \
+            | LC_ALL=C sort > expected-assets.txt
+          find released-assets \
+            -maxdepth 1 \
+            -type f \
+            -exec basename '{}' ';' \
+            | LC_ALL=C sort > released-assets.txt
+          cmp expected-assets.txt released-assets.txt
+
+          for artifact in "${expected_assets[@]}"; do
+            cmp "${artifact}" \
+              "released-assets/$(basename "${artifact}")"
+          done
+
+      - name: Promote to a stable latest release only after every gate
+        run: |
+          gh release edit "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --prerelease=false \
+            --latest
+          test "$(
+            gh release view "${GITHUB_REF_NAME}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --json isDraft,isPrerelease \
+              --jq '[.isDraft,.isPrerelease] | @tsv'
+          )" = $'false\tfalse'
