@@ -57,3 +57,9 @@ jobs:
           assert jq.compile('. + 1').input_value(1).first() == 2;
           assert jinja2.__version__;
           assert jsonschema.Draft202012Validator"
+
+      - name: Exercise codec wire and hash compatibility
+        if: runner.os != 'Linux'
+        run: |
+          uv run --frozen python -c "import platform, zlib; print(f'python={platform.python_version()} zlib_compiled={zlib.ZLIB_VERSION} zlib_runtime={zlib.ZLIB_RUNTIME_VERSION}')"
+          uv run --frozen pytest tests/unit/codec/test_wire_fixtures.py tests/unit/codec/test_hashes.py

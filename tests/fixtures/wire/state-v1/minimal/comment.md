@@ -1,0 +1,9 @@
+<!-- gh-slate:v1 name=ci-summary encoding=zlib+base64 state=fbf150a6e9dfb917a4226d8f960c8adfe0b5c7d187df1eb128bc8f5758d82ef5
+eAGrVkrOzyspys/JSS1SsqpWyslPz8xTslJKzyzJKE3STUwuyczPK45Oyi+JVarVUUpJLEkEKUvNLSipBDKAQln5ScVKVtHVSimlRYkg1fG5QL6hkZ6pjlJeYm4q0LCczLzSCiUgN78ExH2yd8HTpXsVPsyf2A0UzC8AaUrMUbLKK83J0VEqSCwuTk1RsiopKk2tjYXaGV+cnJGamwhTk5ZflJtYAnJmhm5xTmJJqn5xCZDULTNUgluanKlbXJqbm1hUCRQrSs1LSS2KL85INDI1A0oamKWaJaYmGSQmmRpappgYpiWZp1ompRknppikWKalWholGqYYGRskWSQnmSYZpaYYmaakJaclm6eYpiWmGVimwI2EhFpyfk5pbh4oGCC2w30Rq6OUnZkH9I1SUmlmTklmnm5JYlIOSEFxak5qckk+ULuSHjgIdZTKUouKgUEBDLxakPFlmRCeeS0ATKiP0A==
+-->
+
+## CI summary
+
+| Job | Passed |
+| --- | --- |
+| linux | true |

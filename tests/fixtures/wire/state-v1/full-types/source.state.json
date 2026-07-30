@@ -1,0 +1,64 @@
+{
+  "revision": 9223372036854775807,
+  "renderer": {
+    "version": 3.0,
+    "selector": ".nested.items",
+    "options": {
+      "nested": {"flags": [true, false], "empty": []},
+      "emoji": "📊"
+    },
+    "kind": "fixture-full-types"
+  },
+  "render_sha256": "ba2546884f603968fcd36a3e5aab919b747bb6906f99fce08c77600b7853cbae",
+  "name": "full-types",
+  "format": "gh-slate/state-v1",
+  "data_schema": {
+    "document": {
+      "type": "object",
+      "properties": {
+        "nested": {
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "note": {"type": ["string", "null"]},
+                  "id": {"type": "integer"}
+                },
+                "required": ["id"]
+              }
+            }
+          }
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "dialect": "https://json-schema.org/draft/2020-12/schema"
+  },
+  "data": {
+    "unicode": "雪 · café · 👩‍💻",
+    "plain_small_boundary": 0.0000010,
+    "plain_large_boundary": 1e20,
+    "null_value": null,
+    "negative_zero": -0.000,
+    "nested": {
+      "level": {"unicode_key": {"雪": "snow"}, "empty_object": {}},
+      "items": [
+        {"note": null, "id": 1},
+        {"id": 2}
+      ]
+    },
+    "integer_min": -9223372036854775808,
+    "integer_max": 9223372036854775807,
+    "exponent_small": 10e-8,
+    "exponent_large": 10e20,
+    "empty_object": {},
+    "empty_array": [],
+    "decimal": 123.4500,
+    "bool_true": true,
+    "bool_false": false
+  },
+  "controller": {"login": "fixture-bot"}
+}

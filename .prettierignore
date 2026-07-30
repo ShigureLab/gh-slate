@@ -4,3 +4,4 @@ node_modules/
 *.min.js
 pnpm-lock.yaml
 .venv/
+tests/fixtures/wire/

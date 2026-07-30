@@ -37,7 +37,8 @@ A slate is identified by:
 - `controller` is the immutable GitHub user ID that owns the managed comment on
   that host; its login is retained only for display and explicit-name lookup.
 - The same name may be reused on different Issues or Pull Requests.
-- Names must match `[a-z0-9][a-z0-9._-]{0,63}`.
+- Names must match `[a-z0-9][a-z0-9._-]{0,63}` and must not contain `--`,
+  keeping the identifier safe inside the HTML comment marker.
 
 ### 1.2 State round-trips; Markdown does not
 
@@ -565,18 +566,37 @@ eNqVksFO...
 The payload is:
 
 1. canonical JSON encoded as UTF-8;
-2. compressed with a fixed zlib profile;
+2. compressed with the state-v1 zlib profile;
 3. encoded with standard base64.
 
 Standard base64 is used inside the HTML comment because its alphabet does not
-contain `-`, avoiding accidental `--` sequences. Decoding has strict compressed
+contain `-`. Together with the slate-name restriction above, this prevents an
+accidental `--` inside the HTML comment content. Decoding has strict compressed
 and expanded-size limits.
 
 For `state-v1`, canonical JSON means sorted object keys, UTF-8 with non-ASCII
 characters preserved, minimal separators, no NaN/Infinity, and a versioned
-number serializer. Hashes cover these exact canonical bytes before compression.
-This is a gh-slate wire rule, not a claim of preserving the input file's lexical
-format.
+number serializer. Object keys are ordered by Unicode code point after rejecting
+unpaired surrogates. Strings use JSON escapes only for control characters,
+quotes, and backslashes; `/` and valid non-ASCII characters remain unescaped.
+Numbers normalize negative zero to `0`, remove insignificant trailing zeroes,
+use plain notation when the adjusted exponent is from `-6` through `20`, and
+otherwise use lowercase `e` scientific notation with an explicit `+` for a
+non-negative exponent. Hashes cover these exact canonical bytes before
+compression. This is a gh-slate wire rule, not a claim of preserving the input
+file's lexical format.
+
+Visible Markdown normalization changes CRLF and bare CR to LF and appends one LF
+only when the value does not already end in LF. Existing additional trailing
+line feeds and all other bytes are preserved.
+
+The zlib wrapper, level, window, memory level, and fixed-Huffman strategy are
+part of the state-v1 encoder profile, but the resulting DEFLATE bytes are not
+canonical: different conforming zlib versions may choose different valid block
+and match layouts. Therefore the state hash deliberately excludes compression
+and Base64. A permanent full-comment fixture is a decoder compatibility
+contract; implementations are not required to reproduce its compressed payload
+byte-for-byte when re-encoding the same state.
 
 The decoded envelope is conceptually:
 
@@ -628,10 +648,12 @@ template source.
 Important invariants:
 
 - the marker and envelope names must agree;
-- the state hash covers the canonical functional state;
+- the state hash covers the exact canonical `StateV1` bytes, including revision
+  and render hash, but excluding the transport marker/compression;
 - `render_sha256` covers exact normalized visible Markdown;
 - rendered Markdown may not contain the reserved `<!-- gh-slate:` prefix;
 - revisions increase on functional state changes;
+- functional change comparison excludes only the revision field;
 - a repair of visible drift may keep the same functional revision;
 - decoders reject unknown marker/state-format major versions;
 - renderer descriptors, including unknown kinds and versions, remain opaque,
@@ -1066,7 +1088,7 @@ Deliverables:
 - strict JSON ingestion that rejects duplicate keys, NaN, and Infinity;
 - functional state models and versioned renderer descriptors;
 - deterministic canonical JSON and the `state-v1` number serialization rules;
-- the `gh-slate:v1` marker, fixed zlib profile, standard base64 envelope, state
+- the `gh-slate:v1` marker, versioned zlib profile, standard base64 envelope, state
   hash, render hash, and revision rules;
 - explicit normalization of visible Markdown before render hashing;
 - compressed, expanded, component, and final-body size accounting;
@@ -1079,8 +1101,9 @@ Acceptance gates:
 
 - round-trip property tests prove
   `decode(encode(state)) == canonicalize(state)`;
-- canonical bytes, hashes, and complete comment bodies have permanent golden
-  fixtures;
+- canonical bytes and hashes have deterministic golden assertions; permanent
+  complete-comment fixtures must remain decodable but need not re-encode to the
+  same non-canonical DEFLATE bytes across zlib versions;
 - fixtures cover Unicode, nested values, null versus missing, booleans,
   numbers, and empty collections;
 - corrupt base64/zlib, duplicate markers, decompression bombs, oversized
