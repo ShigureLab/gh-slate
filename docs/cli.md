@@ -34,7 +34,8 @@ A slate is identified by:
 ```
 
 - `name` is the stable user-facing ID.
-- `controller` is the GitHub login that owns the managed comment.
+- `controller` is the immutable GitHub user ID that owns the managed comment on
+  that host; its login is retained only for display and explicit-name lookup.
 - The same name may be reused on different Issues or Pull Requests.
 - Names must match `[a-z0-9][a-z0-9._-]{0,63}`.
 
@@ -138,7 +139,8 @@ All remote commands accept:
 ```text
 -t, --target TARGET       Issue/PR number, URL, @event, or @pr
 -R, --repo OWNER/REPO     repository for a numeric target
-    --controller LOGIN    controller to match; defaults to current token actor
+    --controller LOGIN    resolve a controller login to its stable host-local ID;
+                          defaults to the current token actor
     --host HOST           normally inherited from gh/GH_HOST
     --if-revision REV     reject a stale read before attempting a write
     --json                emit an operation result object
@@ -581,6 +583,7 @@ The decoded envelope is conceptually:
    "name": "ci-summary",
    "revision": 7,
    "controller": {
+      "id": 41898282,
       "login": "github-actions[bot]"
    },
    "data": {
@@ -626,8 +629,11 @@ Important invariants:
 - `render_sha256` covers exact normalized visible Markdown;
 - revisions increase on functional state changes;
 - a repair of visible drift may keep the same functional revision;
-- decoders reject unknown major format or renderer versions;
-- old renderer versions remain readable, or an explicit migration is required.
+- decoders reject unknown marker/state-format major versions;
+- renderer descriptors, including unknown kinds and versions, remain opaque,
+  lossless, and readable by operations that do not rerender;
+- operations that must rerender reject unsupported renderer versions until an
+  explicit migration is performed.
 
 Wire format, renderer version, JSON Schema dialect, and Jinja adapter version
 evolve independently. An unknown newer renderer may still allow
@@ -651,18 +657,21 @@ an old comment to the newest page.
 Matching rules:
 
 1. match the exact versioned marker and name;
-2. by default, require the comment author/controller to match the current token
-   actor;
-3. verify the envelope, state hash, and name;
-4. require exactly one match.
+2. resolve the requested login, or current token actor by default, to a
+   host-local immutable GitHub user ID;
+3. require both the comment author's ID and embedded controller ID to equal that
+   resolved ID; logins are display metadata and never ownership keys;
+4. verify the envelope, state hash, and name;
+5. require exactly one match.
 
 Zero matches means create for `apply --mode upsert`. Multiple matches are a
 conflict and no comment is selected, updated, or deleted automatically.
 
 The controller check prevents an untrusted user from posting a forged marker
-that a write-capable bot later adopts. Cross-controller migration must be an
-explicit future `adopt` operation or a fully specified comment ID plus a force
-confirmation.
+that a write-capable bot later adopts, and it remains valid when a GitHub login
+is renamed. User IDs are interpreted only on the resolved GitHub host.
+Cross-controller migration must be an explicit future `adopt` operation or a
+fully specified comment ID plus a force confirmation.
 
 ## 9. Concurrency
 
@@ -1058,7 +1067,9 @@ Deliverables:
 - explicit normalization of visible Markdown before render hashing;
 - compressed, expanded, component, and final-body size accounting;
 - structured decoder failures for malformed payloads, marker/envelope name
-  disagreement, unknown major versions, and unsupported renderer versions.
+  disagreement, and unknown marker/state-format major versions; renderer
+  descriptors remain lossless and opaque until a rendering operation validates
+  support.
 
 Acceptance gates:
 
@@ -1156,10 +1167,10 @@ Deliverables:
 - resolution of URLs, numbers, `-R`, `@event`, `@pr`, and the documented
   omitted-target rules;
 - GitHub.com and GHES host propagation without hard-coded GitHub.com URLs;
-- current-actor/controller resolution and pagination through every issue
-  comment page;
-- exact marker/name/author matching, integrity verification, duplicate
-  detection, and corrupt/drift classification;
+- current-actor/controller login-to-ID resolution and pagination through every
+  issue comment page;
+- exact marker/name/immutable-author-ID matching, integrity verification,
+  duplicate detection, and corrupt/drift classification;
 - read-only `view`, `list`, `render --target`, `state export`, `state verify`,
   and the complete `doctor` command;
 - fake-`gh` contract tests that record every subprocess request.
