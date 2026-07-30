@@ -159,3 +159,128 @@ def test_view_json_and_web_are_mutually_exclusive() -> None:
         )
 
     assert exit_info.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        [
+            "data",
+            "get",
+            "ci",
+            ".jobs[]",
+            "--target",
+            "42",
+            "--raw-output",
+            "--compact-output",
+            "--exit-status",
+        ],
+        [
+            "data",
+            "set",
+            "ci",
+            '.["key.with.dot"]',
+            "--value-string",
+            "91",
+            "--target",
+            "42",
+            "--if-revision",
+            "7",
+            "--json",
+        ],
+        [
+            "data",
+            "delete",
+            "ci",
+            ".old",
+            ".jobs.experimental",
+            "--ignore-missing",
+            "--target",
+            "42",
+            "--quiet",
+        ],
+        [
+            "data",
+            "update",
+            "ci",
+            ".jobs[$job] = $result",
+            "--arg",
+            "job",
+            "linux",
+            "--argjson",
+            "result",
+            "@result.json",
+            "--target",
+            "42",
+        ],
+        ["data", "edit", "ci", "--target", "42"],
+        ["schema", "get", "ci", "--target", "42", "--compact-output"],
+        [
+            "schema",
+            "set",
+            "ci",
+            "schema.json",
+            "--target",
+            "42",
+            "--if-revision",
+            "7",
+        ],
+        ["schema", "infer", "ci", "--target", "42", "--apply", "--json"],
+        [
+            "schema",
+            "validate",
+            "ci",
+            "candidate.json",
+            "--target",
+            "42",
+            "--json",
+        ],
+    ],
+)
+def test_data_and_schema_command_surfaces_are_registered(
+    argv: list[str],
+) -> None:
+    parsed = build_parser(prog="gh slate").parse_args(argv)
+
+    assert callable(parsed.handler)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ["--value", "91", "--value-string", "91"],
+        ["--value-file", "value.json", "--value", "{}"],
+        [],
+    ],
+)
+def test_data_set_requires_one_unambiguous_value_source(
+    options: list[str],
+) -> None:
+    parser = build_parser(prog="gh slate")
+
+    with pytest.raises(SystemExit) as exit_info:
+        parser.parse_args(["data", "set", "ci", ".status", *options])
+
+    assert exit_info.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["data", "set", "ci", ".x", "--value", "1", "--json", "--quiet"],
+        ["data", "delete", "ci", ".x", "--json", "--quiet"],
+        ["data", "update", "ci", ".", "--json", "--quiet"],
+        ["data", "edit", "ci", "--json", "--quiet"],
+        ["schema", "set", "ci", "schema.json", "--json", "--quiet"],
+        ["schema", "infer", "ci", "--apply", "--json", "--quiet"],
+    ],
+)
+def test_structured_and_quiet_mutation_output_are_mutually_exclusive(
+    argv: list[str],
+) -> None:
+    parser = build_parser(prog="gh slate")
+
+    with pytest.raises(SystemExit) as exit_info:
+        parser.parse_args(argv)
+
+    assert exit_info.value.code == 2

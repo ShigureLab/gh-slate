@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import subprocess
 import sys
 import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass, fields
 from pathlib import Path
+from types import MappingProxyType
 from typing import cast
 
 from gh_slate.codec.errors import CodecError
@@ -43,6 +45,8 @@ class JqLimits:
 
 
 DEFAULT_JQ_LIMITS = JqLimits()
+DEFAULT_MAX_RESULTS = 1024
+MAX_RESULTS = 100_000
 
 _FORBIDDEN_IDENTIFIERS = frozenset(
     {
@@ -148,11 +152,14 @@ _NONDETERMINISTIC_IDENTIFIERS = (
     | _PLATFORM_DEPENDENT_MATH_IDENTIFIERS
 )
 _FORBIDDEN_VARIABLES = frozenset({"ENV", "JQ_BUILD_CONFIGURATION"})
+_ARGUMENT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_EMPTY_ARGS: Mapping[str, JsonValue] = MappingProxyType({})
 _WORKER_ERROR_CODES = {
     "compile": "jq_compile_error",
     "runtime": "jq_runtime_error",
     "output_limit": "jq_output_limit",
     "source_limit": "jq_source_limit",
+    "protocol": "jq_worker_protocol",
     "internal": "jq_worker_error",
 }
 
@@ -293,7 +300,12 @@ def _protocol_error(reason: str, **details: object) -> RenderingError:
     )
 
 
-def _decode_worker_response(stdout: bytes, limits: JqLimits) -> tuple[JsonValue, ...]:
+def _decode_worker_response(
+    stdout: bytes,
+    limits: JqLimits,
+    *,
+    max_results: int,
+) -> tuple[JsonValue, ...]:
     protocol_limit = limits.max_output_bytes + 1024
     if len(stdout) > protocol_limit:
         raise _rendering_error(
@@ -326,8 +338,15 @@ def _decode_worker_response(stdout: bytes, limits: JqLimits) -> tuple[JsonValue,
         results = response.get("results")
         if not isinstance(results, tuple):
             raise _protocol_error("results_not_array")
-        if len(results) > 2:
+        if len(results) > max_results + 1:
             raise _protocol_error("too_many_results", count=len(results))
+        if len(results) > max_results:
+            raise _rendering_error(
+                "jq produced more values than the configured result limit",
+                code="jq_result_limit",
+                count_at_least=max_results + 1,
+                max_results=max_results,
+            )
         return cast("tuple[JsonValue, ...]", results)
 
     if ok is False:
@@ -342,6 +361,7 @@ def _decode_worker_response(stdout: bytes, limits: JqLimits) -> tuple[JsonValue,
             "runtime": "jq filter failed during evaluation",
             "output_limit": "jq output exceeds the configured byte limit",
             "source_limit": "jq source exceeds the configured byte limit",
+            "protocol": "jq worker rejected its request protocol",
             "internal": "jq worker failed",
         }
         raise _rendering_error(
@@ -353,7 +373,86 @@ def _decode_worker_response(stdout: bytes, limits: JqLimits) -> tuple[JsonValue,
     raise _protocol_error("invalid_status")
 
 
-def _evaluate(data: object, filter_text: str, limits: JqLimits) -> tuple[JsonValue, ...]:
+def _validated_max_results(max_results: int) -> int:
+    if isinstance(max_results, bool) or not isinstance(max_results, int):
+        raise _rendering_error(
+            "jq max_results must be an integer",
+            code="jq_max_results_invalid",
+            value_type=type(max_results).__name__,
+        )
+    if max_results <= 0 or max_results > MAX_RESULTS:
+        raise _rendering_error(
+            f"jq max_results must be between 1 and {MAX_RESULTS}",
+            code="jq_max_results_invalid",
+            maximum=MAX_RESULTS,
+            configured=max_results,
+        )
+    return max_results
+
+
+def _request_bytes(
+    data: object,
+    args: Mapping[str, JsonValue],
+    *,
+    limits: JqLimits,
+) -> bytes:
+    if not isinstance(args, Mapping):
+        raise _rendering_error(
+            "jq args must be a mapping",
+            code="jq_args_invalid",
+            value_type=type(args).__name__,
+        )
+
+    normalized_args: dict[str, JsonValue] = {}
+    for name, value in args.items():
+        if not isinstance(name, str) or _ARGUMENT_NAME.fullmatch(name) is None:
+            raise _rendering_error(
+                "jq argument names must be ASCII identifiers without a leading dollar sign",
+                code="jq_args_invalid",
+                name=name if isinstance(name, str) else None,
+                name_type=type(name).__name__,
+            )
+        normalized_args[name] = value
+
+    try:
+        args_source = canonical_json_bytes(normalized_args)
+    except CodecError as error:
+        raise _rendering_error(
+            "jq args contain an unsupported JSON value",
+            code="jq_args_invalid",
+            cause=error.code,
+        ) from None
+    try:
+        data_source = canonical_json_bytes(data)
+    except CodecError as error:
+        raise _rendering_error(
+            "jq source is not a supported JSON value",
+            code="jq_source_invalid",
+            cause=error.code,
+        ) from None
+
+    source = b'{"args":' + args_source + b',"data":' + data_source + b"}"
+    if len(source) > limits.max_source_bytes:
+        raise _rendering_error(
+            "jq source and arguments exceed the configured byte limit",
+            code="jq_source_limit",
+            actual_bytes=len(source),
+            max_bytes=limits.max_source_bytes,
+        )
+    return source
+
+
+def _evaluate(
+    data: object,
+    filter: str,
+    *,
+    args: Mapping[str, JsonValue] = _EMPTY_ARGS,
+    max_results: int = DEFAULT_MAX_RESULTS,
+    limits: JqLimits = DEFAULT_JQ_LIMITS,
+    deterministic: bool,
+) -> tuple[JsonValue, ...]:
+    max_results = _validated_max_results(max_results)
+    filter_text = filter
     if not isinstance(filter_text, str):
         raise _rendering_error(
             "jq filter must be a string",
@@ -370,23 +469,8 @@ def _evaluate(data: object, filter_text: str, limits: JqLimits) -> tuple[JsonVal
             actual_bytes=len(filter_bytes),
             max_bytes=limits.max_selector_bytes,
         )
-    _scan_filter(filter_text, deterministic=True)
-
-    try:
-        source = canonical_json_bytes(data)
-    except CodecError as error:
-        raise _rendering_error(
-            "jq source is not a supported JSON value",
-            code="jq_source_invalid",
-            cause=error.code,
-        ) from None
-    if len(source) > limits.max_source_bytes:
-        raise _rendering_error(
-            "jq source exceeds the configured byte limit",
-            code="jq_source_limit",
-            actual_bytes=len(source),
-            max_bytes=limits.max_source_bytes,
-        )
+    _scan_filter(filter_text, deterministic=deterministic)
+    source = _request_bytes(data, args, limits=limits)
 
     worker = Path(__file__).with_name("_jq_worker.py")
     encoded_filter = base64.b64encode(filter_bytes).decode("ascii")
@@ -395,6 +479,7 @@ def _evaluate(data: object, filter_text: str, limits: JqLimits) -> tuple[JsonVal
         "-I",
         str(worker),
         encoded_filter,
+        str(max_results),
         str(limits.max_source_bytes),
         str(limits.max_output_bytes),
         str(limits.max_memory_bytes),
@@ -431,13 +516,44 @@ def _evaluate(data: object, filter_text: str, limits: JqLimits) -> tuple[JsonVal
             code="jq_worker_error",
             returncode=completed.returncode,
         )
-    return _decode_worker_response(completed.stdout, limits)
+    return _decode_worker_response(completed.stdout, limits, max_results=max_results)
+
+
+def evaluate(
+    data: object,
+    filter: str,
+    *,
+    args: Mapping[str, JsonValue] = _EMPTY_ARGS,
+    max_results: int = DEFAULT_MAX_RESULTS,
+    limits: JqLimits = DEFAULT_JQ_LIMITS,
+) -> tuple[JsonValue, ...]:
+    """Evaluate jq against one JSON value in an isolated subprocess.
+
+    At most ``max_results`` values are returned. The worker evaluates one
+    additional value so result overflow is detected without materializing an
+    unbounded stream. Named jq arguments travel only in the strict JSON stdin
+    protocol, never in argv or the worker environment.
+
+    libjq uses IEEE-754 numbers, so oversized JSON integers may be rounded in
+    the returned projection. Encode values that require exact lexical or
+    arbitrary-precision preservation as strings.
+    """
+
+    return _evaluate(
+        data,
+        filter,
+        args=args,
+        max_results=max_results,
+        limits=limits,
+        deterministic=False,
+    )
 
 
 def select_one(
     data: object,
     filter: str,
     *,
+    args: Mapping[str, JsonValue] = _EMPTY_ARGS,
     limits: JqLimits = DEFAULT_JQ_LIMITS,
 ) -> JsonValue:
     """Project exactly one JSON value with jq in an isolated subprocess.
@@ -447,16 +563,33 @@ def select_one(
     require exact lexical or arbitrary-precision preservation as strings.
     """
 
-    results = _evaluate(data, filter, limits)
-    if not results:
-        raise _rendering_error("jq selector produced no value", code="jq_no_result")
-    if len(results) != 1:
+    try:
+        results = _evaluate(
+            data,
+            filter,
+            args=args,
+            max_results=1,
+            limits=limits,
+            deterministic=True,
+        )
+    except RenderingError as error:
+        if error.code != "jq_result_limit":
+            raise
         raise _rendering_error(
             "jq selector must produce exactly one value",
             code="jq_multiple_results",
-            count=len(results),
-        )
+            count=2,
+        ) from None
+    if not results:
+        raise _rendering_error("jq selector produced no value", code="jq_no_result")
     return results[0]
 
 
-__all__ = ["DEFAULT_JQ_LIMITS", "JqLimits", "select_one"]
+__all__ = [
+    "DEFAULT_JQ_LIMITS",
+    "DEFAULT_MAX_RESULTS",
+    "MAX_RESULTS",
+    "JqLimits",
+    "evaluate",
+    "select_one",
+]

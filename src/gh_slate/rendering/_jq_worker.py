@@ -3,8 +3,18 @@ from __future__ import annotations
 import base64
 import binascii
 import ctypes
+import json
+import math
 import os
+import re
 import sys
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+_ARGUMENT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_MAX_RESULTS = 100_000
 
 
 def _emit_error(kind: str) -> int:
@@ -122,19 +132,116 @@ def _apply_process_limits(
     return None
 
 
+def _reject_constant(token: str) -> object:
+    raise ValueError(f"non-finite JSON number: {token}")
+
+
+def _parse_float(token: str) -> float:
+    value = float(token)
+    if not math.isfinite(value):
+        raise ValueError("non-finite JSON number")
+    return value
+
+
+def _object_without_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON object key")
+        result[key] = value
+    return result
+
+
+def _valid_unicode(value: object) -> bool:
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8", errors="strict")
+        except UnicodeEncodeError:
+            return False
+        return True
+    if isinstance(value, list):
+        return all(_valid_unicode(item) for item in value)
+    if isinstance(value, dict):
+        return all(_valid_unicode(key) and _valid_unicode(item) for key, item in value.items())
+    return True
+
+
+def _bounded_json_array(
+    results: Iterator[object],
+    *,
+    max_results: int,
+    max_bytes: int,
+) -> bytes | None:
+    """Encode at most ``max_results + 1`` jq values into a bounded buffer."""
+
+    encoded = bytearray(b"[")
+    encoder = json.JSONEncoder(
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+    )
+    count = 0
+    while count <= max_results:
+        try:
+            result = next(results)
+        except StopIteration:
+            break
+        if not _valid_unicode(result):
+            return None
+        if count:
+            encoded.extend(b",")
+        try:
+            for chunk in encoder.iterencode(result):
+                chunk_bytes = chunk.encode("utf-8", errors="strict")
+                if len(encoded) + len(chunk_bytes) + 1 > max_bytes:
+                    raise OverflowError
+                encoded.extend(chunk_bytes)
+        except (TypeError, ValueError):
+            return None
+        count += 1
+    if len(encoded) + 1 > max_bytes:
+        raise OverflowError
+    encoded.extend(b"]")
+    return bytes(encoded)
+
+
+def _decode_request(source: bytes) -> tuple[object, dict[str, object]] | None:
+    try:
+        text = source.decode("utf-8", errors="strict")
+        request = json.loads(
+            text,
+            parse_float=_parse_float,
+            parse_constant=_reject_constant,
+            object_pairs_hook=_object_without_duplicates,
+        )
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None
+    if not isinstance(request, dict) or set(request) != {"args", "data"}:
+        return None
+    arguments = request["args"]
+    if not isinstance(arguments, dict):
+        return None
+    if not all(_ARGUMENT_NAME.fullmatch(name) is not None for name in arguments):
+        return None
+    if not _valid_unicode(request):
+        return None
+    return request["data"], arguments
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = sys.argv[1:] if argv is None else argv
-    if len(arguments) != 5:
+    if len(arguments) != 6:
         return _emit_error("internal")
     try:
-        encoded_filter, source_limit_text, output_limit_text, memory_text, cpu_text = arguments
+        encoded_filter, max_results_text, source_limit_text, output_limit_text, memory_text, cpu_text = arguments
         filter_bytes = base64.b64decode(encoded_filter, validate=True)
         filter_text = filter_bytes.decode("utf-8", errors="strict")
+        max_results = int(max_results_text)
         source_limit = int(source_limit_text)
         output_limit = int(output_limit_text)
         memory_limit = int(memory_text)
         cpu_limit = int(cpu_text)
-        if min(source_limit, output_limit, memory_limit, cpu_limit) <= 0:
+        if min(max_results, source_limit, output_limit, memory_limit, cpu_limit) <= 0 or max_results > _MAX_RESULTS:
             return _emit_error("internal")
     except (binascii.Error, UnicodeError, ValueError):
         return _emit_error("internal")
@@ -148,35 +255,33 @@ def main(argv: list[str] | None = None) -> int:
     source = sys.stdin.buffer.read(source_limit + 1)
     if len(source) > source_limit:
         return _emit_error("source_limit")
-    try:
-        source.decode("utf-8", errors="strict")
-    except UnicodeDecodeError:
-        return _emit_error("internal")
+    request = _decode_request(source)
+    if request is None:
+        return _emit_error("protocol")
+    data, jq_args = request
 
     try:
         import jq  # ty: ignore[unresolved-import]
     except Exception:
         return _emit_error("internal")
 
-    # Newlines keep a trailing jq comment from swallowing the structural
-    # wrapper. The parent validates that the response still contains <=2 items.
-    wrapped_filter = f"[limit(2; (\n{filter_text}\n))]"
     try:
         compile_jq = jq.compile
-        program = compile_jq(wrapped_filter)
+        program = compile_jq(filter_text, args=jq_args)
     except Exception:
         return _emit_error("compile")
     try:
-        result_text = program.input(text=source.decode("utf-8")).text()
+        result_bytes = _bounded_json_array(
+            iter(program.input_value(data)),
+            max_results=max_results,
+            max_bytes=output_limit,
+        )
+    except OverflowError:
+        return _emit_error("output_limit")
     except Exception:
         return _emit_error("runtime")
-
-    try:
-        result_bytes = result_text.encode("utf-8", errors="strict")
-    except UnicodeEncodeError:
+    if result_bytes is None:
         return _emit_error("internal")
-    if len(result_bytes) > output_limit:
-        return _emit_error("output_limit")
 
     sys.stdout.buffer.write(b'{"ok":true,"results":')
     sys.stdout.buffer.write(result_bytes)

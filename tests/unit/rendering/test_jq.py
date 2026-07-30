@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import base64
 import subprocess
+import sys
 from dataclasses import replace
 from decimal import Decimal
+from pathlib import Path
 from types import MappingProxyType
 from typing import cast
 
@@ -10,7 +13,110 @@ import pytest
 
 from gh_slate.rendering import _jq_worker as worker_module, jq as jq_module
 from gh_slate.rendering.errors import RenderingError
-from gh_slate.rendering.jq import DEFAULT_JQ_LIMITS, JqLimits, select_one
+from gh_slate.rendering.jq import (
+    DEFAULT_JQ_LIMITS,
+    MAX_RESULTS,
+    JqLimits,
+    evaluate,
+    select_one,
+)
+
+
+def test_evaluate_returns_zero_one_or_many_immutable_json_values() -> None:
+    source = {"jobs": [{"name": "linux"}, {"name": "macos"}]}
+
+    assert evaluate(source, ".missing | empty") == ()
+    assert evaluate(source, ".jobs") == (
+        (
+            MappingProxyType({"name": "linux"}),
+            MappingProxyType({"name": "macos"}),
+        ),
+    )
+    assert evaluate(source, ".jobs[].name") == ("linux", "macos")
+    assert source == {"jobs": [{"name": "linux"}, {"name": "macos"}]}
+
+
+def test_evaluate_allows_one_time_nondeterministic_data_updates() -> None:
+    result = evaluate(None, "now", max_results=1)
+
+    assert len(result) == 1
+    assert isinstance(result[0], Decimal)
+
+
+def test_evaluate_binds_string_and_typed_json_arguments_from_stdin() -> None:
+    result = evaluate(
+        {"source": "data"},
+        '{"source": .source, "string": $string, "typed": $typed}',
+        args={
+            "string": "42",
+            "typed": MappingProxyType({"number": Decimal(42), "ready": True}),
+        },
+        max_results=1,
+    )
+
+    assert result == (
+        MappingProxyType(
+            {
+                "source": "data",
+                "string": "42",
+                "typed": MappingProxyType({"number": Decimal(42), "ready": True}),
+            }
+        ),
+    )
+    assert select_one(None, "$value", args={"value": "bound"}) == "bound"
+
+
+def test_evaluate_detects_result_overflow_with_one_sentinel_value() -> None:
+    with pytest.raises(RenderingError) as caught:
+        evaluate((1, 2, 3), ".[]", max_results=2)
+
+    assert caught.value.code == "jq_result_limit"
+    assert caught.value.details == {"count_at_least": 3, "max_results": 2}
+
+
+def test_result_limit_cannot_be_escaped_by_closing_a_source_wrapper() -> None:
+    with pytest.raises(RenderingError) as overflow:
+        evaluate(None, "range(0; 3)", max_results=1)
+    assert overflow.value.code == "jq_result_limit"
+
+    with pytest.raises(RenderingError) as invalid:
+        evaluate(
+            None,
+            ".))] | [(range(0;3",
+            max_results=1,
+        )
+    assert invalid.value.code == "jq_compile_error"
+
+
+@pytest.mark.parametrize("max_results", [True, 0, -1, MAX_RESULTS + 1])
+def test_evaluate_rejects_invalid_result_limits(max_results: object) -> None:
+    with pytest.raises(RenderingError) as caught:
+        evaluate(None, ".", max_results=cast("int", max_results))
+
+    assert caught.value.code == "jq_max_results_invalid"
+
+
+@pytest.mark.parametrize("name", ["$value", "two-parts", "9lives", "é"])
+def test_evaluate_rejects_unsafe_argument_names(name: str) -> None:
+    with pytest.raises(RenderingError) as caught:
+        evaluate(None, ".", args={name: "value"})
+
+    assert caught.value.code == "jq_args_invalid"
+
+
+def test_evaluate_rejects_non_json_arguments_and_bounds_the_full_stdin_request() -> None:
+    with pytest.raises(RenderingError) as invalid:
+        evaluate(None, ".", args={"value": 1.5})  # ty: ignore[invalid-argument-type]
+    assert invalid.value.code == "jq_args_invalid"
+
+    with pytest.raises(RenderingError) as too_large:
+        evaluate(
+            None,
+            ".",
+            args={"value": "x" * 32},
+            limits=replace(DEFAULT_JQ_LIMITS, max_source_bytes=32),
+        )
+    assert too_large.value.code == "jq_source_limit"
 
 
 def test_select_one_returns_one_immutable_json_projection() -> None:
@@ -240,19 +346,60 @@ def test_worker_uses_isolated_process_controls(monkeypatch: pytest.MonkeyPatch) 
     def complete(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
         observed["command"] = command
         observed.update(kwargs)
-        return subprocess.CompletedProcess(command, 0, b'{"ok":true,"results":[null]}', b"")
+        return subprocess.CompletedProcess(command, 0, b'{"ok":true,"results":["stdin-only"]}', b"")
 
     monkeypatch.setattr(subprocess, "run", complete)
 
-    assert select_one(None, ".") is None
+    assert select_one(None, "$bound", args={"bound": "stdin-only"}) == "stdin-only"
     assert observed["env"] == jq_module._worker_environment()
     assert observed["check"] is False
-    assert observed["input"] == b"null"
+    assert observed["input"] == b'{"args":{"bound":"stdin-only"},"data":null}'
     assert observed["stdout"] is subprocess.PIPE
     assert observed["stderr"] is subprocess.DEVNULL
     assert "capture_output" not in observed
     assert observed["cwd"] != "."
-    assert cast_list(observed["command"])[1] == "-I"
+    command = cast_list(observed["command"])
+    assert command[1] == "-I"
+    assert all("stdin-only" not in argument for argument in command)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        b"not json",
+        b'{"args":{},"data":null,"extra":true}',
+        b'{"args":[],"data":null}',
+        b'{"args":{"value":1,"value":2},"data":null}',
+        b'{"args":{"$value":1},"data":null}',
+        b'{"args":{},"data":NaN}',
+    ],
+)
+def test_worker_rejects_malformed_or_noncanonical_stdin_protocol(source: bytes) -> None:
+    from gh_slate.rendering import jq as jq_module
+
+    worker = Path(jq_module.__file__).with_name("_jq_worker.py")
+    command = [
+        sys.executable,
+        "-I",
+        str(worker),
+        base64.b64encode(b".").decode("ascii"),
+        "1",
+        "4096",
+        "4096",
+        str(DEFAULT_JQ_LIMITS.max_memory_bytes),
+        str(DEFAULT_JQ_LIMITS.max_cpu_seconds),
+    ]
+
+    completed = subprocess.run(
+        command,
+        input=source,
+        capture_output=True,
+        env=jq_module._worker_environment(),
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == b'{"ok":false,"kind":"protocol"}'
 
 
 def test_worker_environment_preserves_only_windows_system_root() -> None:
@@ -318,6 +465,18 @@ def test_worker_protocol_is_strict(monkeypatch: pytest.MonkeyPatch, response: by
         select_one(None, ".")
 
     assert caught.value.code == "jq_worker_protocol"
+
+
+def test_worker_result_count_is_bounded_by_the_requested_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    def complete(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(command, 0, b'{"ok":true,"results":[1,2,3]}', b"")
+
+    monkeypatch.setattr(subprocess, "run", complete)
+
+    with pytest.raises(RenderingError) as caught:
+        evaluate(None, ".", max_results=2)
+
+    assert caught.value.code == "jq_result_limit"
 
 
 def test_libjq_large_integer_rounding_is_projection_only_and_strings_stay_exact() -> None:
