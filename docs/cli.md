@@ -524,6 +524,28 @@ Every later mutation validates before rendering and writing.
 
 Schemas are snapshots in the envelope. Remote `$ref` loading is disabled:
 validation must not depend on the network or create an SSRF/file-read surface.
+The v1 schema boundary accepts only the exact draft 2020-12 dialect. A schema's
+root `$schema`, when present, must name that same dialect. `$ref` and
+`$dynamicRef` may use only an empty reference or a same-document `#...`
+fragment; network URLs, file URLs, protocol-relative URLs, and relative file or
+registry references are rejected even when they appear in an unevaluated
+branch. A deny-all resolver remains installed as a second line of defense.
+
+Validation failures expose bounded, deterministically sorted diagnostics. Each
+violation carries an RFC 6901 data pointer, an RFC 6901 schema pointer, the
+failing keyword, and a human-readable message. Machine consumers should branch
+on the error code, pointers, and keyword rather than treating dependency-owned
+message prose as a stable API. The default diagnostic cap is 32 violations and
+reports whether more were truncated. Each pointer is capped at 1 KiB; a
+path-derived suffix and an explicit `*_pointer_truncated` flag replace an
+oversized tail.
+
+The local validator also applies the state component limits to schema and data
+before evaluation. Regex keywords run with per-match timeouts, `uniqueItems`
+uses canonical JSON identities instead of quadratic pairwise comparison, and a
+shared execution/operation budget fails with `schema_evaluation_limit`. These
+limits make an embedded schema safe to inspect in the CLI; they are part of the
+gh-slate execution profile, not changes to the stored JSON Schema document.
 
 `schema infer` creates a deliberately permissive starting point:
 
@@ -531,6 +553,8 @@ validation must not depend on the network or create an SSRF/file-read surface.
 - object properties are not required by default;
 - additional properties remain allowed;
 - an empty array gets an unconstrained item schema;
+- heterogeneous arrays merge all observed types and object-property shapes;
+- an observed missing property is not converted into an observed `null`;
 - it does not invent semantic formats.
 
 Users can edit and apply the inferred schema when stricter validation is wanted.
@@ -1133,7 +1157,8 @@ Deliverables:
 
 Acceptance gates:
 
-- remote and local `$ref` attempts perform no I/O;
+- remote and local-file/registry `$ref` attempts perform no I/O, while
+  same-document fragments remain available;
 - inferred schemas preserve observed types but do not invent `required`,
   semantic formats, or `additionalProperties: false`;
 - validation paths and messages are stable enough for CLI and JSON output;

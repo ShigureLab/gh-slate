@@ -52,11 +52,13 @@ jobs:
           --with "jq>=1.12,<2"
           --with "jinja2>=3.1,<4"
           --with "jsonschema>=4.25,<5"
+          --with "regex>=2025.7.34,<2027"
           python -c
-          "import jq, jinja2, jsonschema;
+          "import jq, jinja2, jsonschema, regex;
           assert jq.compile('. + 1').input_value(1).first() == 2;
           assert jinja2.__version__;
-          assert jsonschema.Draft202012Validator"
+          assert jsonschema.Draft202012Validator;
+          assert regex.search('a+', 'aaa', timeout=0.1)"
 
       - name: Exercise codec wire and hash compatibility
         if: runner.os != 'Linux'
