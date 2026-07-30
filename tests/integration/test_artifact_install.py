@@ -37,7 +37,7 @@ def _run(
     shutil.which("uv") is None,
     reason="artifact build and install contract requires uv",
 )
-def test_offline_artifact_layout_and_wheel_shim_match_the_root_launcher(
+def test_offline_artifact_layout_and_installed_cli_match_the_root_launcher(
     tmp_path: Path,
 ) -> None:
     uv = shutil.which("uv") or "uv"
@@ -100,19 +100,29 @@ def test_offline_artifact_layout_and_wheel_shim_match_the_root_launcher(
     installed_environment = environment.copy()
     installed_environment["PYTHONPATH"] = str(installed)
     installed_script = next(
-        candidate
-        for candidate in (
-            installed / "bin" / "gh-slate",
-            installed / "Scripts" / "gh-slate.exe",
-            installed / "Scripts" / "gh-slate-script.py",
+        (
+            candidate
+            for candidate in (
+                installed / "bin" / "gh-slate",
+                installed / "Scripts" / "gh-slate.exe",
+                installed / "Scripts" / "gh-slate-script.py",
+            )
+            if candidate.exists()
+        ),
+        None,
+    )
+    if installed_script is None:
+        installed_command: list[str | Path] = [
+            sys.executable,
+            "-m",
+            "gh_slate",
+        ]
+    else:
+        if os.name != "nt":
+            assert installed_script.stat().st_mode & 0o111
+        installed_command = (
+            [sys.executable, installed_script] if installed_script.suffix == ".py" else [installed_script]
         )
-        if candidate.exists()
-    )
-    if os.name != "nt":
-        assert installed_script.stat().st_mode & 0o111
-    installed_command: list[str | Path] = (
-        [sys.executable, installed_script] if installed_script.suffix == ".py" else [installed_script]
-    )
 
     installed_version = _run(
         [*installed_command, "--version"],

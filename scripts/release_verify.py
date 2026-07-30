@@ -564,7 +564,7 @@ def verify_extension_assets(
     for path in actual_paths:
         if path.is_symlink() or not path.is_file():
             raise _error(f"extension asset is not a regular file: {path.name}")
-        if not path.stat().st_mode & stat.S_IXUSR:
+        if os.name != "nt" and not path.stat().st_mode & stat.S_IXUSR:
             raise _error(f"extension asset is not executable: {path.name}")
         content = path.read_bytes()
         contents.add(content)

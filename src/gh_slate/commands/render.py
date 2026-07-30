@@ -114,13 +114,14 @@ def _template_source(location: str) -> str:
         max_bytes=DEFAULT_JINJA_LIMITS.max_source_bytes,
     )
     try:
-        return source.decode("utf-8", errors="strict")
+        decoded = source.decode("utf-8", errors="strict")
     except UnicodeDecodeError as error:
         raise RenderingError(
             "template is not valid UTF-8",
             code="jinja_source_invalid",
             details={"position": error.start},
         ) from None
+    return decoded.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _table_columns(value: str | None) -> tuple[TableColumn, ...]:

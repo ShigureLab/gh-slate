@@ -64,6 +64,12 @@ jobs:
         if: runner.os != 'Linux'
         run: uv sync --locked --all-extras --dev
 
+      - name: Exercise the installed Python CLI on supported non-Linux platforms
+        if: runner.os != 'Linux'
+        run: |
+          uv run --frozen gh-slate --version
+          uv run --frozen gh-slate --help
+
       - name: Run the complete deterministic suite on supported non-Linux platforms
         if: runner.os != 'Linux'
         run: |

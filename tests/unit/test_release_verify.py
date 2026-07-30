@@ -254,7 +254,8 @@ def test_extension_assets_are_exact_executable_self_extracting_bundles(
     assert b"extension payload checksum mismatch" in content[:4096]
     assert b"BASHPID" not in content[:4096]
     assert b'payload_file="${lock_dir}.payload.$$"' in content[:4096]
-    assert all(path.stat().st_mode & stat.S_IXUSR for path in assets)
+    if os.name != "nt":
+        assert all(path.stat().st_mode & stat.S_IXUSR for path in assets)
 
     corrupted = assets[0]
     corrupted.write_bytes(corrupted.read_bytes() + b"x")

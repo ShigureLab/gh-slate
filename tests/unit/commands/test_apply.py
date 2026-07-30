@@ -114,10 +114,7 @@ def test_apply_builds_a_validated_create_transaction_request(
         ),
         encoding="utf-8",
     )
-    template_path.write_text(
-        "# {{ slate.name }}\n\n{{ data.status }}",
-        encoding="utf-8",
-    )
+    template_path.write_bytes(b"# {{ slate.name }}\r\n\r\n{{ data.status }}")
     transaction = _install_transaction(monkeypatch)
 
     assert (
