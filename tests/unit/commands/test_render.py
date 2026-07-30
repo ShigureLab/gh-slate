@@ -88,6 +88,28 @@ def test_render_rejects_renderer_option_and_stdin_conflicts(capsys) -> None:
     assert "stdin_conflict" in second.err
 
 
+def test_local_and_remote_render_options_are_unambiguous(capsys) -> None:
+    assert run(["render", "ci", "--data", "/tmp/data.json"]) == 2
+    assert "renderer_required" in capsys.readouterr().err
+
+    assert (
+        run(
+            [
+                "render",
+                "ci",
+                "--target",
+                "42",
+                "--repo",
+                "owner/repo",
+                "--list",
+                ".",
+            ]
+        )
+        == 2
+    )
+    assert "renderer_option_conflict" in capsys.readouterr().err
+
+
 def test_template_file_and_stdin_reads_are_bounded(
     tmp_path: Path,
     monkeypatch,

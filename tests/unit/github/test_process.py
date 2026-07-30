@@ -1,0 +1,384 @@
+from __future__ import annotations
+
+import os
+import subprocess
+from dataclasses import dataclass, field, replace
+from decimal import Decimal
+from typing import cast
+
+import pytest
+
+from gh_slate.errors import GhSlateError
+from gh_slate.github.process import (
+    DEFAULT_GH_PROCESS_LIMITS,
+    GhProcess,
+    ProcessResult,
+    SubprocessRunner,
+)
+
+
+@dataclass(slots=True)
+class FakeRunner:
+    results: list[ProcessResult] = field(default_factory=list)
+    calls: list[tuple[tuple[str, ...], float, str | None]] = field(default_factory=list)
+    error: BaseException | None = None
+
+    def run(
+        self,
+        argv: tuple[str, ...],
+        *,
+        timeout: float,
+        hostname: str | None,
+    ) -> ProcessResult:
+        self.calls.append((argv, timeout, hostname))
+        if self.error is not None:
+            raise self.error
+        if not self.results:
+            raise AssertionError("fake runner has no queued result")
+        return self.results.pop(0)
+
+
+def success(stdout: bytes = b"{}") -> ProcessResult:
+    return ProcessResult(returncode=0, stdout=stdout, stderr=b"")
+
+
+def process(
+    runner: FakeRunner,
+    *,
+    max_stdout_bytes: int | None = None,
+    max_stderr_bytes: int | None = None,
+) -> GhProcess:
+    limits = DEFAULT_GH_PROCESS_LIMITS
+    if max_stdout_bytes is not None:
+        limits = replace(limits, max_stdout_bytes=max_stdout_bytes)
+    if max_stderr_bytes is not None:
+        limits = replace(limits, max_stderr_bytes=max_stderr_bytes)
+    return GhProcess(runner=runner, limits=limits)
+
+
+def test_api_get_uses_explicit_get_hostname_and_paginated_slurp() -> None:
+    runner = FakeRunner(results=[success(b'[[{"id":1}],[{"id":2}]]')])
+
+    result = process(runner).api_get(
+        "repos/owner/repo/issues/42/comments?per_page=100",
+        hostname="github.example.com",
+        paginate=True,
+    )
+
+    assert result == (({"id": Decimal(1)},), ({"id": Decimal(2)},))
+    assert runner.calls == [
+        (
+            (
+                "gh",
+                "api",
+                "--hostname",
+                "github.example.com",
+                "--method",
+                "GET",
+                "--paginate",
+                "--slurp",
+                "repos/owner/repo/issues/42/comments?per_page=100",
+            ),
+            30.0,
+            "github.example.com",
+        )
+    ]
+
+
+@pytest.mark.parametrize("method", ["POST", "PATCH", "DELETE", "PUT"])
+def test_run_json_rejects_every_non_get_api_method(method: str) -> None:
+    runner = FakeRunner()
+
+    with pytest.raises(GhSlateError) as caught:
+        process(runner).run_json(
+            ("api", "--method", method, "repos/owner/repo"),
+        )
+
+    assert caught.value.code == "gh_api_method_forbidden"
+    assert runner.calls == []
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("api", "--method", "GET", "--input", "payload.json", "repos/o/r"),
+        ("api", "--method", "GET", "-F", "body=@secret", "repos/o/r"),
+        ("issue", "delete", "42"),
+        ("auth", "status", "--show-token", "--json", "hosts"),
+        ("auth", "status", "--show-token=true", "--json", "hosts"),
+        ("repo", "view", "--web"),
+        ("pr", "view", "--web=true"),
+    ],
+)
+def test_run_json_rejects_payload_secret_and_side_effect_options(
+    arguments: tuple[str, ...],
+) -> None:
+    runner = FakeRunner()
+
+    with pytest.raises(GhSlateError) as caught:
+        process(runner).run_json(arguments)
+
+    assert caught.value.code == "gh_command_forbidden"
+    assert runner.calls == []
+
+
+def test_current_actor_validates_the_user_response() -> None:
+    runner = FakeRunner(results=[success(b'{"login":"octocat"}')])
+
+    assert process(runner).current_actor("github.example.com") == "octocat"
+    assert runner.calls[0][0] == (
+        "gh",
+        "api",
+        "--hostname",
+        "github.example.com",
+        "--method",
+        "GET",
+        "user",
+    )
+
+
+@pytest.mark.parametrize("response", [b"[]", b"{}", b'{"login":null}'])
+def test_current_actor_rejects_missing_login(response: bytes) -> None:
+    runner = FakeRunner(results=[success(response)])
+
+    with pytest.raises(GhSlateError) as caught:
+        process(runner).current_actor()
+
+    assert caught.value.code == "gh_response_invalid"
+
+
+def test_repo_view_propagates_hostname_without_an_unsupported_flag() -> None:
+    runner = FakeRunner(
+        results=[success(b'{"nameWithOwner":"owner/repo","url":"https://github.example/owner/repo","isPrivate":false}')]
+    )
+
+    result = process(runner).repo_view("github.example.com")
+
+    assert cast("object", result)
+    assert runner.calls[0] == (
+        (
+            "gh",
+            "repo",
+            "view",
+            "--json",
+            "nameWithOwner,url,isPrivate",
+        ),
+        30.0,
+        "github.example.com",
+    )
+
+
+def test_pr_view_qualifies_repository_with_hostname() -> None:
+    runner = FakeRunner(results=[success(b'{"number":42}')])
+
+    process(runner).pr_view(
+        repository="owner/repo",
+        hostname="github.example.com",
+    )
+
+    assert runner.calls[0][0] == (
+        "gh",
+        "pr",
+        "view",
+        "--repo",
+        "github.example.com/owner/repo",
+        "--json",
+        "number,url,headRefName,headRefOid,baseRefName,baseRefOid,state",
+    )
+    assert runner.calls[0][2] == "github.example.com"
+
+
+def test_auth_status_propagates_hostname_and_never_requests_a_token() -> None:
+    runner = FakeRunner(results=[success(b'{"hosts":{}}')])
+
+    process(runner).auth_status("github.example.com")
+
+    assert runner.calls[0][0] == (
+        "gh",
+        "auth",
+        "status",
+        "--json",
+        "hosts",
+        "--hostname",
+        "github.example.com",
+    )
+    assert "--show-token" not in runner.calls[0][0]
+
+
+def test_version_is_strict_nonempty_utf8_text() -> None:
+    runner = FakeRunner(results=[success(b"gh version 2.76.2\n")])
+
+    assert process(runner).version() == "gh version 2.76.2"
+    assert runner.calls[0][0] == ("gh", "version")
+
+
+def test_default_runner_never_uses_a_shell_and_inherits_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example")
+    monkeypatch.setenv("GH_TOKEN", "inherited-token")
+
+    def complete(argv: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        captured["argv"] = argv
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0, b"{}", b"")
+
+    monkeypatch.setattr(subprocess, "run", complete)
+
+    result = SubprocessRunner().run(
+        ("gh", "api", "--method", "GET", "user"),
+        timeout=1.5,
+        hostname="github.example.com",
+    )
+
+    assert result == ProcessResult(0, b"{}", b"")
+    assert captured["argv"] == ("gh", "api", "--method", "GET", "user")
+    assert captured["shell"] is False
+    assert captured["stdin"] == subprocess.DEVNULL
+    assert captured["capture_output"] is True
+    environment = cast("dict[str, str]", captured["env"])
+    assert environment["HTTPS_PROXY"] == "http://proxy.example"
+    assert environment["GH_TOKEN"] == "inherited-token"
+    assert environment["GH_HOST"] == "github.example.com"
+    assert os.environ["GH_TOKEN"] == "inherited-token"
+
+
+def test_default_runner_uses_implicit_environment_without_hostname(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def complete(argv: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0, b"{}", b"")
+
+    monkeypatch.setattr(subprocess, "run", complete)
+
+    SubprocessRunner().run(("gh", "version"), timeout=1, hostname=None)
+
+    assert captured["env"] is None
+
+
+@pytest.mark.parametrize(
+    ("result", "code"),
+    [
+        (ProcessResult(0, b"\xff", b""), "gh_output_invalid"),
+        (ProcessResult(0, b'{"a":1,"a":2}', b""), "gh_json_invalid"),
+        (ProcessResult(0, b"not json", b""), "gh_json_invalid"),
+        (ProcessResult(0, b"{}", b"\xff"), "gh_output_invalid"),
+    ],
+)
+def test_invalid_utf8_or_json_has_a_stable_error(
+    result: ProcessResult,
+    code: str,
+) -> None:
+    runner = FakeRunner(results=[result])
+
+    with pytest.raises(GhSlateError) as caught:
+        process(runner).api_get("user")
+
+    assert caught.value.code == code
+
+
+def test_stdout_and_stderr_limits_are_enforced_before_parsing() -> None:
+    stdout_runner = FakeRunner(results=[success(b"12345")])
+    with pytest.raises(GhSlateError) as stdout_error:
+        process(stdout_runner, max_stdout_bytes=4).api_get("user")
+    assert stdout_error.value.code == "gh_output_limit"
+    assert stdout_error.value.details["stream"] == "stdout"
+
+    stderr_runner = FakeRunner(results=[ProcessResult(returncode=0, stdout=b"{}", stderr=b"12345")])
+    with pytest.raises(GhSlateError) as stderr_error:
+        process(stderr_runner, max_stderr_bytes=4).api_get("user")
+    assert stderr_error.value.code == "gh_output_limit"
+    assert stderr_error.value.details["stream"] == "stderr"
+
+
+def test_nonzero_exit_is_wrapped_without_parsing_stdout() -> None:
+    runner = FakeRunner(
+        results=[
+            ProcessResult(
+                returncode=1,
+                stdout=b"not json",
+                stderr=b"HTTP 404: Not Found\n",
+            )
+        ]
+    )
+
+    with pytest.raises(GhSlateError) as caught:
+        process(runner).api_get("repos/owner/missing")
+
+    assert caught.value.code == "gh_command_failed"
+    assert caught.value.details["returncode"] == 1
+    assert caught.value.details["stderr"] == "HTTP 404: Not Found"
+
+
+@pytest.mark.parametrize(
+    ("error", "code"),
+    [
+        (
+            subprocess.TimeoutExpired(cmd=("gh", "api"), timeout=1),
+            "gh_timeout",
+        ),
+        (FileNotFoundError(), "gh_not_found"),
+        (PermissionError(), "gh_process_error"),
+    ],
+)
+def test_process_start_failures_are_wrapped(
+    error: BaseException,
+    code: str,
+) -> None:
+    runner = FakeRunner(error=error)
+
+    with pytest.raises(GhSlateError) as caught:
+        process(runner).api_get("user")
+
+    assert caught.value.code == code
+
+
+@pytest.mark.parametrize(
+    "hostname",
+    ["", "--hostname", "https://github.example", "github.example/path", "bad host"],
+)
+def test_invalid_hostname_never_reaches_the_runner(hostname: str) -> None:
+    runner = FakeRunner()
+
+    with pytest.raises(GhSlateError) as caught:
+        process(runner).api_get("user", hostname=hostname)
+
+    assert caught.value.code == "gh_hostname_invalid"
+    assert runner.calls == []
+
+
+def test_repository_hostname_mismatch_never_reaches_the_runner() -> None:
+    runner = FakeRunner()
+
+    with pytest.raises(GhSlateError) as caught:
+        process(runner).pr_view(
+            repository="github.example/owner/repo",
+            hostname="other.example",
+        )
+
+    assert caught.value.code == "gh_hostname_mismatch"
+    assert runner.calls == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("timeout_seconds", 0),
+        ("max_stdout_bytes", True),
+        ("max_stderr_bytes", -1),
+    ],
+)
+def test_limits_require_positive_values(field: str, value: object) -> None:
+    arguments: dict[str, object] = {
+        "timeout_seconds": 1,
+        "max_stdout_bytes": 1,
+        "max_stderr_bytes": 1,
+    }
+    arguments[field] = value
+
+    with pytest.raises(ValueError, match=field):
+        type(DEFAULT_GH_PROCESS_LIMITS)(**arguments)  # type: ignore[arg-type]

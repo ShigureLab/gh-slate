@@ -1,7 +1,7 @@
 # gh-slate CLI design
 
-Status: implementation-backed through batch 4; the local rendering foundation
-is complete and batch 5 is the next implementation layer.
+Status: implementation-backed through batch 5; the read-only GitHub foundation
+is complete and batch 6 is the next implementation layer.
 
 `gh-slate` manages named, data-backed dashboard comments on GitHub Issues and
 Pull Requests.
@@ -1308,6 +1308,10 @@ implementation-backed, but no remote command is allowed to write yet.
 ### 14.6 Batch 5: read-only GitHub comment store
 
 Branch: `codex/github-read-store`
+
+Status: complete. Target/controller resolution, the GET-only `gh` adapter,
+paginated comment classification, canonical-context rerendering, read-only CLI
+commands, and fake-`gh` contract tests are implemented.
 
 Goal: prove target resolution, pagination, ownership, and decoding against the
 GitHub interface without carrying mutation risk.
