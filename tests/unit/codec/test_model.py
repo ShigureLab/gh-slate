@@ -8,6 +8,7 @@ import pytest
 from gh_slate.codec.errors import CodecError
 from gh_slate.codec.model import (
     JSON_SCHEMA_DIALECT_2020_12,
+    MAX_GITHUB_USER_ID,
     MAX_RENDERER_VERSION,
     MAX_REVISION,
     STATE_FORMAT_V1,
@@ -26,7 +27,10 @@ def _state_json() -> dict[str, object]:
         "format": STATE_FORMAT_V1,
         "name": "ci-summary",
         "revision": 7,
-        "controller": {"login": "github-actions[bot]"},
+        "controller": {
+            "id": 41898282,
+            "login": "github-actions[bot]",
+        },
         "data": {
             "jobs": [{"name": "linux", "passed": True, "note": None}],
             "empty": [],
@@ -55,6 +59,30 @@ def test_state_round_trips_and_preserves_unknown_renderer_configuration() -> Non
     assert state.renderer.version == 99
     assert state.renderer.configuration["future"] == {"enabled": True, "values": (1, "001")}
     assert StateV1.from_json(state.to_json()) == state
+
+
+def test_legacy_login_only_controller_remains_losslessly_readable() -> None:
+    raw = _state_json()
+    controller = cast("dict[str, object]", raw["controller"])
+    del controller["id"]
+
+    state = StateV1.from_json(raw)
+
+    assert state.controller.id is None
+    assert state.to_json() == raw
+
+
+@pytest.mark.parametrize(
+    "controller_id",
+    [None, 0, -1, True, "1", MAX_GITHUB_USER_ID + 1],
+)
+def test_controller_id_has_explicit_wire_bounds(controller_id: object) -> None:
+    raw = _state_json()
+    controller = cast("dict[str, object]", raw["controller"])
+    controller["id"] = controller_id
+
+    with pytest.raises(CodecError, match="controller.id must be"):
+        StateV1.from_json(raw)
 
 
 def test_boolean_schema_is_a_valid_snapshot() -> None:
@@ -212,7 +240,7 @@ def test_nested_structures_are_frozen_from_caller_mutation() -> None:
     state = StateV1(
         name="immutable",
         revision=1,
-        controller=ControllerV1(login="octocat"),
+        controller=ControllerV1(login="octocat", id=1),
         data=data,
         renderer=RendererDescriptorV1(
             kind="builtin-list",

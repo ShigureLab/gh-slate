@@ -19,7 +19,7 @@ def _draft(
 ) -> StateDraftV1:
     return StateDraftV1(
         name="ci",
-        controller=ControllerV1(login="octocat"),
+        controller=ControllerV1(login="octocat", id=1),
         data={"value": 1} if data is None else data,
         renderer=RendererDescriptorV1(
             kind="builtin-list",

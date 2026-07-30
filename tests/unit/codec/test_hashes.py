@@ -20,7 +20,7 @@ def _state(*, revision: int = 1, data: dict[str, object] | None = None) -> State
     return StateV1(
         name="ci",
         revision=revision,
-        controller=ControllerV1(login="octocat"),
+        controller=ControllerV1(login="octocat", id=1),
         data={"value": 1} if data is None else data,
         renderer=RendererDescriptorV1(
             kind="builtin-list",

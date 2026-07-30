@@ -13,6 +13,7 @@ STATE_FORMAT_V1 = "gh-slate/state-v1"
 JSON_SCHEMA_DIALECT_2020_12 = "https://json-schema.org/draft/2020-12/schema"
 MAX_REVISION = 2**63 - 1
 MAX_RENDERER_VERSION = 2**31 - 1
+MAX_GITHUB_USER_ID = 2**63 - 1
 
 _SLATE_NAME_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -123,20 +124,47 @@ def _thaw_json(value: object) -> object:
 @dataclass(frozen=True, slots=True)
 class ControllerV1:
     login: str
+    id: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "login", _require_string(self.login, path="controller.login"))
+        if self.id is not None:
+            object.__setattr__(
+                self,
+                "id",
+                _require_integer(
+                    self.id,
+                    path="controller.id",
+                    minimum=1,
+                    maximum=MAX_GITHUB_USER_ID,
+                ),
+            )
 
     def to_json(self) -> dict[str, object]:
-        return {"login": self.login}
+        result: dict[str, object] = {"login": self.login}
+        if self.id is not None:
+            result["id"] = self.id
+        return result
 
     @classmethod
     def from_json(cls, value: object) -> ControllerV1:
         obj = _require_object(value, path="controller")
-        fields = frozenset({"login"})
+        fields = frozenset({"id", "login"})
         _reject_unknown_fields(obj, allowed=fields, path="controller")
-        _require_fields(obj, required=fields, path="controller")
-        return cls(login=_require_string(obj["login"], path="controller.login"))
+        _require_fields(obj, required=frozenset({"login"}), path="controller")
+        return cls(
+            login=_require_string(obj["login"], path="controller.login"),
+            id=(
+                None
+                if "id" not in obj
+                else _require_integer(
+                    obj["id"],
+                    path="controller.id",
+                    minimum=1,
+                    maximum=MAX_GITHUB_USER_ID,
+                )
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)

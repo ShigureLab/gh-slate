@@ -38,7 +38,7 @@ def make_state(
     return StateV1(
         name=name,
         revision=7,
-        controller=ControllerV1(login="github-actions[bot]"),
+        controller=ControllerV1(login="github-actions[bot]", id=41898282),
         data={
             "jobs": (
                 {

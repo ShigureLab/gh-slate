@@ -112,7 +112,7 @@ def test_comment_round_trip_property(
     state = StateV1(
         name="property",
         revision=revision,
-        controller=ControllerV1(login="tester"),
+        controller=ControllerV1(login="tester", id=1),
         data=data_with_number,
         data_schema=SchemaSnapshotV1(
             dialect=JSON_SCHEMA_DIALECT_2020_12,
@@ -151,7 +151,7 @@ def test_revision_bounds_and_non_lf_markdown_round_trip_property(
     state = StateV1(
         name="boundaries",
         revision=revision,
-        controller=ControllerV1(login="tester"),
+        controller=ControllerV1(login="tester", id=1),
         data={"negative_zero": Decimal("-0")},
         data_schema=SchemaSnapshotV1(
             dialect=JSON_SCHEMA_DIALECT_2020_12,
