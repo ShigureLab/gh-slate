@@ -12,7 +12,10 @@ ROOT = Path(__file__).resolve().parents[1]
 LAUNCHER = ROOT / "gh-slate"
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="the gh extension launcher requires bash")
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="the Bash-based gh extension launcher requires Unix",
+)
 def test_extension_launcher_forwards_arguments_and_display_command(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -65,11 +68,15 @@ def test_extension_launcher_forwards_arguments_and_display_command(tmp_path: Pat
     assert exit_result.returncode == 23
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the Bash-based gh extension launcher requires Unix")
 def test_extension_launcher_is_executable() -> None:
     assert LAUNCHER.stat().st_mode & stat.S_IXUSR
 
 
-@pytest.mark.skipif(shutil.which("uv") is None, reason="the extension launcher requires uv")
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("uv") is None,
+    reason="the Bash-based extension launcher requires Unix and uv",
+)
 def test_real_entrypoints_use_their_own_command_spelling() -> None:
     environment = os.environ.copy()
     environment.pop("GH_SLATE_DISPLAY_CMD", None)

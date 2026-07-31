@@ -1,9 +1,10 @@
 # gh-slate CLI design
 
-Status: implementation-backed through batch 8; recovery, deletion, fault
-injection, and Actions examples are complete offline, and batch 9 is the next
-implementation layer. The credentialed GitHub.com Issue/PR and live GHES gates
-have not been run, so the project is not yet labelled alpha- or beta-ready.
+Status: implementation-backed through batch 9. Recovery, Actions examples, the
+bundled skill, artifact verification, and release ordering are complete
+offline. The credentialed GitHub.com Issue/PR, live GHES, tagged release, and
+PyPI publication gates have not been run, so the project remains pre-release
+and is not yet labelled alpha-, beta-, or stable-ready.
 
 `gh-slate` manages named, data-backed dashboard comments on GitHub Issues and
 Pull Requests.
@@ -129,8 +130,8 @@ gh slate
 ├── delete NAME                delete the entire managed comment
 ├── data
 │   ├── get NAME [FILTER]      query data with jq
-│   ├── set NAME PATH          set one value using an exact jq path
-│   ├── delete NAME PATH...    delete values using exact jq paths
+│   ├── set NAME PATH          set one value using a static jq path
+│   ├── delete NAME PATH...    delete values using static jq paths
 │   ├── update NAME FILTER     transform the full data object with jq
 │   └── edit NAME              edit typed JSON in $GH_EDITOR/$EDITOR
 ├── schema
@@ -554,10 +555,12 @@ gh slate data set ci-summary '.["key.with.dot"]' \
   --target 42
 ```
 
-`PATH` must be an exact jq path expression. Internally it is resolved with jq
-`path`/`setpath` semantics; arbitrary transforms belong in `data update`.
+`PATH` must be a static jq-compatible path composed from `.field`,
+`["exact.key"]`, and non-negative `[0]` segments. It is validated with jq
+against `null`, never resolved from the stored data; arithmetic, pipes,
+interpolation, and other computed paths belong in `data update`.
 Missing containers are created according to the next typed path segment, and
-arrays are padded with JSON nulls when an exact non-negative index extends
+arrays are padded with JSON nulls when a static non-negative index extends
 them. The final mutation runs in Python so untouched arbitrary-precision
 integers are not round-tripped through libjq.
 
@@ -1000,10 +1003,13 @@ The initial skill identity is:
 ---
 name: gh-slate
 description: Create and safely maintain named, data-backed dashboard comments on GitHub Issues and Pull Requests with gh-slate.
+compatibility: Requires gh, authenticated GitHub access, and gh-slate >=0.1.0.
+license: MIT
 metadata:
    primary-tools:
       - gh-slate
       - gh
+   minimum-gh-slate-version: 0.1.0
 ---
 ```
 
@@ -1011,6 +1017,13 @@ Install it directly from the repository:
 
 ```bash
 npx skills add https://github.com/ShigureLab/gh-slate --skill gh-slate
+```
+
+GitHub CLI 2.96 and newer also provide a native installer, currently in
+preview:
+
+```bash
+gh skill install ShigureLab/gh-slate gh-slate --agent codex --scope user
 ```
 
 Installing the `gh` extension or PyPI tool does not implicitly install the
@@ -1474,7 +1487,7 @@ Deliverables:
 
 - `data get`, including zero/one/many jq results and raw, compact, and exit
   status modes;
-- `data set` and `data delete` using exact jq path semantics and unambiguous
+- `data set` and `data delete` using static jq path semantics and unambiguous
   JSON, string, and file value sources;
 - full `data update` with real jq filters, `--arg`, `--argjson`, and `@FILE`;
 - `data edit` with the documented editor precedence and parse/validation loop;
@@ -1561,6 +1574,14 @@ evidence.
 
 Branch: `codex/automation-skill-release`
 
+Status: implementation complete offline. The checked-in skill passes its
+layout, parser/help, stale-flag, official dry-run, and local-install checks.
+Release verification clean-installs the exact wheel and sdist and produces
+directly installable macOS/Linux extension assets from the same tagged source.
+The credentialed live targets, tagged workflow, remote extension installation,
+PyPI publication, and stable-release promotion remain real release gates and
+have not been executed.
+
 Goal: package the tested behavior for humans, agents, the `gh` extension
 registry, and PyPI without adding last-minute product features.
 
@@ -1576,9 +1597,12 @@ Deliverables:
   clean installation tests, and root extension-launcher packaging tests;
 - a `release-verify` gate that checks tag/version consistency and installs and
   tests the exact artifacts that will be published;
-- release workflow ordering so tests and artifact verification complete before
-  PyPI publication, followed by a non-draft stable GitHub Release and an
-  install-from-release extension smoke test.
+- an unprivileged tag candidate workflow plus an immutable-verifier
+  `workflow_run` publisher that validates canonical run identity and requires
+  byte-identical independent source rebuilds;
+- release ordering so the extension and live gates complete before a draft
+  GitHub Release is staged, PyPI receives the verified Python files, and that
+  exact draft becomes stable.
 
 Acceptance gates:
 
@@ -1586,8 +1610,14 @@ Acceptance gates:
 - every skill recipe is accepted by the current parser under both command
   prefixes;
 - built wheel and sdist install in clean environments and expose the same CLI;
-- the release workflow publishes the already-verified artifacts rather than
-  rebuilding different ones;
+- self-extracting assets publish a verified private staging directory through
+  one atomic symlink; stale legacy locks and orphan stages never block startup,
+  and concurrent launchers converge on one ready cache;
+- no tag-controlled workflow receives a release secret, write token, or OIDC
+  permission, and privileged jobs never execute candidate code;
+- the release workflow publishes only artifacts that match its independent
+  deterministic source rebuild, with full-SHA Action pins and the private
+  repository's exclusive-write ACL documented as the release trust boundary;
 - GitHub.com live E2E, artifact installation, extension installation, and skill
   installation pass before declaring `0.1.0` stable.
 

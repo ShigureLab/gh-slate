@@ -559,43 +559,25 @@ def test_mode_revision_and_controller_conflicts_write_nothing(
 
 
 @pytest.mark.parametrize(
-    ("comments", "code", "exit_code"),
+    ("scenario", "code", "exit_code"),
     [
-        (
-            [
-                _record(
-                    7,
-                    _body().replace("eA", "!A", 1),
-                )
-            ],
-            "slate_corrupt",
-            ExitCode.VALIDATION,
-        ),
-        (
-            [
-                _record(
-                    7,
-                    _body().replace("- old\n", "- edited\n"),
-                )
-            ],
-            "render_drift",
-            ExitCode.CONFLICT,
-        ),
-        (
-            [
-                _record(7, _body()),
-                _record(8, _body()),
-            ],
-            "duplicate_slate",
-            ExitCode.CONFLICT,
-        ),
+        ("corrupt", "slate_corrupt", ExitCode.VALIDATION),
+        ("drift", "render_drift", ExitCode.CONFLICT),
+        ("duplicate", "duplicate_slate", ExitCode.CONFLICT),
     ],
 )
 def test_corrupt_drift_and_duplicates_fail_before_render_or_write(
-    comments: list[dict[str, object]],
+    scenario: str,
     code: str,
     exit_code: ExitCode,
 ) -> None:
+    body = _body()
+    if scenario == "corrupt":
+        comments = [_record(7, body.replace("eA", "!A", 1))]
+    elif scenario == "drift":
+        comments = [_record(7, body.replace("- old\n", "- edited\n"))]
+    else:
+        comments = [_record(7, body), _record(8, body)]
     remote = FakeGitHub(comments=comments)
 
     with pytest.raises(GhSlateError) as caught:
@@ -997,24 +979,17 @@ def test_timeout_refetch_reports_unknown_when_create_is_still_absent() -> None:
 
 
 @pytest.mark.parametrize(
-    ("replacement", "reason"),
+    ("replacement_kind", "reason"),
     [
-        ([], "slate_missing"),
-        (
-            [
-                _record(
-                    7,
-                    _body().replace("eA", "!A", 1),
-                )
-            ],
-            "slate_corrupt",
-        ),
+        ("missing", "slate_missing"),
+        ("corrupt", "slate_corrupt"),
     ],
 )
 def test_timeout_update_missing_or_corrupt_is_a_confirmed_conflict(
-    replacement: list[dict[str, object]],
+    replacement_kind: str,
     reason: str,
 ) -> None:
+    replacement = [] if replacement_kind == "missing" else [_record(7, _body().replace("eA", "!A", 1))]
     remote = FakeGitHub(
         comments=[_record(7, _body())],
         write_behavior="timeout-unapplied",

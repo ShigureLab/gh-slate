@@ -21,7 +21,7 @@ EXAMPLE_FILES = (
     "pull-request-target-reducer.yml",
     "pull-request-target-consumer.yml",
 )
-_ACTION_REF = re.compile(r"[^@\s]+@(?:v[1-9][0-9]*|[0-9a-f]{40})")
+_ACTION_REF = re.compile(r"[^@\s]+@[0-9a-f]{40}")
 _FORBIDDEN_EXECUTION = re.compile(
     r"(?:^|[;&|]\s*|\n\s*)(?:bash|sh|node|python)\s+[\"']?\$(?:REDUCED_PATH|ARTIFACT_PATH)"
     r"|\b(?:chmod|eval|source)\b",
@@ -136,7 +136,7 @@ def _assert_common(
     steps = _steps(job, path)
     for reference in _uses(steps):
         if _ACTION_REF.fullmatch(reference) is None:
-            _fail(path, f"action reference must use a major version or full SHA: {reference}")
+            _fail(path, f"action reference must use a full commit SHA: {reference}")
     return job, steps
 
 
@@ -326,7 +326,7 @@ def _check_reducer(root: Path) -> None:
     references = _uses(steps)
     if any(reference.startswith("actions/checkout@") for reference in references):
         _fail(path, "pull_request_target reducer must never checkout code")
-    if references != ["actions/upload-artifact@v7"]:
+    if references != ["actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"]:
         _fail(path, "reducer may only invoke the pinned artifact uploader")
 
     runs = _runs(steps)
