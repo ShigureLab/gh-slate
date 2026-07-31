@@ -99,7 +99,7 @@ def _dashboard_data(
     number: int,
     url: str,
 ) -> dict[str, object]:
-    rows: list[dict[str, str | int | bool]] = [
+    rows: list[dict[str, object]] = [
         {"field": "Repository", "value": repository},
         {"field": "Number", "value": number},
         {"field": "State", "value": _text(record.get("state"), "state", maximum=32)},
@@ -119,19 +119,11 @@ def _dashboard_data(
             _fail("head.sha must be a hexadecimal commit id")
         rows.extend(
             (
-                {"field": "Draft", "value": draft},
-                {"field": "Head SHA", "value": head_sha},
+                cast("dict[str, object]", {"field": "Draft", "value": draft}),
+                cast("dict[str, object]", {"field": "Head SHA", "value": head_sha}),
             )
         )
-    rows.extend(
-        (
-            {"field": "URL", "value": url},
-            {
-                "field": "Updated at",
-                "value": _text(record.get("updated_at"), "updated_at", maximum=64),
-            },
-        )
-    )
+    rows.append({"field": "URL", "value": url})
     return {"kind": kind, "rows": rows}
 
 

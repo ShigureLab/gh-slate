@@ -20,8 +20,10 @@ The Issue and Pull Request event payloads select which target to update; they
 are not rendered as current state. Every writer fetches the current GitHub
 resource immediately before `gh-slate apply`, so a late run for an older event
 cannot restore that event's stale title, state, draft flag, or head SHA. The
-display intentionally omits the webhook `action`, which is not a property of
-the current resource.
+display intentionally omits the webhook `action` and the resource's broad
+`updated_at` timestamp. The workflows subscribe to every event that can change
+a displayed field; unrelated assignment, label, milestone, review-request, and
+lock activity therefore does not require a dashboard rewrite.
 
 All writers also use `cancel-in-progress: false`. GitHub concurrency groups do
 not promise FIFO ordering, and the comment endpoint has no documented

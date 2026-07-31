@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass, field
+from functools import partial
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 
+from gh_slate.github import GhProcess
+from gh_slate.github.process import ProcessResult
+
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
+    from types import ModuleType
 
 ROOT = Path(__file__).resolve().parents[2]
 ACTIONS = ROOT / "examples" / "actions"
@@ -48,37 +54,63 @@ def _target_response(kind: str, *, number: int = 17) -> dict[str, object]:
     return response
 
 
-def _fake_gh_environment(
-    tmp_path: Path,
-    response: Mapping[str, object],
-) -> tuple[dict[str, str], Path]:
-    binary = tmp_path / "bin" / "gh"
-    binary.parent.mkdir()
-    binary.write_text(
-        """#!/usr/bin/env python3
-import json
-import os
-import sys
-from pathlib import Path
+@dataclass(slots=True)
+class _FakeGhRunner:
+    response: Mapping[str, object]
+    calls: list[tuple[tuple[str, ...], float, str | None, int, int]] = field(default_factory=list)
 
-Path(os.environ["FAKE_GH_ARGS"]).write_text(json.dumps(sys.argv[1:]), encoding="utf-8")
-print(os.environ["FAKE_GH_RESPONSE"])
-""",
-        encoding="utf-8",
+    def run(
+        self,
+        argv: tuple[str, ...],
+        *,
+        timeout: float,
+        hostname: str | None,
+        max_stdout_bytes: int,
+        max_stderr_bytes: int,
+    ) -> ProcessResult:
+        self.calls.append(
+            (
+                argv,
+                timeout,
+                hostname,
+                max_stdout_bytes,
+                max_stderr_bytes,
+            )
+        )
+        return ProcessResult(
+            returncode=0,
+            stdout=json.dumps(self.response).encode("utf-8"),
+            stderr=b"",
+        )
+
+
+def _load_current_target_module() -> ModuleType:
+    path = ACTIONS / "scripts" / "current_target_to_slate.py"
+    spec = spec_from_file_location("_gh_slate_current_target_example", path)
+    if spec is None or spec.loader is None:  # pragma: no cover
+        raise AssertionError("current target example must be importable")
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _prepare_current_target(
+    monkeypatch: pytest.MonkeyPatch,
+    response: Mapping[str, object],
+    *arguments: str,
+) -> tuple[Callable[[], int], _FakeGhRunner]:
+    module = _load_current_target_module()
+    runner = _FakeGhRunner(response)
+    monkeypatch.setattr(module, "GhProcess", partial(GhProcess, runner=runner))
+    monkeypatch.delenv("GH_HOST", raising=False)
+    monkeypatch.setenv("GITHUB_SERVER_URL", "https://github.com")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(ACTIONS / "scripts" / "current_target_to_slate.py"), *arguments],
     )
-    binary.chmod(0o755)
-    arguments = tmp_path / "gh-args.json"
-    environment = os.environ.copy()
-    environment.update(
-        {
-            "FAKE_GH_ARGS": str(arguments),
-            "FAKE_GH_RESPONSE": json.dumps(response),
-            "GITHUB_SERVER_URL": "https://github.com",
-            "GH_TOKEN": "test-token",
-            "PATH": f"{binary.parent}{os.pathsep}{environment['PATH']}",
-        }
-    )
-    return environment, arguments
+    entrypoint: Callable[[], int] = module.main
+    return entrypoint, runner
 
 
 def test_actions_examples_pass_static_contract() -> None:
@@ -145,6 +177,33 @@ def test_static_contract_rejects_event_snapshot_as_dashboard_state(
 
 
 @pytest.mark.parametrize(
+    ("filename", "activity"),
+    [
+        ("issue-dashboard.yml", "transferred"),
+        ("pull-request-dashboard.yml", "ready_for_review"),
+        ("pull-request-target-reducer.yml", "ready_for_review"),
+    ],
+)
+def test_static_contract_rejects_missing_displayed_field_activity(
+    tmp_path: Path,
+    filename: str,
+    activity: str,
+) -> None:
+    shutil.copytree(ACTIONS, tmp_path / "examples" / "actions")
+    workflow = tmp_path / "examples" / "actions" / filename
+    source = workflow.read_text(encoding="utf-8")
+    workflow.write_text(
+        source.replace(f"{activity}, ", "", 1),
+        encoding="utf-8",
+    )
+
+    result = _run(str(CHECKER), str(tmp_path))
+
+    assert result.returncode == 1
+    assert "activity types must cover exactly the displayed resource fields" in result.stderr
+
+
+@pytest.mark.parametrize(
     ("kind", "resource", "schema", "template"),
     [
         (
@@ -167,17 +226,14 @@ def test_current_target_contract_fetches_and_renders(
     resource: str,
     schema: str,
     template: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    environment, gh_arguments = _fake_gh_environment(
-        tmp_path,
-        {**_target_response(kind), "action": "stale-event-action"},
-    )
     data = tmp_path / "data.json"
     github_env = tmp_path / "github-env"
     github_env.write_text("", encoding="utf-8")
-
-    fetched = _run(
-        str(ACTIONS / "scripts" / "current_target_to_slate.py"),
+    main, runner = _prepare_current_target(
+        monkeypatch,
+        {**_target_response(kind), "action": "stale-event-action"},
         kind,
         "--repository",
         "octo/example",
@@ -187,8 +243,8 @@ def test_current_target_contract_fetches_and_renders(
         str(data),
         "--github-env",
         str(github_env),
-        env=environment,
     )
+    fetched = main()
     rendered = _run(
         "-m",
         "gh_slate",
@@ -202,38 +258,45 @@ def test_current_target_contract_fetches_and_renders(
         str(ACTIONS / "templates" / template),
     )
 
-    assert fetched.returncode == 0, fetched.stderr
+    assert fetched == 0
     assert rendered.returncode == 0, rendered.stderr
     assert "Unsafe &#124; title &#96;is&#96; escaped" in rendered.stdout
     parsed = json.loads(data.read_text(encoding="utf-8"))
     assert parsed["kind"] == kind
-    assert {row["field"] for row in parsed["rows"]}.isdisjoint({"Action"})
-    assert {row["field"]: row["value"] for row in parsed["rows"]}["Updated at"] == ("2026-07-31T00:00:00Z")
+    assert {row["field"] for row in parsed["rows"]}.isdisjoint({"Action", "Updated at"})
     expected_path = "pull" if kind == "pull_request" else "issues"
     assert github_env.read_text(encoding="utf-8") == (
         f"GH_SLATE_CURRENT_TARGET=https://github.com/octo/example/{expected_path}/17\n"
     )
-    assert json.loads(gh_arguments.read_text(encoding="utf-8")) == [
-        "api",
-        "--hostname",
-        "github.com",
-        "--method",
-        "GET",
-        f"repos/octo/example/{resource}/17",
+    assert runner.calls == [
+        (
+            (
+                "gh",
+                "api",
+                "--hostname",
+                "github.com",
+                "--method",
+                "GET",
+                f"repos/octo/example/{resource}/17",
+            ),
+            30.0,
+            "github.com",
+            1024 * 1024,
+            64 * 1024,
+        )
     ]
 
 
-def test_current_target_rejects_mismatched_api_identity(tmp_path: Path) -> None:
-    environment, _arguments = _fake_gh_environment(
-        tmp_path,
-        _target_response("issue", number=18),
-    )
+def test_current_target_rejects_mismatched_api_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     data = tmp_path / "data.json"
     github_env = tmp_path / "github-env"
     github_env.write_text("", encoding="utf-8")
-
-    result = _run(
-        str(ACTIONS / "scripts" / "current_target_to_slate.py"),
+    main, _runner = _prepare_current_target(
+        monkeypatch,
+        _target_response("issue", number=18),
         "issue",
         "--repository",
         "octo/example",
@@ -243,11 +306,10 @@ def test_current_target_rejects_mismatched_api_identity(tmp_path: Path) -> None:
         str(data),
         "--github-env",
         str(github_env),
-        env=environment,
     )
 
-    assert result.returncode != 0
-    assert "number does not match" in result.stderr
+    with pytest.raises(SystemExit, match="number does not match"):
+        main()
     assert not data.exists()
     assert github_env.read_text(encoding="utf-8") == ""
 

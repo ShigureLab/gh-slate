@@ -8,7 +8,7 @@ import re
 import sys
 from copy import deepcopy
 from pathlib import Path
-from typing import NoReturn
+from typing import NoReturn, cast
 
 import yaml
 from jsonschema import Draft202012Validator
@@ -27,6 +27,16 @@ _FORBIDDEN_EXECUTION = re.compile(
     r"|\b(?:chmod|eval|source)\b",
     re.IGNORECASE,
 )
+_ISSUE_ACTIVITY_TYPES = ["opened", "reopened", "edited", "transferred", "closed"]
+_PULL_REQUEST_ACTIVITY_TYPES = [
+    "opened",
+    "reopened",
+    "synchronize",
+    "edited",
+    "ready_for_review",
+    "converted_to_draft",
+    "closed",
+]
 
 
 class CheckError(RuntimeError):
@@ -56,13 +66,13 @@ def _fail(path: Path, message: str) -> NoReturn:
 def _mapping(value: object, path: Path, field: str) -> dict[str, object]:
     if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
         _fail(path, f"{field} must be a mapping")
-    return value
+    return cast("dict[str, object]", value)
 
 
 def _list(value: object, path: Path, field: str) -> list[object]:
     if not isinstance(value, list):
         _fail(path, f"{field} must be a list")
-    return value
+    return cast("list[object]", value)
 
 
 def _load(root: Path, name: str) -> tuple[Path, dict[str, object]]:
@@ -128,6 +138,23 @@ def _assert_common(
         if _ACTION_REF.fullmatch(reference) is None:
             _fail(path, f"action reference must use a major version or full SHA: {reference}")
     return job, steps
+
+
+def _assert_activity_types(
+    workflow: dict[str, object],
+    path: Path,
+    *,
+    event: str,
+    expected: list[str],
+) -> None:
+    trigger = _mapping(workflow.get("on"), path, "on")
+    configuration = _mapping(trigger.get(event), path, f"on.{event}")
+    actual = _list(configuration.get("types"), path, f"on.{event}.types")
+    if actual != expected:
+        _fail(
+            path,
+            f"{event} activity types must cover exactly the displayed resource fields",
+        )
 
 
 def _assert_trusted_checkout(steps: list[dict[str, object]], path: Path) -> None:
@@ -228,6 +255,12 @@ def _check_issue(root: Path) -> None:
     group = _mapping(workflow["concurrency"], path, "concurrency")["group"]
     if "${{ github.event.issue.number }}" not in str(group) or "issue-dashboard" not in str(group):
         _fail(path, "Issue concurrency must include the target and slate name")
+    _assert_activity_types(
+        workflow,
+        path,
+        event="issues",
+        expected=_ISSUE_ACTIVITY_TYPES,
+    )
     _assert_writer_steps(
         steps,
         path,
@@ -254,6 +287,12 @@ def _check_pull_request(root: Path) -> None:
     group = _mapping(workflow["concurrency"], path, "concurrency")["group"]
     if "${{ github.event.pull_request.number }}" not in str(group) or "pr-dashboard" not in str(group):
         _fail(path, "Pull Request concurrency must include the target and slate name")
+    _assert_activity_types(
+        workflow,
+        path,
+        event="pull_request",
+        expected=_PULL_REQUEST_ACTIVITY_TYPES,
+    )
     _assert_writer_steps(
         steps,
         path,
@@ -273,6 +312,12 @@ def _check_reducer(root: Path) -> None:
         event="pull_request_target",
         permissions={},
         job_name="reduce",
+    )
+    _assert_activity_types(
+        workflow,
+        path,
+        event="pull_request_target",
+        expected=_PULL_REQUEST_ACTIVITY_TYPES,
     )
     references = _uses(steps)
     if any(reference.startswith("actions/checkout@") for reference in references):
