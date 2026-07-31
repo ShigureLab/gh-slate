@@ -417,11 +417,14 @@ def test_validation_diagnostic_resolves_local_ref_to_source_pointer() -> None:
         "$defs": {
             "label/name": {
                 "type": "string",
-            }
+            },
+            "label-alias": {
+                "$ref": "#/$defs/label~1name",
+            },
         },
         "properties": {
             "name": {
-                "$ref": "#/$defs/label~1name",
+                "$ref": "#/$defs/label-alias",
             }
         },
     }
