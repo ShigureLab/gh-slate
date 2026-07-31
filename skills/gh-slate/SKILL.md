@@ -27,9 +27,31 @@ Resolve the entrypoint once per shell, then keep the selected array for every
 follow-up command:
 
 ```bash
-if gh slate --version >/dev/null 2>&1; then
+gh_slate_compatible() {
+  local expected="$1"
+  shift
+  local output version major minor patch suffix
+  output="$("$@" --version 2>/dev/null)" || return 1
+  [[ "$output" == "$expected "* ]] || return 1
+  version="${output#"$expected "}"
+  [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)([-+][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] || return 1
+  major="${BASH_REMATCH[1]}"
+  minor="${BASH_REMATCH[2]}"
+  patch="${BASH_REMATCH[3]}"
+  suffix="${BASH_REMATCH[4]}"
+  major="${major#"${major%%[!0]*}"}"
+  minor="${minor#"${minor%%[!0]*}"}"
+  patch="${patch#"${patch%%[!0]*}"}"
+  if [[ -n "$major" ]]; then return 0; fi
+  if [[ -z "$minor" ]]; then return 1; fi
+  if [[ "$minor" != 1 ]]; then return 0; fi
+  if [[ -n "$patch" ]]; then return 0; fi
+  [[ -z "$suffix" || "$suffix" == +* ]]
+}
+
+if gh_slate_compatible "gh slate" gh slate; then
   GH_SLATE=(gh slate)
-elif gh-slate --version >/dev/null 2>&1; then
+elif gh_slate_compatible "gh-slate" gh-slate; then
   GH_SLATE=(gh-slate)
 else
   echo "Install gh-slate >=0.1.0 before continuing." >&2
@@ -39,8 +61,10 @@ fi
 "${GH_SLATE[@]}" --version
 ```
 
-Require version `0.1.0` or newer. If neither probe works, stop and offer one CLI
-installation path; installing the CLI and installing this skill are separate:
+Require version `0.1.0` or newer. A missing, malformed, prerelease-only, or
+older extension probe falls through to the direct Python CLI before the skill
+stops. If neither candidate is compatible, offer one CLI installation path;
+installing the CLI and installing this skill are separate:
 
 ```bash
 # Python CLI:

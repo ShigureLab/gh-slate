@@ -182,8 +182,12 @@ def _recipe_arguments(body: str) -> list[list[str]]:
     recipes: list[list[str]] = []
     lines = _bash_lines(body)
     required_probe_lines = {
-        "if gh slate --version >/dev/null 2>&1; then",
-        "elif gh-slate --version >/dev/null 2>&1; then",
+        'output="$("$@" --version 2>/dev/null)" || return 1',
+        '[[ "$output" == "$expected "* ]] || return 1',
+        '[[ "$version" =~ ^([0-9]+)\\.([0-9]+)\\.([0-9]+)([-+][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] || return 1',
+        'if gh_slate_compatible "gh slate" gh slate; then',
+        'elif gh_slate_compatible "gh-slate" gh-slate; then',
+        "gh_slate_compatible() {",
         "GH_SLATE=(gh slate)",
         "GH_SLATE=(gh-slate)",
     }
