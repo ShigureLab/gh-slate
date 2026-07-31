@@ -457,6 +457,43 @@ class _CompletedProcess:
         return 0
 
 
+def test_default_write_runner_wait_uses_budget_remaining_after_worker_setup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class TrackingProcess(_CompletedProcess):
+        def __init__(self) -> None:
+            super().__init__()
+            self.wait_timeouts: list[float | None] = []
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.wait_timeouts.append(timeout)
+            return super().wait(timeout)
+
+    process = TrackingProcess()
+    clock = [10.0]
+    real_start = threading.Thread.start
+
+    def start(worker: threading.Thread) -> None:
+        clock[0] += 0.1
+        real_start(worker)
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(threading.Thread, "start", start)
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+
+    result = SubprocessWriteRunner().run(
+        ("gh", "api", "repos/owner/repo/issues/42/comments"),
+        stdin=b"{}",
+        timeout=1.0,
+        hostname=None,
+        max_stdout_bytes=1024,
+        max_stderr_bytes=1024,
+    )
+
+    assert result.returncode == 0
+    assert process.wait_timeouts == [pytest.approx(0.7)]
+
+
 class _TimeoutCleanupProcess:
     def __init__(self, cleanup_point: str, interruption: BaseException) -> None:
         self.stdin = io.BytesIO()

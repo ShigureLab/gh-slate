@@ -260,7 +260,7 @@ class SubprocessWriteRunner:
         try:
             for worker in workers:
                 worker.start()
-            returncode = process.wait(timeout=timeout)
+            returncode = process.wait(timeout=max(0.0, deadline - time.monotonic()))
             if not join_workers(deadline):
                 raise subprocess.TimeoutExpired(cmd=argv, timeout=timeout)
         except subprocess.TimeoutExpired:
