@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from decimal import ROUND_DOWN, Decimal, Inexact, getcontext, localcontext
+from decimal import ROUND_DOWN, ROUND_UP, Decimal, Inexact, getcontext, localcontext
 
 import pytest
 
@@ -20,6 +20,20 @@ def slate() -> SlateContext:
         repository="owner/repo",
         number=42,
         url="https://github.example/owner/repo/issues/42",
+    )
+
+
+def _decimal_context_state() -> tuple[object, ...]:
+    context = getcontext()
+    return (
+        context.prec,
+        context.rounding,
+        context.Emin,
+        context.Emax,
+        context.capitals,
+        context.clamp,
+        dict(context.flags),
+        dict(context.traps),
     )
 
 
@@ -56,20 +70,44 @@ def test_rendering_is_deterministic() -> None:
     assert first == second == '{"a":0,"z":1e+22}'
 
 
-def test_decimal_arithmetic_uses_a_fixed_isolated_context() -> None:
+@pytest.mark.parametrize(
+    ("precision", "rounding"),
+    [(2, ROUND_DOWN), (6, ROUND_UP)],
+)
+def test_decimal_arithmetic_uses_a_fixed_isolated_context(
+    precision: int,
+    rounding: str,
+) -> None:
     source = "{{ data.one / data.seven }}"
     data = {"one": Decimal(1), "seven": Decimal(7)}
     expected = "0.1428571428571428571428571429"
 
     with localcontext() as caller:
-        caller.prec = 2
-        caller.rounding = ROUND_DOWN
+        caller.prec = precision
+        caller.rounding = rounding
         caller.traps[Inexact] = True
+        before = _decimal_context_state()
 
         assert render_jinja(source, data=data, slate=slate()) == expected
-        assert getcontext().prec == 2
-        assert getcontext().rounding == ROUND_DOWN
-        assert getcontext().traps[Inexact] is True
+        assert _decimal_context_state() == before
+
+
+def test_decimal_context_is_restored_after_a_rendering_error() -> None:
+    with localcontext() as caller:
+        caller.prec = 3
+        caller.rounding = ROUND_UP
+        caller.traps[Inexact] = True
+        before = _decimal_context_state()
+
+        with pytest.raises(RenderingError) as caught:
+            render_jinja(
+                "{{ data.one / data.zero }}",
+                data={"one": Decimal(1), "zero": Decimal(0)},
+                slate=slate(),
+            )
+
+        assert caught.value.code == "jinja_render_error"
+        assert _decimal_context_state() == before
 
 
 @pytest.mark.parametrize(
