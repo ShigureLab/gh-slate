@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import io
 import os
 import subprocess
@@ -9,7 +10,10 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 import pytest
 
@@ -311,6 +315,7 @@ def test_payload_limit_is_enforced_before_process_start() -> None:
     assert runner.calls == []
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows uses the gated Job Object launcher")
 def test_default_runner_never_uses_a_shell_and_inherits_gh_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -357,6 +362,105 @@ def test_default_runner_never_uses_a_shell_and_inherits_gh_environment(
     assert environment["GH_TOKEN"] == "inherited-token"
     assert environment["GH_HOST"] == "github.example.com"
     assert os.environ["GH_TOKEN"] == "inherited-token"
+
+
+def test_default_write_runner_closes_retained_process_tree_on_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Process:
+        stdin = io.BytesIO()
+        stdout = io.BytesIO(b'{"id":123}')
+        stderr = io.BytesIO(b"")
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+        def kill(self) -> None:
+            raise AssertionError("successful process must not be killed")
+
+    class ProcessTree:
+        terminated = 0
+        closed = 0
+
+        def terminate(self) -> None:
+            self.terminated += 1
+
+        def close(self) -> None:
+            self.closed += 1
+
+        def launch_error(self, stderr: bytes) -> OSError | None:
+            assert stderr == b""
+            return None
+
+    process_tree = ProcessTree()
+    monkeypatch.setattr(
+        write_module,
+        "_spawn_process",
+        lambda argv, *, environment, stdin: (
+            cast("subprocess.Popen[bytes]", Process()),
+            cast("write_module._ProcessTree", process_tree),
+        ),
+    )
+
+    result = SubprocessWriteRunner().run(
+        ("gh", "api"),
+        stdin=b"{}",
+        timeout=1,
+        hostname=None,
+        max_stdout_bytes=1024,
+        max_stderr_bytes=1024,
+    )
+
+    assert result == ProcessResult(0, b'{"id":123}', b"")
+    assert process_tree.terminated == 0
+    assert process_tree.closed == 1
+
+
+def test_gated_launcher_failure_is_a_known_not_started_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Process:
+        stdin = io.BytesIO()
+        stdout = io.BytesIO()
+        stderr = io.BytesIO(b"gated launch failed")
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 125
+
+        def kill(self) -> None:
+            raise AssertionError("completed launcher must not be killed")
+
+    class ProcessTree:
+        closed = 0
+
+        def terminate(self) -> None:
+            raise AssertionError("completed launcher must not be terminated")
+
+        def close(self) -> None:
+            self.closed += 1
+
+        def launch_error(self, stderr: bytes) -> OSError | None:
+            assert stderr == b"gated launch failed"
+            return FileNotFoundError(2, "missing")
+
+    process_tree = ProcessTree()
+    monkeypatch.setattr(
+        write_module,
+        "_spawn_process",
+        lambda argv, *, environment, stdin: (
+            cast("subprocess.Popen[bytes]", Process()),
+            cast("write_module._ProcessTree", process_tree),
+        ),
+    )
+
+    with pytest.raises(GhSlateError) as caught:
+        GhWriteProcess(runner=SubprocessWriteRunner()).post(
+            "repos/owner/repo/issues/42/comments",
+            {"body": "safe"},
+        )
+
+    assert caught.value.code == "gh_not_found"
+    assert process_tree.closed == 1
 
 
 @pytest.mark.parametrize(
@@ -444,6 +548,55 @@ def test_default_write_runner_bounds_joins_after_parent_exits() -> None:
         )
 
     assert time.monotonic() - started < 3
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Objects are unavailable")
+def test_windows_write_runner_kills_descendant_after_leader_exit(tmp_path: Path) -> None:
+    kernel32 = ctypes.__dict__["WinDLL"]("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32)
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
+    kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+    kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+    kernel32.CloseHandle.restype = ctypes.c_int
+    child_pid = tmp_path / "write-child.pid"
+    retained: list[int] = []
+
+    def retain_child_handle() -> None:
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and not child_pid.exists():
+            time.sleep(0.01)
+        if not child_pid.exists():
+            return
+        pid = int(child_pid.read_text())
+        handle = kernel32.OpenProcess(0x00100000 | 0x1000, False, pid)
+        if handle:
+            retained.append(cast("int", handle))
+
+    monitor = threading.Thread(target=retain_child_handle)
+    monitor.start()
+    parent = (
+        "import pathlib,subprocess,sys;"
+        "child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)']);"
+        "pathlib.Path(sys.argv[1]).write_text(str(child.pid))"
+    )
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            SubprocessWriteRunner().run(
+                (sys.executable, "-c", parent, str(child_pid)),
+                stdin=b"{}",
+                timeout=1,
+                hostname=None,
+                max_stdout_bytes=1024,
+                max_stderr_bytes=1024,
+            )
+        monitor.join(timeout=2)
+        assert retained
+        assert kernel32.WaitForSingleObject(retained[0], 1_000) == 0
+    finally:
+        monitor.join(timeout=2)
+        if retained:
+            kernel32.CloseHandle(retained[0])
 
 
 class _InterruptedProcess:
