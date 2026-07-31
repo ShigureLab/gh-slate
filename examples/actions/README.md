@@ -25,18 +25,20 @@ are not rendered as current state. Every writer fetches the current GitHub
 resource immediately before `gh-slate apply`, so a late run for an older event
 cannot restore that event's stale title, state, draft flag, or head SHA. The
 display intentionally omits the webhook `action` and the resource's broad
-`updated_at` timestamp. The workflows subscribe to every event that can change
-a displayed field; unrelated assignment, label, milestone, review-request, and
-lock activity therefore does not require a dashboard rewrite.
+`updated_at` timestamp. The workflows subscribe to every supported
+same-repository event that can change a displayed field; unrelated assignment,
+label, milestone, review-request, and lock activity therefore does not require
+a dashboard rewrite.
 
 The Issue example intentionally does not subscribe to `transferred`. That
 event runs with the source repository identity and repository-scoped
 `GITHUB_TOKEN`, while the moved Issue must be read and updated in the
-destination repository. A later supported event in the destination will
-refresh the transferred dashboard. Immediate cross-repository refresh requires
-a separately designed GitHub App or fine-grained token with destination write
-access, plus explicit destination-identity validation; do not add
-`transferred` to the copyable workflow while it uses `GITHUB_TOKEN`.
+destination repository. If the same workflow is installed there, a later
+supported event in the destination will refresh the transferred dashboard.
+Immediate cross-repository refresh requires a separately designed GitHub App
+or fine-grained token with destination write access, plus explicit
+destination-identity validation; do not add `transferred` to the copyable
+workflow while it uses `GITHUB_TOKEN`.
 
 All writers also use `cancel-in-progress: false`. GitHub concurrency groups do
 not promise FIFO ordering, and the comment endpoint has no documented
