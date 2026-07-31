@@ -14,6 +14,7 @@ JSON_SCHEMA_DIALECT_2020_12 = "https://json-schema.org/draft/2020-12/schema"
 MAX_REVISION = 2**63 - 1
 MAX_RENDERER_VERSION = 2**31 - 1
 MAX_GITHUB_USER_ID = 2**63 - 1
+MAX_GITHUB_LOGIN_BYTES = 39
 
 _SLATE_NAME_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -129,7 +130,17 @@ class ControllerV1:
     id: int | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "login", _require_string(self.login, path="controller.login"))
+        login = _require_string(self.login, path="controller.login")
+        try:
+            login_bytes = login.encode("utf-8", errors="strict")
+        except UnicodeEncodeError:
+            _invalid("controller.login must be valid UTF-8 text", path="controller.login")
+        if len(login_bytes) > MAX_GITHUB_LOGIN_BYTES:
+            _invalid(
+                f"controller.login must be at most {MAX_GITHUB_LOGIN_BYTES} UTF-8 bytes",
+                path="controller.login",
+            )
+        object.__setattr__(self, "login", login)
         if self.id is not None:
             object.__setattr__(
                 self,

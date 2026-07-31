@@ -23,7 +23,11 @@ from gh_slate.codec import (
     strict_loads,
 )
 from gh_slate.codec.limits import SizeReport, enforce_size_limits
-from gh_slate.codec.model import MAX_GITHUB_USER_ID, MAX_REVISION
+from gh_slate.codec.model import (
+    MAX_GITHUB_LOGIN_BYTES,
+    MAX_GITHUB_USER_ID,
+    MAX_REVISION,
+)
 from gh_slate.codec.text import utf8_size
 from gh_slate.rendering.errors import RenderingError
 from gh_slate.rendering.jinja import SlateContext, render_jinja
@@ -43,6 +47,7 @@ if TYPE_CHECKING:
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _MAX_SCHEMA_PROJECTION_PARTS = 2048
+_PREFLIGHT_CONTROLLER_LOGIN = "0123456789abcdefghijklmnopqrstuvwxyz-a0"
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,9 +248,11 @@ class _SchemaProjection:
             )
 
         result.append((typed, nested_resolver))
-        all_of = typed.get("allOf")
-        if isinstance(all_of, tuple):
-            for subschema in all_of:
+        for keyword in ("allOf", "oneOf", "anyOf"):
+            alternatives = typed.get(keyword)
+            if not isinstance(alternatives, tuple):
+                continue
+            for subschema in alternatives:
                 result.extend(
                     self.parts(
                         subschema,
@@ -334,17 +341,20 @@ def _preflight_materialization(result: RenderResult, *, name: str) -> None:
     """Apply the complete comment-envelope limits to a local render.
 
     Local rendering has no authenticated controller or stored revision yet.
-    Maximum-width numeric metadata makes this provisional state conservative
-    for those fields while reusing the production encoder for every wire and
-    reserved-marker boundary.
+    Maximum-width, low-compressibility controller metadata makes this
+    provisional state conservative while reusing the production encoder for
+    every wire and reserved-marker boundary.
     """
+
+    if len(_PREFLIGHT_CONTROLLER_LOGIN.encode("ascii")) != MAX_GITHUB_LOGIN_BYTES:  # pragma: no cover
+        raise AssertionError("preflight controller login must use the full GitHub login budget")
 
     encode_comment(
         StateV1(
             name=name,
             revision=MAX_REVISION,
             controller=ControllerV1(
-                login="gh-slate-local-preview",
+                login=_PREFLIGHT_CONTROLLER_LOGIN,
                 id=MAX_GITHUB_USER_ID,
             ),
             data=result.data,

@@ -1,20 +1,24 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
 
 import pytest
 
+import gh_slate.rendering.engine as engine_module
 from gh_slate.codec import (
     CodecError,
     ControllerV1,
     RendererDescriptorV1,
     StateV1,
     decode_comment,
+    encode_comment,
     strict_loads,
 )
+from gh_slate.codec.limits import DEFAULT_CODEC_LIMITS
 from gh_slate.rendering import (
     RenderingError,
     RenderLimits,
@@ -164,6 +168,69 @@ def test_table_schema_projection_resolves_local_refs_and_all_of(
     ]
 
 
+@pytest.mark.parametrize(
+    "jobs",
+    [
+        [],
+        [{"kind": "named", "name": "linux"}],
+    ],
+)
+def test_table_schema_projection_traverses_one_of_and_any_of(
+    jobs: list[dict[str, str]],
+) -> None:
+    schema = validate_schema(
+        {
+            "$defs": {
+                "row": {
+                    "type": "object",
+                    "anyOf": [
+                        {
+                            "properties": {
+                                "kind": {"const": "named"},
+                            }
+                        },
+                        {
+                            "properties": {
+                                "name": {"type": "string"},
+                            }
+                        },
+                    ],
+                }
+            },
+            "type": "object",
+            "properties": {
+                "jobs": {
+                    "oneOf": [
+                        {
+                            "type": "array",
+                            "maxItems": 0,
+                            "items": {"$ref": "#/$defs/row"},
+                        },
+                        {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {"$ref": "#/$defs/row"},
+                        },
+                    ]
+                }
+            },
+        }
+    )
+
+    result = render(
+        {"jobs": jobs},
+        TableRendererV1(selector=".jobs").to_descriptor(),
+        schema=schema,
+        slate=SlateContext(name="ci"),
+    )
+
+    assert result.markdown.startswith("| kind | name |\n| --- | --- |\n")
+    assert result.renderer.to_json()["columns"] == [
+        {"path": ["kind"], "header": "kind"},
+        {"path": ["name"], "header": "name"},
+    ]
+
+
 def test_jinja_filters_obey_the_shared_builtin_render_limits() -> None:
     descriptor = jinja_descriptor('{{ data.rows | md_table(columns=["name"]) }}')
 
@@ -202,6 +269,70 @@ def test_render_preflights_compressed_comment_envelope() -> None:
         render(
             {"blob": high_entropy},
             jinja_descriptor("ok"),
+            slate=SlateContext(name="ci"),
+        )
+
+    assert caught.value.code == "codec_size_limit"
+    exceeded = caught.value.details["exceeded"]
+    assert isinstance(exceeded, Mapping)
+    assert "compressed_bytes" in exceeded
+
+
+def test_render_preflight_uses_a_maximum_width_low_compressibility_controller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hashes = [sha256(str(index).encode()).hexdigest() for index in range(625)]
+    data = {"blob": "".join(hashes[:624]) + hashes[624][:4]}
+    descriptor = jinja_descriptor("ok")
+    relaxed = replace(
+        DEFAULT_CODEC_LIMITS,
+        max_compressed_bytes=64 * 1024,
+    )
+    captured: list[StateV1] = []
+
+    def capture(state: StateV1, markdown: str):
+        captured.append(state)
+        return encode_comment(state, markdown, limits=relaxed)
+
+    monkeypatch.setattr(engine_module, "encode_comment", capture)
+    rendered = render(
+        data,
+        descriptor,
+        slate=SlateContext(name="ci"),
+    )
+
+    assert len(captured) == 1
+    provisional = captured[0]
+    assert len(provisional.controller.login.encode("ascii")) == 39
+    sentinel_size = encode_comment(
+        provisional,
+        rendered.markdown,
+        limits=relaxed,
+    ).sizes.compressed_bytes
+    legacy_size = encode_comment(
+        replace(
+            provisional,
+            controller=ControllerV1(login="gh-slate-local-preview"),
+        ),
+        rendered.markdown,
+        limits=relaxed,
+    ).sizes.compressed_bytes
+    assert sentinel_size > legacy_size
+
+    tight = replace(
+        DEFAULT_CODEC_LIMITS,
+        max_compressed_bytes=legacy_size,
+    )
+    monkeypatch.setattr(
+        engine_module,
+        "encode_comment",
+        lambda state, markdown: encode_comment(state, markdown, limits=tight),
+    )
+
+    with pytest.raises(CodecError) as caught:
+        render(
+            data,
+            descriptor,
             slate=SlateContext(name="ci"),
         )
 
