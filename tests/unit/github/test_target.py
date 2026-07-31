@@ -112,6 +112,13 @@ def test_comment_url_recovers_canonical_target_context() -> None:
     )
 
 
+def test_comment_url_bounds_identifier_before_integer_conversion() -> None:
+    with pytest.raises(GitHubReadError) as caught:
+        target_from_comment_url("https://github.com/owner/repo/issues/1#issuecomment-" + ("9" * 5000))
+
+    assert caught.value.code == "comment_url_invalid"
+
+
 @pytest.mark.parametrize(
     "url",
     [

@@ -138,6 +138,33 @@ def _positive_integer(value: object, *, field: str) -> int:
     return result
 
 
+def _positive_decimal_text(
+    value: object,
+    *,
+    field: str,
+    code: str = "target_invalid",
+) -> int:
+    if not isinstance(value, str) or not value or not value.isascii() or not value.isdecimal():
+        raise _error(
+            f"{field} must be a positive integer",
+            code=code,
+            details={"field": field},
+        )
+    significant = value.lstrip("0")
+    maximum = str(MAX_TARGET_NUMBER)
+    if (
+        not significant
+        or len(significant) > len(maximum)
+        or (len(significant) == len(maximum) and significant > maximum)
+    ):
+        raise _error(
+            f"{field} must be between 1 and {MAX_TARGET_NUMBER}",
+            code=code,
+            details={"field": field},
+        )
+    return int(significant)
+
+
 def _repository(value: object, *, field: str) -> str:
     if not isinstance(value, str) or value != value.strip() or value.count("/") != 1:
         raise _error(
@@ -280,7 +307,7 @@ def _target_url(value: object) -> _ParsedTargetUrl:
         raise _error("target URL must be a string")
     parsed = _split_url(value, field="target")
     parts = parsed.path.strip("/").split("/")
-    if len(parts) != 4 or parts[2] not in {"issues", "pull"} or not parts[3].isdecimal():
+    if len(parts) != 4 or parts[2] not in {"issues", "pull"}:
         raise _error(
             "target URL must identify one GitHub Issue or Pull Request",
             details={"field": "target"},
@@ -289,8 +316,8 @@ def _target_url(value: object) -> _ParsedTargetUrl:
         f"{parts[0]}/{parts[1]}",
         field="target.repository",
     )
-    number = _positive_integer(
-        int(parts[3]),
+    number = _positive_decimal_text(
+        parts[3],
         field="target.number",
     )
     return _ParsedTargetUrl(
@@ -337,7 +364,12 @@ def target_from_comment_url(
             "comment URL must be an absolute GitHub comment URL",
             code="comment_url_invalid",
         )
-    if expected_comment_id is not None and int(fragment.group("identifier")) != _positive_integer(
+    comment_id = _positive_decimal_text(
+        fragment.group("identifier"),
+        field="comment.id",
+        code="comment_url_invalid",
+    )
+    if expected_comment_id is not None and comment_id != _positive_integer(
         expected_comment_id,
         field="comment.id",
     ):
@@ -345,7 +377,7 @@ def target_from_comment_url(
             "comment URL fragment disagrees with the comment identifier",
             comment_url=value,
             expected_comment_id=expected_comment_id,
-            actual_comment_id=int(fragment.group("identifier")),
+            actual_comment_id=comment_id,
         )
     page_url = urlunsplit(
         (
