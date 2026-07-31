@@ -51,9 +51,16 @@ def test_select_one_has_stable_cardinality_and_jq_errors(filter_text: str, code:
         "get_jq_origin",
         "get_prog_origin",
         "get_search_list",
+        "have_decnum",
+        "have_literal_numbers",
+        '"helpers" | modulemeta',
+        "fromdate",
+        "fromdateiso8601",
         "now",
         "localtime",
         "strflocaltime",
+        "todate",
+        "todateiso8601",
         "input",
         "inputs",
         "input_filename",
@@ -62,6 +69,7 @@ def test_select_one_has_stable_cardinality_and_jq_errors(filter_text: str, code:
         'include "secrets"; .',
         'module {"name": "secrets"}; .',
         '"\\(env.HOME)"',
+        '"\\(j0)"',
         '"\\((1 # keep scanning\n), env.HOME)"',
     ],
 )
@@ -72,12 +80,95 @@ def test_selector_rejects_host_observation_facilities(filter_text: str) -> None:
     assert caught.value.code == "jq_filter_forbidden"
 
 
+def test_selector_rejects_every_platform_dependent_c_math_builtin() -> None:
+    expected = {
+        "acos",
+        "acosh",
+        "asin",
+        "asinh",
+        "atan",
+        "atan2",
+        "atanh",
+        "cbrt",
+        "ceil",
+        "copysign",
+        "cos",
+        "cosh",
+        "drem",
+        "erf",
+        "erfc",
+        "exp",
+        "exp10",
+        "exp2",
+        "expm1",
+        "fabs",
+        "fdim",
+        "floor",
+        "fma",
+        "fmax",
+        "fmin",
+        "fmod",
+        "frexp",
+        "gamma",
+        "hypot",
+        "j0",
+        "j1",
+        "jn",
+        "ldexp",
+        "lgamma",
+        "lgamma_r",
+        "log",
+        "log10",
+        "log1p",
+        "log2",
+        "logb",
+        "modf",
+        "nearbyint",
+        "nextafter",
+        "nexttoward",
+        "pow",
+        "pow10",
+        "remainder",
+        "rint",
+        "round",
+        "scalb",
+        "scalbln",
+        "significand",
+        "sin",
+        "sinh",
+        "sqrt",
+        "tan",
+        "tanh",
+        "tgamma",
+        "trunc",
+        "y0",
+        "y1",
+        "yn",
+    }
+    assert jq_module._PLATFORM_DEPENDENT_MATH_IDENTIFIERS == expected
+
+    for identifier in sorted(expected):
+        with pytest.raises(RenderingError) as caught:
+            select_one(None, identifier)
+        assert caught.value.code == "jq_filter_forbidden"
+        assert caught.value.details["token"] == identifier
+
+
 def test_selector_scan_is_token_aware_for_data_strings_fields_and_comments() -> None:
-    source = {"env": "data", "now": "stored"}
+    source = {
+        "env": "data",
+        "j0": "math field",
+        "modulemeta": "module field",
+        "now": "stored",
+    }
 
     assert select_one(source, ".env # import module include $ENV") == "data"
+    assert select_one(source, ".j0") == "math field"
+    assert select_one(source, ".modulemeta") == "module field"
     assert select_one(source, ".now # now localtime") == "stored"
-    assert select_one(source, '"env import include module $ENV"') == "env import include module $ENV"
+    assert select_one(source, '"env import include module modulemeta j0 $ENV"') == (
+        "env import include module modulemeta j0 $ENV"
+    )
 
 
 def test_selector_limit_is_measured_in_utf8_bytes() -> None:

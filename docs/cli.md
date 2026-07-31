@@ -277,12 +277,14 @@ reevaluated after every data update.
 
 Renderer selectors run in an isolated Python subprocess with isolated-mode
 imports, an empty environment, and an empty temporary working directory.
-Environment and module facilities (`env`, `$ENV`, `import`, `include`, and
-`module`) are rejected before evaluation. The default selector profile limits
-the filter to 16 KiB, canonical input and jq output to 256 KiB each, wall time
-to 2 seconds, address space to 512 MiB, and CPU time to 2 seconds. OS memory and
-CPU rlimits are applied where supported; the wall timeout and byte limits
-remain mandatory on every platform.
+Environment, build, and module facilities (`env`, `$ENV`, `import`, `include`,
+`module`, and `modulemeta`) are rejected before evaluation. Stored selectors
+also reject time/date wrappers and the complete jq 1.7 C math builtin surface,
+whose availability and results depend on the host OS and C library. The default
+selector profile limits the filter to 16 KiB, canonical input and jq output to
+256 KiB each, wall time to 2 seconds, address space to 512 MiB, and CPU time to
+2 seconds. OS memory and CPU rlimits are applied where supported; the wall
+timeout and byte limits remain mandatory on every platform.
 
 The isolated result is parsed back through the immutable JSON codec, so jq
 cannot mutate the input `StateV1`. libjq nevertheless uses IEEE-754 numeric

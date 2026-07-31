@@ -51,6 +51,8 @@ _FORBIDDEN_IDENTIFIERS = frozenset(
         "get_jq_origin",
         "get_prog_origin",
         "get_search_list",
+        "have_decnum",
+        "have_literal_numbers",
         "import",
         "include",
         "input",
@@ -58,18 +60,92 @@ _FORBIDDEN_IDENTIFIERS = frozenset(
         "input_line_number",
         "inputs",
         "module",
+        "modulemeta",
     }
 )
-_NONDETERMINISTIC_IDENTIFIERS = frozenset(
+_PLATFORM_DEPENDENT_MATH_IDENTIFIERS = frozenset(
     {
-        "gmtime",
-        "localtime",
-        "mktime",
-        "now",
-        "strftime",
-        "strflocaltime",
-        "strptime",
+        "acos",
+        "acosh",
+        "asin",
+        "asinh",
+        "atan",
+        "atan2",
+        "atanh",
+        "cbrt",
+        "ceil",
+        "copysign",
+        "cos",
+        "cosh",
+        "drem",
+        "erf",
+        "erfc",
+        "exp",
+        "exp10",
+        "exp2",
+        "expm1",
+        "fabs",
+        "fdim",
+        "floor",
+        "fma",
+        "fmax",
+        "fmin",
+        "fmod",
+        "frexp",
+        "gamma",
+        "hypot",
+        "j0",
+        "j1",
+        "jn",
+        "ldexp",
+        "lgamma",
+        "lgamma_r",
+        "log",
+        "log10",
+        "log1p",
+        "log2",
+        "logb",
+        "modf",
+        "nearbyint",
+        "nextafter",
+        "nexttoward",
+        "pow",
+        "pow10",
+        "remainder",
+        "rint",
+        "round",
+        "scalb",
+        "scalbln",
+        "significand",
+        "sin",
+        "sinh",
+        "sqrt",
+        "tan",
+        "tanh",
+        "tgamma",
+        "trunc",
+        "y0",
+        "y1",
+        "yn",
     }
+)
+_NONDETERMINISTIC_IDENTIFIERS = (
+    frozenset(
+        {
+            "fromdate",
+            "fromdateiso8601",
+            "gmtime",
+            "localtime",
+            "mktime",
+            "now",
+            "strftime",
+            "strflocaltime",
+            "strptime",
+            "todate",
+            "todateiso8601",
+        }
+    )
+    | _PLATFORM_DEPENDENT_MATH_IDENTIFIERS
 )
 _FORBIDDEN_VARIABLES = frozenset({"ENV", "JQ_BUILD_CONFIGURATION"})
 _WORKER_ERROR_CODES = {
@@ -196,7 +272,7 @@ def _scan_filter(filter_text: str, *, deterministic: bool) -> None:
                 )
                 if forbidden and previous_significant(index) != ".":
                     raise _rendering_error(
-                        "jq host observation and nondeterministic builtins are disabled",
+                        "jq host-dependent and nondeterministic builtins are disabled",
                         code="jq_filter_forbidden",
                         token=identifier,
                     )
