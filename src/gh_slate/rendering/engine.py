@@ -260,6 +260,17 @@ class _SchemaProjection:
                         active=next_active,
                     )
                 )
+        for keyword in ("if", "then", "else"):
+            subschema = typed.get(keyword)
+            if not isinstance(subschema, Mapping):
+                continue
+            result.extend(
+                self.parts(
+                    subschema,
+                    nested_resolver,
+                    active=next_active,
+                )
+            )
         return tuple(result)
 
 

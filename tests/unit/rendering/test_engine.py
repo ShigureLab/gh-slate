@@ -231,6 +231,53 @@ def test_table_schema_projection_traverses_one_of_and_any_of(
     ]
 
 
+@pytest.mark.parametrize(
+    ("keyword", "condition"),
+    [("then", True), ("else", False)],
+)
+def test_table_schema_projection_traverses_conditional_subschemas(
+    keyword: str,
+    condition: bool,
+) -> None:
+    row = {
+        "if": condition,
+        keyword: {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string"},
+                "name": {"type": "string"},
+            },
+        },
+    }
+    schema = validate_schema(
+        {
+            "type": "object",
+            "if": condition,
+            keyword: {
+                "properties": {
+                    "jobs": {
+                        "type": "array",
+                        "items": row,
+                    }
+                }
+            },
+        }
+    )
+
+    result = render(
+        {"jobs": []},
+        TableRendererV1(selector=".jobs").to_descriptor(),
+        schema=schema,
+        slate=SlateContext(name="ci"),
+    )
+
+    assert result.markdown == "| status | name |\n| --- | --- |\n"
+    assert result.renderer.to_json()["columns"] == [
+        {"path": ["status"], "header": "status"},
+        {"path": ["name"], "header": "name"},
+    ]
+
+
 def test_jinja_filters_obey_the_shared_builtin_render_limits() -> None:
     descriptor = jinja_descriptor('{{ data.rows | md_table(columns=["name"]) }}')
 
