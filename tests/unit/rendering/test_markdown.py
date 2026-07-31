@@ -17,7 +17,7 @@ from gh_slate.rendering.markdown import (
 def test_scalar_rendering_preserves_json_type_distinctions() -> None:
     assert render_value(MISSING) == "—"
     assert render_value(None) == "null"
-    assert render_value("") == '<code>""</code>'
+    assert render_value("") == "<code>&#34;&#34;</code>"
     assert render_value("null") == "null"
     assert render_value(True) == "true"
     assert render_value(False) == "false"
@@ -26,8 +26,16 @@ def test_scalar_rendering_preserves_json_type_distinctions() -> None:
     assert render_value(Decimal("1e21")) == "1e+21"
 
 
-def test_markdown_text_escapes_html_table_syntax_and_line_endings() -> None:
-    assert escape_markdown_text("<b>&|\\`\r\nnext\rline") == r"&lt;b&gt;&amp;\|\\&#96;<br>next<br>line"
+def test_markdown_text_neutralizes_all_ascii_punctuation_and_line_endings() -> None:
+    assert escape_markdown_text(
+        "**bold** [link](https://example.com) ![image](x) ~~strike~~ <b>&|\\`\r\nnext\rline"
+    ) == (
+        "&#42;&#42;bold&#42;&#42; "
+        "&#91;link&#93;&#40;https&#58;&#47;&#47;example&#46;com&#41; "
+        "&#33;&#91;image&#93;&#40;x&#41; "
+        "&#126;&#126;strike&#126;&#126; "
+        "&#60;b&#62;&#38;&#124;&#92;&#96;<br>next<br>line"
+    )
 
 
 def test_containers_use_sorted_compact_canonical_json_in_code() -> None:
@@ -39,7 +47,12 @@ def test_containers_use_sorted_compact_canonical_json_in_code() -> None:
     )
 
     assert compact_json(value) == ('{"a":1.2,"z":["a|b","line\\nbreak","`tick`","\\\\"]}')
-    assert render_value(value) == ('<code>{"a":1.2,"z":["a\\|b","line\\\\nbreak","&#96;tick&#96;","\\\\\\\\"]}</code>')
+    assert render_value(value) == (
+        "<code>&#123;&#34;a&#34;&#58;1&#46;2&#44;&#34;z&#34;&#58;&#91;"
+        "&#34;a&#124;b&#34;&#44;&#34;line&#92;n"
+        "break&#34;&#44;&#34;&#96;tick&#96;&#34;&#44;"
+        "&#34;&#92;&#92;&#34;&#93;&#125;</code>"
+    )
 
 
 def test_invalid_python_value_fails_at_rendering_boundary() -> None:

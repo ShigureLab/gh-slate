@@ -46,7 +46,11 @@ def test_table_distinguishes_missing_null_empty_and_nested_json() -> None:
 
     markdown = render_table(rows, renderer)
 
-    assert ('| — | null | <code>""</code> | false | 12.5 | <code>{"text":"a\\|b\\\\n&#96;c&#96;"}</code> |') in markdown
+    assert (
+        "| — | null | <code>&#34;&#34;</code> | false | 12.5 | "
+        "<code>&#123;&#34;text&#34;&#58;&#34;a&#124;b&#92;n"
+        "&#96;c&#96;&#34;&#125;</code> |"
+    ) in markdown
 
 
 def test_typed_column_path_traverses_objects_and_array_indexes() -> None:
@@ -106,6 +110,34 @@ def test_empty_array_with_columns_renders_an_empty_table() -> None:
 
     assert render_table((), renderer) == ("| name | status |\n| --- | --- |")
     assert render_table((), TableRendererV1()) == "_No data._"
+
+
+def test_table_neutralizes_markdown_in_all_untrusted_text_slots() -> None:
+    renderer = TableRendererV1(
+        title="**title** <tag>",
+        columns=(
+            TableColumn(
+                path=("value",),
+                header="[header](https://example.com)",
+            ),
+            TableColumn(
+                path=("missing",),
+                header="!missing!",
+            ),
+        ),
+        missing="![missing](https://example.com)",
+    )
+
+    markdown = render_table(
+        ({"value": "~~value~~ @team https://example.com"},),
+        renderer,
+    )
+
+    assert "&#42;&#42;title&#42;&#42; &#60;tag&#62;" in markdown
+    assert "&#91;header&#93;&#40;https&#58;&#47;&#47;example&#46;com&#41;" in markdown
+    assert "&#33;missing&#33;" in markdown
+    assert ("&#126;&#126;value&#126;&#126; &#64;team https&#58;&#47;&#47;example&#46;com") in markdown
+    assert ("&#33;&#91;missing&#93;&#40;https&#58;&#47;&#47;example&#46;com&#41;") in markdown
 
 
 def test_table_requires_an_array_of_objects_and_resolved_nonempty_columns() -> None:

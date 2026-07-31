@@ -2,6 +2,6 @@
 
 | name | ok |
 | --- | --- |
-| linux\|x64 | true |
+| linux&#124;x64 | true |
 
 {"a":1,"z":null}

@@ -21,8 +21,8 @@ def test_object_keys_are_sorted_and_array_order_uses_index_labels() -> None:
 
     assert markdown.splitlines() == [
         "- <code>a</code>:",
-        "  - <code>[0]</code>: first",
-        "  - <code>[1]</code>: second",
+        "  - <code>&#91;0&#93;</code>: first",
+        "  - <code>&#91;1&#93;</code>: second",
         "- <code>z</code>: last",
     ]
 
@@ -34,16 +34,16 @@ def test_empty_array_object_null_and_empty_string_are_distinct() -> None:
     )
 
     assert markdown.splitlines() == [
-        "- <code>[0]</code>: <code>[]</code>",
-        "- <code>[1]</code>: <code>{}</code>",
-        "- <code>[2]</code>: null",
-        '- <code>[3]</code>: <code>""</code>',
+        "- <code>&#91;0&#93;</code>: <code>&#91;&#93;</code>",
+        "- <code>&#91;1&#93;</code>: <code>&#123;&#125;</code>",
+        "- <code>&#91;2&#93;</code>: null",
+        "- <code>&#91;3&#93;</code>: <code>&#34;&#34;</code>",
     ]
 
 
 def test_empty_root_containers_are_not_silently_dropped() -> None:
-    assert render_list((), ListRendererV1()) == "- <code>[]</code>"
-    assert render_list({}, ListRendererV1()) == "- <code>{}</code>"
+    assert render_list((), ListRendererV1()) == "- <code>&#91;&#93;</code>"
+    assert render_list({}, ListRendererV1()) == "- <code>&#123;&#125;</code>"
 
 
 def test_depth_limit_shows_compact_json_without_false_item_omission() -> None:
@@ -54,7 +54,7 @@ def test_depth_limit_shows_compact_json_without_false_item_omission() -> None:
 
     assert markdown.splitlines() == [
         "- <code>a</code>:",
-        '  - <code>b</code>: <code>{"c":"value"}</code> _(depth limit)_',
+        ("  - <code>b</code>: <code>&#123;&#34;c&#34;&#58;&#34;value&#34;&#125;</code> _(depth limit)_"),
     ]
     assert "item limit" not in markdown
 
@@ -86,7 +86,25 @@ def test_title_and_output_are_markdown_escaped() -> None:
     assert render_list(
         ("x",),
         ListRendererV1(title="<Title|`>"),
-    ).startswith("## &lt;Title\\|&#96;&gt;\n\n")
+    ).startswith("## &#60;Title&#124;&#96;&#62;\n\n")
+
+
+def test_list_neutralizes_markdown_in_title_keys_and_values() -> None:
+    markdown = render_list(
+        {"[key](https://example.com)": "![image](x) ~~value~~ @team"},
+        ListRendererV1(title="**title** <tag>"),
+    )
+
+    assert markdown.splitlines() == [
+        "## &#42;&#42;title&#42;&#42; &#60;tag&#62;",
+        "",
+        (
+            "- <code>&#91;key&#93;&#40;https&#58;&#47;&#47;"
+            "example&#46;com&#41;</code>: "
+            "&#33;&#91;image&#93;&#40;x&#41; "
+            "&#126;&#126;value&#126;&#126; &#64;team"
+        ),
+    ]
 
 
 def test_list_output_limit_fails_explicitly() -> None:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import html
+import string
 from collections.abc import Mapping
 from decimal import Decimal
 
@@ -14,6 +14,7 @@ class _Missing:
 
 
 MISSING = _Missing()
+_ASCII_PUNCTUATION = frozenset(string.punctuation)
 
 
 def compact_json(value: object) -> str:
@@ -28,11 +29,10 @@ def compact_json(value: object) -> str:
 
 def escape_markdown_text(value: str) -> str:
     normalized = value.replace("\r\n", "\n").replace("\r", "\n")
-    escaped = html.escape(normalized, quote=False)
-    escaped = escaped.replace("\\", "\\\\")
-    escaped = escaped.replace("|", "\\|")
-    escaped = escaped.replace("`", "&#96;")
-    return escaped.replace("\n", "<br>")
+    return "".join(
+        "<br>" if character == "\n" else f"&#{ord(character)};" if character in _ASCII_PUNCTUATION else character
+        for character in normalized
+    )
 
 
 def code(value: str) -> str:

@@ -330,9 +330,11 @@ Default cell rendering is deterministic:
 | missing property | `—`                             |
 | array/object     | compact JSON in code formatting |
 
-Pipes, backslashes, backticks, and newlines are escaped for GitHub-flavored
-Markdown tables. Raw Markdown cells require an explicit trusted renderer option;
-they are never inferred from a string.
+ASCII punctuation is emitted as inert numeric character references and newlines
+as trusted `<br>` elements, so emphasis, links, images, mentions, autolinks,
+table delimiters, and HTML in untrusted strings remain display text. Raw
+Markdown cells require an explicit trusted renderer option; they are never
+inferred from a string.
 
 ### 4.3 Built-in list renderer
 
@@ -1278,8 +1280,8 @@ Acceptance gates:
 
 - all three renderers produce byte-stable Markdown for their golden fixtures;
 - table tests distinguish missing, null, empty string, empty array, and nested
-  JSON, cover pipes, backslashes, backticks, and newlines, and prove that string
-  and integer path segments remain distinct;
+  JSON, cover inert punctuation and newlines, and prove that string and integer
+  path segments remain distinct;
 - list tests cover object ordering, array ordering, depth limits, and item
   limits without silent loss;
 - Jinja cannot access environment variables, files, network, dangerous Python

@@ -121,7 +121,7 @@ def test_md_table_uses_the_builtin_markdown_renderer() -> None:
         slate=slate(),
     )
 
-    assert rendered == "| name | ok |\n| --- | --- |\n| linux\\|x64 | true |"
+    assert rendered == "| name | ok |\n| --- | --- |\n| linux&#124;x64 | true |"
 
 
 def test_md_list_uses_the_builtin_markdown_renderer() -> None:
@@ -131,7 +131,7 @@ def test_md_list_uses_the_builtin_markdown_renderer() -> None:
         slate=slate(),
     )
 
-    assert rendered == "- <code>[0]</code>: ready\n- <code>[1]</code>: null"
+    assert rendered == ("- <code>&#91;0&#93;</code>: ready\n- <code>&#91;1&#93;</code>: null")
 
 
 def test_source_limit_is_checked_before_parsing() -> None:
