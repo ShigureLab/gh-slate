@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Literal, TypeAlias, cast
 
+from gh_slate.codec.errors import CodecError
 from gh_slate.codec.json import JsonValue, freeze_json
 from gh_slate.codec.model import (
     JSON_SCHEMA_DIALECT_2020_12,
@@ -114,7 +115,14 @@ def infer_schema(data: object) -> SchemaSnapshotV1:
     properties, or infer semantic string and value constraints.
     """
 
-    frozen = freeze_json(data)
+    try:
+        frozen = freeze_json(data)
+    except CodecError as error:
+        raise SchemaError(
+            "data is not valid JSON",
+            code="data_invalid",
+            details={"cause_code": error.code},
+        ) from None
     if not isinstance(frozen, Mapping):
         raise SchemaError(
             "data root must be a JSON object",

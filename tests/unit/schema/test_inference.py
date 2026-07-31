@@ -31,6 +31,32 @@ def test_inference_requires_an_object_root(data: object) -> None:
     assert caught.value.details["path"] == "$"
 
 
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"float": 1.5},
+        {1: "non-string key"},
+    ],
+)
+def test_inference_translates_invalid_json_to_schema_error(data: object) -> None:
+    with pytest.raises(SchemaError) as caught:
+        infer_schema(data)
+
+    assert caught.value.code == "data_invalid"
+    assert isinstance(caught.value.details["cause_code"], str)
+
+
+def test_inference_translates_cyclic_data_to_schema_error() -> None:
+    data: dict[str, object] = {}
+    data["cycle"] = data
+
+    with pytest.raises(SchemaError) as caught:
+        infer_schema(data)
+
+    assert caught.value.code == "data_invalid"
+    assert isinstance(caught.value.details["cause_code"], str)
+
+
 def test_infers_a_permissive_schema_for_nested_objects_and_arrays() -> None:
     document = _document(
         {
