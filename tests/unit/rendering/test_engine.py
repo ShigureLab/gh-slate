@@ -376,6 +376,34 @@ def test_materialized_comment_round_trips_and_rerenders_byte_identically() -> No
     assert render_state(decoded.state).markdown == decoded.visible_markdown
 
 
+def test_stored_state_render_skips_provisional_materialization_preflight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = StateV1(
+        name="ci",
+        revision=1,
+        controller=ControllerV1(login="ci-bot"),
+        data={"jobs": [{"name": "linux"}]},
+        renderer=TableRendererV1(
+            selector=".jobs",
+            title=None,
+            columns=(TableColumn(path=("name",), header="name"),),
+        ).to_descriptor(),
+        render_sha256=_EMPTY_HASH,
+    )
+
+    def reject_provisional_preflight(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("stored states must use their actual metadata")
+
+    monkeypatch.setattr(engine_module, "_preflight_materialization", reject_provisional_preflight)
+
+    rendered = render_state(state)
+    materialized = materialize_comment(state)
+
+    assert rendered.markdown == materialized.rendered.markdown
+    assert decode_comment(materialized.encoded.body).state == materialized.state
+
+
 def test_materialization_persists_schema_resolved_table_columns() -> None:
     state = StateV1(
         name="ci",

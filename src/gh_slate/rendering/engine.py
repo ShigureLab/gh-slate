@@ -366,16 +366,15 @@ def _preflight_materialization(result: RenderResult, *, name: str) -> None:
     )
 
 
-def render(
+def _render(
     data: object,
     renderer: RendererDescriptorV1,
     *,
     schema: SchemaSnapshotV1 | bool | Mapping[str, object] | None = None,
     slate: SlateContext,
     limits: RenderLimits = DEFAULT_RENDER_LIMITS,
+    preflight: bool,
 ) -> RenderResult:
-    """Validate, canonicalize, and render one local slate without any I/O."""
-
     canonical, snapshot = _canonical_data(data, schema)
     resolved_descriptor = renderer
     _enforce_components(canonical, snapshot, renderer)
@@ -429,8 +428,29 @@ def render(
         markdown=markdown,
         render_sha256=render_sha256(markdown),
     )
-    _preflight_materialization(result, name=slate.name)
+    if preflight:
+        _preflight_materialization(result, name=slate.name)
     return result
+
+
+def render(
+    data: object,
+    renderer: RendererDescriptorV1,
+    *,
+    schema: SchemaSnapshotV1 | bool | Mapping[str, object] | None = None,
+    slate: SlateContext,
+    limits: RenderLimits = DEFAULT_RENDER_LIMITS,
+) -> RenderResult:
+    """Validate, canonicalize, and locally preview one slate without I/O."""
+
+    return _render(
+        data,
+        renderer,
+        schema=schema,
+        slate=slate,
+        limits=limits,
+        preflight=True,
+    )
 
 
 def render_state(
@@ -466,12 +486,13 @@ def render_state(
                 details={"missing_fields": missing_fields},
                 hints=("supply the repository, issue or pull request number, and URL from the comment target",),
             )
-    rendered = render(
+    rendered = _render(
         state.data,
         state.renderer,
         schema=state.data_schema,
         slate=context,
         limits=limits,
+        preflight=False,
     )
     if state.renderer.kind != "jinja":
         parsed = parse_renderer_descriptor(state.renderer)
