@@ -21,6 +21,7 @@ from gh_slate.github.process import (
     _PROCESS_CLEANUP_TIMEOUT_SECONDS,
     ProcessResult,
     _kill_process_tree,
+    _ProcessHandoffInterrupted,
     _ProcessTree,
     _spawn_process,
 )
@@ -288,13 +289,17 @@ class SubprocessWriteRunner:
         if hostname is not None:
             environment = os.environ.copy()
             environment["GH_HOST"] = hostname
-        process, process_tree = _spawn_process(
-            argv,
-            environment=environment,
-            stdin=subprocess.PIPE,
-        )
         try:
-            return _run_started_write_process(
+            process, process_tree = _spawn_process(
+                argv,
+                environment=environment,
+                stdin=subprocess.PIPE,
+            )
+        except _ProcessHandoffInterrupted as error:
+            raise _WriteProcessStartedError(error.error_type) from error
+
+        try:
+            result = _run_started_write_process(
                 process,
                 process_tree,
                 argv=argv,
@@ -303,9 +308,19 @@ class SubprocessWriteRunner:
                 max_stdout_bytes=max_stdout_bytes,
                 max_stderr_bytes=max_stderr_bytes,
             )
-        finally:
+        except BaseException as error:
             if process_tree is not None:
+                try:
+                    process_tree.close()
+                except BaseException as close_error:
+                    raise _WriteProcessStartedError(type(close_error).__name__) from error
+            raise
+        if process_tree is not None:
+            try:
                 process_tree.close()
+            except BaseException as error:
+                raise _WriteProcessStartedError(type(error).__name__) from error
+        return result
 
 
 def _error(message: str, *, code: str, **details: object) -> GhSlateError:

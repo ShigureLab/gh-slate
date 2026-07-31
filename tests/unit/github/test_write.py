@@ -463,6 +463,67 @@ def test_gated_launcher_failure_is_a_known_not_started_write(
     assert process_tree.closed == 1
 
 
+def test_windows_handoff_interruption_is_an_unknown_write_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def interrupt(*args: object, **kwargs: object) -> None:
+        raise write_module._ProcessHandoffInterrupted("KeyboardInterrupt")
+
+    monkeypatch.setattr(write_module, "_spawn_process", interrupt)
+
+    with pytest.raises(GhWriteOutcomeUnknown) as caught:
+        GhWriteProcess(runner=SubprocessWriteRunner()).post(
+            "repos/owner/repo/issues/42/comments",
+            {"body": "safe"},
+        )
+
+    assert caught.value.code == "gh_write_process_error"
+    assert caught.value.details == {"error_type": "KeyboardInterrupt"}
+
+
+def test_process_tree_close_failure_is_an_unknown_write_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Process:
+        stdin = io.BytesIO()
+        stdout = io.BytesIO(b'{"id":123}')
+        stderr = io.BytesIO()
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+        def kill(self) -> None:
+            raise AssertionError("successful process must not be killed")
+
+    class ProcessTree:
+        def terminate(self) -> None:
+            raise AssertionError("successful process must not be terminated")
+
+        def close(self) -> None:
+            raise OSError("close failed")
+
+        def launch_error(self, stderr: bytes) -> OSError | None:
+            return None
+
+    monkeypatch.setattr(
+        write_module,
+        "_spawn_process",
+        lambda argv, *, environment, stdin: (
+            cast("subprocess.Popen[bytes]", Process()),
+            cast("write_module._ProcessTree", ProcessTree()),
+        ),
+    )
+
+    with pytest.raises(GhWriteOutcomeUnknown) as caught:
+        GhWriteProcess(runner=SubprocessWriteRunner()).post(
+            "repos/owner/repo/issues/42/comments",
+            {"body": "safe"},
+        )
+
+    assert caught.value.code == "gh_write_process_error"
+    assert caught.value.details == {"error_type": "OSError"}
+
+
 @pytest.mark.parametrize(
     ("file_descriptor", "limited_stream"),
     [(1, "stdout"), (2, "stderr")],
