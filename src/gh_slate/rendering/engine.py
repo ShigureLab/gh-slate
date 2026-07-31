@@ -215,24 +215,24 @@ class _ProjectionInstances:
 _NO_PROJECTION_INSTANCES = _ProjectionInstances()
 
 
-def _condition_matches(
-    condition: bool | Mapping[str, object],
+def _schema_matches(
+    schema: bool | Mapping[str, object],
     resolver: Resolver[object],
     instance: object,
 ) -> bool | None:
-    if isinstance(condition, bool):
-        return condition
+    if isinstance(schema, bool):
+        return schema
     try:
-        condition_resolver = resolver.in_subresource(
-            DRAFT202012.create_resource(condition),
+        schema_resolver = resolver.in_subresource(
+            DRAFT202012.create_resource(schema),
         )
-        validator = SlateDraft202012Validator(condition)
+        validator = SlateDraft202012Validator(schema)
         return (
             next(
                 validator.descend(
                     instance,
-                    condition,
-                    resolver=condition_resolver,
+                    schema,
+                    resolver=schema_resolver,
                 ),
                 None,
             )
@@ -242,6 +242,20 @@ def _condition_matches(
         # Projection is advisory. If a condition cannot be evaluated locally,
         # retaining both outcomes is safer than silently dropping columns.
         return None
+
+
+def _projects_for_instances(
+    schema: bool | Mapping[str, object],
+    resolver: Resolver[object],
+    instances: _ProjectionInstances,
+) -> bool:
+    if not instances.values:
+        return True
+    for instance in instances.values:
+        matched = _schema_matches(schema, resolver, instance)
+        if matched is not False:
+            return True
+    return False
 
 
 @dataclass(slots=True)
@@ -289,11 +303,28 @@ class _SchemaProjection:
             )
 
         result.append((typed, nested_resolver))
-        for keyword in ("allOf", "oneOf", "anyOf"):
+        all_of = typed.get("allOf")
+        if isinstance(all_of, tuple):
+            for subschema in all_of:
+                result.extend(
+                    self.parts(
+                        subschema,
+                        nested_resolver,
+                        instances=instances,
+                        active=next_active,
+                    )
+                )
+        for keyword in ("oneOf", "anyOf"):
             alternatives = typed.get(keyword)
             if not isinstance(alternatives, tuple):
                 continue
             for subschema in alternatives:
+                if not isinstance(subschema, (bool, Mapping)) or not _projects_for_instances(
+                    cast("bool | Mapping[str, object]", subschema),
+                    nested_resolver,
+                    instances,
+                ):
+                    continue
                 result.extend(
                     self.parts(
                         subschema,
@@ -309,7 +340,7 @@ class _SchemaProjection:
                 outcomes.update((condition,) if isinstance(condition, bool) else (False, True))
             else:
                 for instance in instances.values:
-                    matched = _condition_matches(
+                    matched = _schema_matches(
                         cast("bool | Mapping[str, object]", condition),
                         nested_resolver,
                         instance,
@@ -379,11 +410,23 @@ def _project_table_item_schema(
                 candidate_resolver,
                 instances=candidate_instances,
             ):
+                subschemas: list[object] = []
                 properties = fragment.get("properties")
-                if not isinstance(properties, Mapping) or key not in properties:
-                    continue
-                subschema = cast("Mapping[str, object]", properties)[key]
-                if isinstance(subschema, (bool, Mapping)):
+                if isinstance(properties, Mapping) and key in properties:
+                    subschemas.append(cast("Mapping[str, object]", properties)[key])
+                pattern_properties = fragment.get("patternProperties")
+                if isinstance(pattern_properties, Mapping):
+                    for pattern_value, pattern_schema in pattern_properties.items():
+                        matched = _schema_matches(
+                            {"pattern": str(pattern_value)},
+                            fragment_resolver,
+                            key,
+                        )
+                        if matched is not False:
+                            subschemas.append(pattern_schema)
+                for subschema in subschemas:
+                    if not isinstance(subschema, (bool, Mapping)):
+                        continue
                     child_instances = tuple(
                         cast("Mapping[object, object]", instance)[key]
                         for instance in candidate_instances.values

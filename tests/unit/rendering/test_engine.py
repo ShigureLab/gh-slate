@@ -231,6 +231,176 @@ def test_table_schema_projection_traverses_one_of_and_any_of(
     ]
 
 
+@pytest.mark.parametrize("keyword", ["oneOf", "anyOf"])
+@pytest.mark.parametrize(
+    ("jobs", "columns"),
+    [
+        (
+            [{"kind": "ci", "status": "passing"}],
+            ["kind", "status"],
+        ),
+        (
+            [
+                {"kind": "ci", "status": "passing"},
+                {"kind": "deploy", "environment": "production"},
+            ],
+            ["kind", "status", "environment"],
+        ),
+    ],
+)
+def test_table_schema_projection_uses_only_matching_alternatives(
+    keyword: str,
+    jobs: list[dict[str, str]],
+    columns: list[str],
+) -> None:
+    schema = validate_schema(
+        {
+            "properties": {
+                "jobs": {
+                    "type": "array",
+                    "items": {
+                        keyword: [
+                            {
+                                "properties": {
+                                    "kind": {"const": "ci"},
+                                    "status": {"type": "string"},
+                                },
+                                "required": ["kind", "status"],
+                            },
+                            {
+                                "properties": {
+                                    "kind": {"const": "deploy"},
+                                    "environment": {"type": "string"},
+                                },
+                                "required": ["kind", "environment"],
+                            },
+                        ]
+                    },
+                }
+            }
+        }
+    )
+
+    result = render(
+        {"jobs": jobs},
+        TableRendererV1(selector=".jobs").to_descriptor(),
+        schema=schema,
+        slate=SlateContext(name="ci"),
+    )
+
+    assert result.renderer.to_json()["columns"] == [{"path": [column], "header": column} for column in columns]
+
+
+@pytest.mark.parametrize("keyword", ["oneOf", "anyOf"])
+def test_table_schema_projection_matches_array_level_alternatives(keyword: str) -> None:
+    schema = validate_schema(
+        {
+            "properties": {
+                "jobs": {
+                    keyword: [
+                        {
+                            "type": "array",
+                            "maxItems": 0,
+                            "items": {"properties": {"empty_column": {}}},
+                        },
+                        {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {"properties": {"nonempty_column": {}}},
+                        },
+                    ]
+                }
+            }
+        }
+    )
+
+    result = render(
+        {"jobs": []},
+        TableRendererV1(selector=".jobs").to_descriptor(),
+        schema=schema,
+        slate=SlateContext(name="ci"),
+    )
+
+    assert result.renderer.to_json()["columns"] == [
+        {"path": ["empty_column"], "header": "empty_column"},
+    ]
+
+
+@pytest.mark.parametrize("jobs", [[], [{"name": "linux", "status": "passing"}]])
+def test_table_schema_projection_follows_pattern_properties(
+    jobs: list[dict[str, str]],
+) -> None:
+    schema = validate_schema(
+        {
+            "type": "object",
+            "patternProperties": {
+                "jobs": {
+                    "type": "array",
+                    "items": {
+                        "properties": {
+                            "status": {"type": "string"},
+                            "name": {"type": "string"},
+                        }
+                    },
+                }
+            },
+            "additionalProperties": False,
+        }
+    )
+
+    result = render(
+        {"myjobs": jobs},
+        TableRendererV1(selector=".myjobs").to_descriptor(),
+        schema=schema,
+        slate=SlateContext(name="ci"),
+    )
+
+    assert result.renderer.to_json()["columns"] == [
+        {"path": ["status"], "header": "status"},
+        {"path": ["name"], "header": "name"},
+    ]
+
+
+def test_table_schema_projection_combines_property_and_matching_patterns() -> None:
+    schema = validate_schema(
+        {
+            "properties": {
+                "jobs": {
+                    "type": "array",
+                    "items": {"properties": {"explicit": {}}},
+                }
+            },
+            "patternProperties": {
+                "^jobs$": {
+                    "type": "array",
+                    "items": {"properties": {"first_pattern": {}}},
+                },
+                "jobs": {
+                    "type": "array",
+                    "items": {"properties": {"second_pattern": {}}},
+                },
+                "^other$": {
+                    "type": "array",
+                    "items": {"properties": {"inactive_pattern": {}}},
+                },
+            },
+        }
+    )
+
+    result = render(
+        {"jobs": []},
+        TableRendererV1(selector=".jobs").to_descriptor(),
+        schema=schema,
+        slate=SlateContext(name="ci"),
+    )
+
+    assert result.renderer.to_json()["columns"] == [
+        {"path": ["explicit"], "header": "explicit"},
+        {"path": ["first_pattern"], "header": "first_pattern"},
+        {"path": ["second_pattern"], "header": "second_pattern"},
+    ]
+
+
 @pytest.mark.parametrize(
     ("keyword", "condition"),
     [("then", True), ("else", False)],
