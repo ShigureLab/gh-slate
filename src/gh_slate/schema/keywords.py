@@ -37,7 +37,7 @@ _ECMASCRIPT_ATOM_ESCAPES = {
     "s": f"[{_ECMASCRIPT_CLASS_ESCAPES['s']}]",
     "S": f"[^{_ECMASCRIPT_CLASS_ESCAPES['s']}]",
 }
-_PYTHON_ONLY_ESCAPES = frozenset("aAZGKNgyz")
+_ECMASCRIPT_PASSTHROUGH_ESCAPES = frozenset("fnrtvpuPx")
 
 
 class SchemaEvaluationLimitExceeded(Exception):
@@ -126,8 +126,6 @@ def _ecmascript_pattern(source: str) -> str:
             if index + 1 >= len(source):
                 raise ValueError("trailing regex escape")
             escaped = source[index + 1]
-            if escaped in _PYTHON_ONLY_ESCAPES:
-                raise ValueError("Python-only regex escape")
             if escaped == "c":
                 if index + 2 >= len(source) or not source[index + 2].isascii() or not source[index + 2].isalpha():
                     raise ValueError("invalid ECMA-262 control escape")
@@ -157,6 +155,8 @@ def _ecmascript_pattern(source: str) -> str:
                     result.append(rf"(?a:\{escaped})")
                 index += 2
                 continue
+            if escaped.isascii() and escaped.isalpha() and escaped not in _ECMASCRIPT_PASSTHROUGH_ESCAPES:
+                raise ValueError("unsupported ECMA-262 regex escape")
             result.extend((character, escaped))
             index += 2
             continue

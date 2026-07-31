@@ -119,9 +119,10 @@ def test_schema_regex_format_uses_the_runtime_regex_dialect() -> None:
         validate_schema({"pattern": "["})
     assert invalid.value.code == "schema_invalid"
 
-    with pytest.raises(SchemaError) as python_escape:
-        validate_schema({"pattern": r"\a"})
-    assert python_escape.value.code == "schema_invalid"
+    for pattern in (r"\a", r"\R", r"\X", r"\m", r"\M", r"\h", r"\H", r"\U0001F600"):
+        with pytest.raises(SchemaError) as unsupported_escape:
+            validate_schema({"pattern": pattern})
+        assert unsupported_escape.value.code == "schema_invalid"
 
 
 @pytest.mark.parametrize(
