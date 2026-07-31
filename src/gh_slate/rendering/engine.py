@@ -50,7 +50,7 @@ if TYPE_CHECKING:
     from referencing._core import Resolver
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_JQ_INDEX_LITERAL = re.compile(r"-?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")
+_JQ_INDEX_LITERAL = re.compile(r"-?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
 _MAX_SCHEMA_PROJECTION_PARTS = 2048
 _PREFLIGHT_CONTROLLER_LOGIN = "0123456789abcdefghijklmnopqrstuvwxyz-a0"
 
