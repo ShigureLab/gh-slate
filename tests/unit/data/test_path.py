@@ -316,6 +316,30 @@ def test_set_path_distinguishes_json_booleans_from_numbers() -> None:
     assert values[0] is False
 
 
+def test_set_path_compares_nested_json_values_recursively_by_type() -> None:
+    data = freeze_json({"groups": [{"value": Decimal(1)}]})
+    equal_data = freeze_json({"groups": [{"value": Decimal(1)}]})
+    boolean_data = freeze_json({"groups": [{"value": True}]})
+
+    assert set_path(data, (), equal_data) is data
+
+    updated_boolean = set_path(data, (), boolean_data)
+    assert updated_boolean is not data
+    assert isinstance(updated_boolean, Mapping)
+    updated_boolean_mapping = cast("Mapping[str, JsonValue]", updated_boolean)
+    boolean_groups = cast("tuple[JsonValue, ...]", updated_boolean_mapping["groups"])
+    boolean_group = cast("Mapping[str, JsonValue]", boolean_groups[0])
+    assert boolean_group["value"] is True
+
+    updated_number = set_path(boolean_data, (), data)
+    assert updated_number is not boolean_data
+    assert isinstance(updated_number, Mapping)
+    updated_number_mapping = cast("Mapping[str, JsonValue]", updated_number)
+    number_groups = cast("tuple[JsonValue, ...]", updated_number_mapping["groups"])
+    number_group = cast("Mapping[str, JsonValue]", number_groups[0])
+    assert isinstance(number_group["value"], Decimal)
+
+
 def test_delete_paths_uses_original_array_indexes_and_shares_untouched_subtrees() -> None:
     untouched = freeze_json({"large": Decimal(900719925474099312345)})
     data = frozen_object(
