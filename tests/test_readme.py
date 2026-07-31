@@ -15,7 +15,7 @@ DOCUMENTED_COMMANDS = [
         ["doctor", "--json"],
     ),
     (
-        "gh slate apply ci-summary --target https://github.com/OWNER/REPO/issues/42 --mode create "
+        "gh slate apply ci-summary --target https://github.com/OWNER/REPO/issues/42 --mode upsert "
         "--data report.json --table '.jobs' --columns name,status --title 'CI summary' --dry-run",
         [
             "apply",
@@ -23,7 +23,7 @@ DOCUMENTED_COMMANDS = [
             "--target",
             "https://github.com/OWNER/REPO/issues/42",
             "--mode",
-            "create",
+            "upsert",
             "--data",
             "report.json",
             "--table",
@@ -194,6 +194,9 @@ def test_install_and_safety_contracts_are_documented() -> None:
     assert "not a supported\nWindows entrypoint" in readme
     assert "It has not been executed as current release evidence." in readme
     assert "does not yet claim stable or GA status" in readme
+    assert "does not guarantee FIFO event ordering" in readme
+    assert "refetch the current resource" in readme
+    assert "This README is the user guide" in readme
 
 
 def test_every_gh_extension_quickstart_command_parses() -> None:

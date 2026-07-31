@@ -123,6 +123,12 @@ Inspect and validate:
 - GitHub comment updates do not provide server-side compare-and-swap.
   Revision checks and second reads reduce risk but do not make concurrent
   incremental writes atomic.
+- GitHub Actions concurrency groups serialize matching jobs but do not promise
+  FIFO event order. Treat webhook payloads as wake-ups and target identity, not
+  as current Issue or Pull Request state. When the slate mirrors GitHub fields,
+  refetch the current resource inside the serialized writer immediately before
+  `apply`; do not persist an old event's action, title, state, draft flag, or
+  head SHA.
 
 ## Copy-ready recipes
 
@@ -258,6 +264,11 @@ concurrency:
    cancel-in-progress: false
 ```
 
+Concurrency alone is not a freshness check. If `ci.json` includes Issue or
+Pull Request fields copied from a webhook, fetch those fields again inside this
+serialized job immediately before the apply. The repository's direct and
+fork-safe examples implement that pattern.
+
 For fork Pull Requests, use the bounded reducer and trusted consumer pattern in
 the repository's
 [Actions examples](https://github.com/ShigureLab/gh-slate/tree/main/examples/actions);
@@ -307,7 +318,7 @@ For a write, report the returned `action`, `revision`, `state_sha256`, and
 comment URL. Say when a live write was not attempted. A skipped credentialed
 test, dry run, or parser check is not evidence that GitHub was updated.
 
-For exact target rules, exit codes, size limits, jq numeric behavior, renderer
-contracts, and the state format, consult
-[docs/cli.md](https://github.com/ShigureLab/gh-slate/blob/main/docs/cli.md)
-instead of reproducing the protocol here.
+For an unfamiliar option, inspect the installed command's help output first. The
+repository [README](https://github.com/ShigureLab/gh-slate#readme) is the user
+guide; `docs/cli.md` is the early protocol and implementation record, not a
+required operating manual.

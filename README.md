@@ -86,6 +86,23 @@ Use `gh-slate doctor --json` instead when installed as a Python tool. A full
 Issue or Pull Request URL is the least ambiguous target; numeric targets also
 accept `--repo OWNER/REPO`, while Actions may use `@event`.
 
+## Command map
+
+| What you want to do                           | Command family                    |
+| --------------------------------------------- | --------------------------------- |
+| Preview local data as Markdown                | `render`                          |
+| Create or replace one complete slate snapshot | `apply`                           |
+| Read one slate or list all names on a target  | `view`, `list`                    |
+| Query or mutate embedded typed JSON           | `data get/set/delete/update/edit` |
+| Inspect, infer, validate, or replace a schema | `schema get/infer/validate/set`   |
+| Export or integrity-check the hidden state    | `state export/verify`             |
+| Restore drifted Markdown or remove a comment  | `repair`, `delete`                |
+| Check the local runtime and GitHub access     | `doctor`                          |
+
+Run `gh slate COMMAND --help` for every flag. The examples below use the
+extension spelling; replace `gh slate` with `gh-slate` when using the Python
+tool.
+
 ## Quick start
 
 Assume `report.json` contains:
@@ -100,11 +117,13 @@ Assume `report.json` contains:
 }
 ```
 
-Preview a table without writing, then create exactly one named slate:
+Preview a table without writing, then upsert exactly one named slate. A name is
+unique only within one target and controller, so `ci-summary` can be reused on
+another Issue or Pull Request:
 
 ```bash
-gh slate apply ci-summary --target https://github.com/OWNER/REPO/issues/42 --mode create --data report.json --table '.jobs' --columns name,status --title 'CI summary' --dry-run
-gh slate apply ci-summary --target https://github.com/OWNER/REPO/issues/42 --mode create --data report.json --table '.jobs' --columns name,status --title 'CI summary' --json
+gh slate apply ci-summary --target https://github.com/OWNER/REPO/issues/42 --mode upsert --data report.json --table '.jobs' --columns name,status --title 'CI summary' --dry-run
+gh slate apply ci-summary --target https://github.com/OWNER/REPO/issues/42 --mode upsert --data report.json --table '.jobs' --columns name,status --title 'CI summary' --json
 ```
 
 List all managed slates on the target:
@@ -112,6 +131,16 @@ List all managed slates on the target:
 ```bash
 gh slate list --target https://github.com/OWNER/REPO/issues/42 --json
 ```
+
+For the next complete update, pass only the new data. Omitting renderer and
+schema options reuses the versions embedded in the existing slate:
+
+```bash
+gh slate apply ci-summary --target https://github.com/OWNER/REPO/issues/42 --data report.json --json
+```
+
+Use `--mode create` when an existing name must be an error, or `--mode update`
+when a missing name must be an error. The default is `upsert`.
 
 ### List and Jinja renderers
 
@@ -131,6 +160,21 @@ gh slate apply deployment --target https://github.com/OWNER/REPO/pull/42 --mode 
 
 Remove `--dry-run` only after reviewing the rendered Markdown.
 
+### Add or change a JSON Schema
+
+Schemas use JSON Schema draft 2020-12 and are stored with the data. Validate a
+candidate against the current schema, infer a permissive starting point, or
+replace the schema explicitly:
+
+```bash
+gh slate schema validate ci-summary report.json --target https://github.com/OWNER/REPO/issues/42 --json
+gh slate schema infer ci-summary --target https://github.com/OWNER/REPO/issues/42
+gh slate schema set ci-summary report.schema.json --target https://github.com/OWNER/REPO/issues/42 --if-revision 1 --json
+```
+
+`schema infer` only prints by default; add `--apply` and an observed
+`--if-revision` to store the inferred schema.
+
 ### Query and update typed data
 
 Queries use jq syntax and never scrape the visible table:
@@ -146,6 +190,13 @@ object with jq. Both pin the observed revision and reject an already-stale read:
 ```bash
 gh slate data set ci-summary '.jobs[1].status' --target https://github.com/OWNER/REPO/issues/42 --value-string passed --if-revision 1 --json
 gh slate data update ci-summary '.jobs |= map(if .name == $name then .status = "passed" else . end)' --target https://github.com/OWNER/REPO/issues/42 --arg name windows --if-revision 1 --json
+```
+
+For an interactive typed edit, set `GH_EDITOR`, `GIT_EDITOR`, `VISUAL`, or
+`EDITOR`, then run:
+
+```bash
+gh slate data edit ci-summary --target https://github.com/OWNER/REPO/issues/42 --if-revision 1 --json
 ```
 
 Refetch before any subsequent write. Inspect and verify the result:
@@ -201,6 +252,11 @@ Important operational boundaries:
 - Prefer a complete `apply --data FILE` snapshot and one writer in CI.
   Repository workflow `concurrency` prevents more races than incremental
   updates from multiple jobs.
+- Actions concurrency does not guarantee FIFO event ordering. If a dashboard
+  mirrors Issue or Pull Request fields, use the webhook only to identify the
+  target and refetch the current resource inside the serialized job immediately
+  before `apply`; do not render an old event snapshot. The checked-in examples
+  follow this pattern.
 - `--if-revision` plus the pre-write refetch detects observed stale state, but
   GitHub issue-comment updates provide no atomic compare-and-swap (CAS).
   It is an optimistic guard, not a lock; two writers can still race after their
@@ -246,8 +302,8 @@ fixtures prove event and hostname contracts only, not live server
 compatibility. See [testing](docs/testing.md) for the exact gate and cleanup
 procedure.
 
-For the full state format, command contract, safety rationale, and staged
-implementation record, see the [CLI design](docs/cli.md).
+This README is the user guide. [CLI design](docs/cli.md) is the early protocol
+and implementation record; normal use should not require it.
 
 ## License
 

@@ -315,11 +315,13 @@ def _check_content(text: str, body: str) -> None:
     if len(text.splitlines()) >= 500:
         _fail("SKILL.md must stay below 500 lines")
     required_fragments = (
-        "[docs/cli.md](https://github.com/ShigureLab/gh-slate/blob/main/docs/cli.md)",
+        "[README](https://github.com/ShigureLab/gh-slate#readme)",
         "npx skills add https://github.com/ShigureLab/gh-slate --skill gh-slate",
         "gh skill install ShigureLab/gh-slate gh-slate --agent codex --scope user",
         "single writer",
         "server-side compare-and-swap",
+        "FIFO event order",
+        "refetch the current resource",
         "trusted default-branch",
         "never reverse-parse Markdown",
         "unknown outcome",
