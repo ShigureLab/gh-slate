@@ -2,7 +2,7 @@ name: gh-slate issue dashboard example
 
 on:
   issues:
-    types: [opened, reopened, edited, transferred, closed]
+    types: [opened, reopened, edited, closed]
 
 permissions:
   contents: read

@@ -196,7 +196,7 @@ def test_static_contract_rejects_dependabot_direct_writer(tmp_path: Path) -> Non
 @pytest.mark.parametrize(
     ("filename", "activity"),
     [
-        ("issue-dashboard.yml", "transferred"),
+        ("issue-dashboard.yml", "edited"),
         ("pull-request-dashboard.yml", "ready_for_review"),
         ("pull-request-target-reducer.yml", "ready_for_review"),
     ],

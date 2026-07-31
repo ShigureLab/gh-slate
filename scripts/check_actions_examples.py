@@ -27,7 +27,7 @@ _FORBIDDEN_EXECUTION = re.compile(
     r"|\b(?:chmod|eval|source)\b",
     re.IGNORECASE,
 )
-_ISSUE_ACTIVITY_TYPES = ["opened", "reopened", "edited", "transferred", "closed"]
+_ISSUE_ACTIVITY_TYPES = ["opened", "reopened", "edited", "closed"]
 _PULL_REQUEST_ACTIVITY_TYPES = [
     "opened",
     "reopened",
