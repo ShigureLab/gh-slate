@@ -41,6 +41,8 @@ from gh_slate.rendering.model import (
 )
 from gh_slate.rendering.table import render_table, resolve_table_renderer
 from gh_slate.schema import validate_data, validate_schema
+from gh_slate.schema._interop import SlateDraft202012Validator
+from gh_slate.schema.keywords import evaluation_budget
 
 if TYPE_CHECKING:
     from referencing._core import Resolver
@@ -48,7 +50,12 @@ if TYPE_CHECKING:
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _MAX_SCHEMA_PROJECTION_PARTS = 2048
 _PREFLIGHT_CONTROLLER_LOGIN = "0123456789abcdefghijklmnopqrstuvwxyz-a0"
-_NO_PROJECTION_INSTANCE = object()
+_PREFLIGHT_TARGET_REPOSITORY = f"{'o' * 39}/{'r' * 100}"
+_PREFLIGHT_TARGET_HOST = ".".join(("h" * 63, "h" * 63, "h" * 63, "h" * 61))
+_PREFLIGHT_TARGET_NUMBER = 2**63 - 1
+_PREFLIGHT_TARGET_URL = (
+    f"https://{_PREFLIGHT_TARGET_HOST}/{_PREFLIGHT_TARGET_REPOSITORY}/issues/{_PREFLIGHT_TARGET_NUMBER}"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +213,35 @@ def _deny_schema_retrieve(uri: str) -> NoReturn:
     raise NoSuchResource(ref=uri)
 
 
+@dataclass(frozen=True, slots=True)
+class _ProjectionInstances:
+    values: tuple[object, ...] = ()
+
+
+_NO_PROJECTION_INSTANCES = _ProjectionInstances()
+
+
+def _condition_matches(
+    condition: bool | Mapping[str, object],
+    resolver: Resolver[object],
+    instance: object,
+) -> bool | None:
+    if isinstance(condition, bool):
+        return condition
+    try:
+        condition_resolver = resolver.in_subresource(
+            DRAFT202012.create_resource(condition),
+        )
+        return SlateDraft202012Validator(
+            condition,
+            _resolver=condition_resolver,
+        ).is_valid(instance)
+    except Exception:
+        # Projection is advisory. If a condition cannot be evaluated locally,
+        # retaining both outcomes is safer than silently dropping columns.
+        return None
+
+
 @dataclass(slots=True)
 class _SchemaProjection:
     parts_seen: int = 0
@@ -215,7 +251,7 @@ class _SchemaProjection:
         schema: object,
         resolver: Resolver[object],
         *,
-        instance: object = _NO_PROJECTION_INSTANCE,
+        instances: _ProjectionInstances = _NO_PROJECTION_INSTANCES,
         active: frozenset[int] = frozenset(),
     ) -> tuple[tuple[Mapping[str, object], Resolver[object]], ...]:
         if not isinstance(schema, Mapping):
@@ -245,7 +281,7 @@ class _SchemaProjection:
                 self.parts(
                     resolved.contents,
                     resolved.resolver,
-                    instance=instance,
+                    instances=instances,
                     active=next_active,
                 )
             )
@@ -260,39 +296,57 @@ class _SchemaProjection:
                     self.parts(
                         subschema,
                         nested_resolver,
-                        instance=instance,
+                        instances=instances,
                         active=next_active,
                     )
                 )
-        for keyword in ("if", "then", "else"):
-            subschema = typed.get(keyword)
-            if not isinstance(subschema, Mapping):
-                continue
-            result.extend(
-                self.parts(
-                    subschema,
-                    nested_resolver,
-                    instance=instance,
-                    active=next_active,
-                )
-            )
-        dependent = typed.get("dependentSchemas")
-        if isinstance(dependent, Mapping) and isinstance(instance, Mapping):
-            for trigger, subschema in dependent.items():
-                if trigger not in instance or not isinstance(subschema, Mapping):
+        condition = typed.get("if")
+        if isinstance(condition, (bool, Mapping)):
+            outcomes: set[bool] = set()
+            if not instances.values:
+                outcomes.update((condition,) if isinstance(condition, bool) else (False, True))
+            else:
+                for instance in instances.values:
+                    matched = _condition_matches(
+                        cast("bool | Mapping[str, object]", condition),
+                        nested_resolver,
+                        instance,
+                    )
+                    if matched is None:
+                        outcomes.update((False, True))
+                        break
+                    outcomes.add(matched)
+            for outcome, keyword in ((True, "then"), (False, "else")):
+                subschema = typed.get(keyword)
+                if outcome not in outcomes or not isinstance(subschema, Mapping):
                     continue
                 result.extend(
                     self.parts(
                         subschema,
                         nested_resolver,
-                        instance=instance,
+                        instances=instances,
+                        active=next_active,
+                    )
+                )
+        dependent = typed.get("dependentSchemas")
+        if isinstance(dependent, Mapping):
+            for trigger, subschema in dependent.items():
+                if not any(
+                    isinstance(instance, Mapping) and trigger in instance for instance in instances.values
+                ) or not isinstance(subschema, Mapping):
+                    continue
+                result.extend(
+                    self.parts(
+                        subschema,
+                        nested_resolver,
+                        instances=instances,
                         active=next_active,
                     )
                 )
         return tuple(result)
 
 
-def _table_item_schema(
+def _project_table_item_schema(
     snapshot: SchemaSnapshotV1 | None,
     selector: str,
     data: Mapping[str, JsonValue],
@@ -310,59 +364,65 @@ def _table_item_schema(
     ).resolver_with_root(
         DRAFT202012.create_resource(root),
     )
-    candidates: tuple[tuple[object, Resolver[object], object], ...] = ((root, resolver, data),)
+    candidates: tuple[tuple[object, Resolver[object], _ProjectionInstances], ...] = (
+        (root, resolver, _ProjectionInstances((data,))),
+    )
     for key in path:
-        next_candidates: list[tuple[object, Resolver[object], object]] = []
-        for candidate, candidate_resolver, candidate_instance in candidates:
+        next_candidates: list[tuple[object, Resolver[object], _ProjectionInstances]] = []
+        for candidate, candidate_resolver, candidate_instances in candidates:
             for fragment, fragment_resolver in projection.parts(
                 candidate,
                 candidate_resolver,
-                instance=candidate_instance,
+                instances=candidate_instances,
             ):
                 properties = fragment.get("properties")
                 if not isinstance(properties, Mapping) or key not in properties:
                     continue
                 subschema = cast("Mapping[str, object]", properties)[key]
                 if isinstance(subschema, (bool, Mapping)):
-                    child_instance = _NO_PROJECTION_INSTANCE
-                    if isinstance(candidate_instance, Mapping) and key in candidate_instance:
-                        instance_mapping = cast(
-                            "Mapping[object, object]",
-                            candidate_instance,
+                    child_instances = tuple(
+                        cast("Mapping[object, object]", instance)[key]
+                        for instance in candidate_instances.values
+                        if isinstance(instance, Mapping) and key in instance
+                    )
+                    next_candidates.append(
+                        (
+                            subschema,
+                            fragment_resolver,
+                            _ProjectionInstances(child_instances),
                         )
-                        child_instance = instance_mapping[key]
-                    next_candidates.append((subschema, fragment_resolver, child_instance))
+                    )
         if not next_candidates:
             return None
         candidates = tuple(next_candidates)
 
-    item_candidates: list[tuple[object, Resolver[object], object]] = []
-    for candidate, candidate_resolver, candidate_instance in candidates:
+    item_candidates: list[tuple[object, Resolver[object], _ProjectionInstances]] = []
+    for candidate, candidate_resolver, candidate_instances in candidates:
         for fragment, fragment_resolver in projection.parts(
             candidate,
             candidate_resolver,
-            instance=candidate_instance,
+            instances=candidate_instances,
         ):
             items = fragment.get("items")
             if isinstance(items, (bool, Mapping)):
-                item_instance: object = _NO_PROJECTION_INSTANCE
-                if isinstance(candidate_instance, tuple):
-                    present_keys: dict[str, None] = {}
-                    for row in candidate_instance:
-                        if isinstance(row, Mapping):
-                            for row_key in row:
-                                if isinstance(row_key, str):
-                                    present_keys[row_key] = None
-                    if present_keys:
-                        item_instance = present_keys
-                item_candidates.append((items, fragment_resolver, item_instance))
+                rows: list[object] = []
+                for instance in candidate_instances.values:
+                    if isinstance(instance, tuple):
+                        rows.extend(instance[: DEFAULT_RENDER_LIMITS.max_table_rows])
+                item_candidates.append(
+                    (
+                        items,
+                        fragment_resolver,
+                        _ProjectionInstances(tuple(rows)),
+                    )
+                )
 
     properties_in_order: dict[str, object] = {}
-    for candidate, candidate_resolver, candidate_instance in item_candidates:
+    for candidate, candidate_resolver, candidate_instances in item_candidates:
         for fragment, _fragment_resolver in projection.parts(
             candidate,
             candidate_resolver,
-            instance=candidate_instance,
+            instances=candidate_instances,
         ):
             properties = fragment.get("properties")
             if not isinstance(properties, Mapping):
@@ -372,6 +432,15 @@ def _table_item_schema(
                     properties_in_order.setdefault(key, {})
 
     return {"properties": properties_in_order} if properties_in_order else None
+
+
+def _table_item_schema(
+    snapshot: SchemaSnapshotV1 | None,
+    selector: str,
+    data: Mapping[str, JsonValue],
+) -> object:
+    with evaluation_budget():
+        return _project_table_item_schema(snapshot, selector, data)
 
 
 def _enforce_output(markdown: str, limits: RenderLimits) -> None:
@@ -387,7 +456,12 @@ def _enforce_output(markdown: str, limits: RenderLimits) -> None:
         )
 
 
-def _preflight_materialization(result: RenderResult, *, name: str) -> None:
+def _preflight_materialization(
+    result: RenderResult,
+    *,
+    slate: SlateContext,
+    limits: RenderLimits,
+) -> None:
     """Apply the complete comment-envelope limits to a local render.
 
     Local rendering has no authenticated controller or stored revision yet.
@@ -399,20 +473,55 @@ def _preflight_materialization(result: RenderResult, *, name: str) -> None:
     if len(_PREFLIGHT_CONTROLLER_LOGIN.encode("ascii")) != MAX_GITHUB_LOGIN_BYTES:  # pragma: no cover
         raise AssertionError("preflight controller login must use the full GitHub login budget")
 
+    preflight = result
+    if result.renderer.kind == "jinja" and (
+        not isinstance(slate.repository, str)
+        or not slate.repository
+        or isinstance(slate.number, bool)
+        or not isinstance(slate.number, int)
+        or slate.number <= 0
+        or not isinstance(slate.url, str)
+        or not slate.url
+    ):
+        # Pure local rendering exposes unknown target fields as null. Rerender
+        # once with maximum-width GitHub target sentinels so a successful
+        # preview cannot rely on those much shorter values for its size checks.
+        preflight = _render(
+            result.data,
+            result.renderer,
+            schema=result.data_schema,
+            slate=SlateContext(
+                name=slate.name,
+                repository=(
+                    slate.repository
+                    if isinstance(slate.repository, str) and slate.repository
+                    else _PREFLIGHT_TARGET_REPOSITORY
+                ),
+                number=(
+                    slate.number
+                    if isinstance(slate.number, int) and not isinstance(slate.number, bool) and slate.number > 0
+                    else _PREFLIGHT_TARGET_NUMBER
+                ),
+                url=(slate.url if isinstance(slate.url, str) and slate.url else _PREFLIGHT_TARGET_URL),
+            ),
+            limits=limits,
+            preflight=False,
+        )
+
     encode_comment(
         StateV1(
-            name=name,
+            name=slate.name,
             revision=MAX_REVISION,
             controller=ControllerV1(
                 login=_PREFLIGHT_CONTROLLER_LOGIN,
                 id=MAX_GITHUB_USER_ID,
             ),
-            data=result.data,
-            data_schema=result.data_schema,
-            renderer=result.renderer,
-            render_sha256=result.render_sha256,
+            data=preflight.data,
+            data_schema=preflight.data_schema,
+            renderer=preflight.renderer,
+            render_sha256=preflight.render_sha256,
         ),
-        result.markdown,
+        preflight.markdown,
     )
 
 
@@ -480,7 +589,7 @@ def _render(
         render_sha256=render_sha256(markdown),
     )
     if preflight:
-        _preflight_materialization(result, name=slate.name)
+        _preflight_materialization(result, slate=slate, limits=limits)
     return result
 
 

@@ -278,6 +278,95 @@ def test_table_schema_projection_traverses_conditional_subschemas(
     ]
 
 
+@pytest.mark.parametrize(
+    ("mode", "column"),
+    [("ci", "status"), ("deploy", "environment")],
+)
+def test_table_schema_projection_uses_only_the_active_conditional_branch(
+    mode: str,
+    column: str,
+) -> None:
+    schema = validate_schema(
+        {
+            "type": "object",
+            "properties": {"mode": {"type": "string"}},
+            "if": {
+                "properties": {"mode": {"const": "ci"}},
+                "required": ["mode"],
+            },
+            "then": {
+                "properties": {
+                    "jobs": {
+                        "type": "array",
+                        "items": {"properties": {"status": {"type": "string"}}},
+                    }
+                }
+            },
+            "else": {
+                "properties": {
+                    "jobs": {
+                        "type": "array",
+                        "items": {"properties": {"environment": {"type": "string"}}},
+                    }
+                }
+            },
+        }
+    )
+
+    result = render(
+        {"mode": mode, "jobs": []},
+        TableRendererV1(selector=".jobs").to_descriptor(),
+        schema=schema,
+        slate=SlateContext(name="ci"),
+    )
+
+    assert result.markdown == f"| {column} |\n| --- |\n"
+    assert result.renderer.to_json()["columns"] == [
+        {"path": [column], "header": column},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("row", "column"),
+    [
+        ({"kind": "ci", "status": "passing"}, "status"),
+        ({"kind": "deploy", "environment": "production"}, "environment"),
+    ],
+)
+def test_table_schema_projection_evaluates_item_conditions_against_rows(
+    row: dict[str, str],
+    column: str,
+) -> None:
+    schema = validate_schema(
+        {
+            "properties": {
+                "jobs": {
+                    "type": "array",
+                    "items": {
+                        "if": {
+                            "properties": {"kind": {"const": "ci"}},
+                            "required": ["kind"],
+                        },
+                        "then": {"properties": {"status": {"type": "string"}}},
+                        "else": {"properties": {"environment": {"type": "string"}}},
+                    },
+                }
+            }
+        }
+    )
+
+    result = render(
+        {"jobs": [row]},
+        TableRendererV1(selector=".jobs").to_descriptor(),
+        schema=schema,
+        slate=SlateContext(name="ci"),
+    )
+
+    assert result.renderer.to_json()["columns"] == [
+        {"path": [column], "header": column},
+    ]
+
+
 def test_table_schema_projection_activates_dependent_schemas_from_data() -> None:
     schema = validate_schema(
         {
