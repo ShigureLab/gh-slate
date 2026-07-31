@@ -323,6 +323,8 @@ def test_default_runner_never_uses_a_shell_and_inherits_gh_environment(
     assert captured["stdin"] is subprocess.PIPE
     assert captured["stdout"] is subprocess.PIPE
     assert captured["stderr"] is subprocess.PIPE
+    assert captured["start_new_session"] is (os.name != "nt")
+    assert captured["creationflags"] == (subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0)
     assert "input" not in captured
     assert "timeout" not in captured
     assert "check" not in captured
@@ -384,6 +386,42 @@ def test_default_runner_kills_and_reaps_on_timeout() -> None:
     assert time.monotonic() - started < 3
 
 
+def test_default_write_runner_timeout_terminates_children_with_inherited_pipes() -> None:
+    parent = (
+        "import subprocess,sys,time;subprocess.Popen([sys.executable,'-c','import time;time.sleep(10)']);time.sleep(10)"
+    )
+    started = time.monotonic()
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        SubprocessWriteRunner().run(
+            (sys.executable, "-c", parent),
+            stdin=b"{}",
+            timeout=0.2,
+            hostname=None,
+            max_stdout_bytes=1024,
+            max_stderr_bytes=1024,
+        )
+
+    assert time.monotonic() - started < 3
+
+
+def test_default_write_runner_bounds_joins_after_parent_exits() -> None:
+    parent = "import subprocess,sys;subprocess.Popen([sys.executable,'-c','import time;time.sleep(10)'])"
+    started = time.monotonic()
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        SubprocessWriteRunner().run(
+            (sys.executable, "-c", parent),
+            stdin=b"{}",
+            timeout=0.2,
+            hostname=None,
+            max_stdout_bytes=1024,
+            max_stderr_bytes=1024,
+        )
+
+    assert time.monotonic() - started < 3
+
+
 class _InterruptedProcess:
     def __init__(self, interruption: BaseException) -> None:
         self.stdin = io.BytesIO()
@@ -416,6 +454,30 @@ class _CompletedProcess:
 
     def wait(self, timeout: float | None = None) -> int:
         self.wait_calls += 1
+        return 0
+
+
+class _TimeoutCleanupProcess:
+    def __init__(self, cleanup_point: str, interruption: BaseException) -> None:
+        self.stdin = io.BytesIO()
+        self.stdout = io.BytesIO()
+        self.stderr = io.BytesIO()
+        self.cleanup_point = cleanup_point
+        self.interruption = interruption
+        self.kill_calls = 0
+        self.wait_calls = 0
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+        if self.cleanup_point == "kill" and self.kill_calls == 1:
+            raise self.interruption
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.wait_calls += 1
+        if self.wait_calls == 1:
+            raise subprocess.TimeoutExpired(cmd="gh", timeout=0.0 if timeout is None else timeout)
+        if self.cleanup_point == "wait" and self.wait_calls == 2:
+            raise self.interruption
         return 0
 
 
@@ -481,6 +543,63 @@ def test_post_wait_join_interrupt_is_an_unknown_write_outcome(
     assert caught.value.code == "gh_write_process_error"
     assert caught.value.details == {"error_type": type(interruption).__name__}
     assert process.killed
+    assert process.wait_calls == 2
+    assert process.stdin.closed
+    assert process.stdout.closed
+    assert process.stderr.closed
+
+
+@pytest.mark.parametrize("cleanup_point", ["kill", "wait", "join"])
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt(), SystemExit(130)])
+def test_timeout_cleanup_interrupt_is_an_unknown_write_outcome(
+    cleanup_point: str,
+    interruption: BaseException,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = _TimeoutCleanupProcess(cleanup_point, interruption)
+    real_join = threading.Thread.join
+    join_calls = 0
+
+    def maybe_interrupt(
+        worker: threading.Thread,
+        timeout: float | None = None,
+    ) -> None:
+        nonlocal join_calls
+        join_calls += 1
+        if cleanup_point == "join" and join_calls == 1:
+            raise interruption
+        real_join(worker, timeout)
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(threading.Thread, "join", maybe_interrupt)
+
+    with pytest.raises(GhWriteOutcomeUnknown) as caught:
+        GhWriteProcess(runner=SubprocessWriteRunner()).post(
+            "repos/owner/repo/issues/42/comments",
+            {"body": "safe"},
+        )
+
+    assert caught.value.code == "gh_write_process_error"
+    assert caught.value.details == {"error_type": type(interruption).__name__}
+    assert process.kill_calls >= 2
+    assert process.wait_calls >= 2
+    assert process.stdin.closed
+    assert process.stdout.closed
+    assert process.stderr.closed
+
+
+def test_default_runner_clean_timeout_remains_a_write_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    process = _TimeoutCleanupProcess("none", AssertionError("unused"))
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
+
+    with pytest.raises(GhWriteTimeout) as caught:
+        GhWriteProcess(runner=SubprocessWriteRunner()).post(
+            "repos/owner/repo/issues/42/comments",
+            {"body": "safe"},
+        )
+
+    assert caught.value.code == "gh_write_timeout"
+    assert process.kill_calls == 1
     assert process.wait_calls == 2
     assert process.stdin.closed
     assert process.stdout.closed

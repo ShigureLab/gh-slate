@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from typing import BinaryIO, Protocol
@@ -16,7 +17,13 @@ from gh_slate.codec.json import (
     strict_loads,
 )
 from gh_slate.errors import GhSlateError
-from gh_slate.github.process import ProcessResult
+from gh_slate.github.process import (
+    _PROCESS_CLEANUP_TIMEOUT_SECONDS,
+    _PROCESS_CREATIONFLAGS,
+    _PROCESS_START_NEW_SESSION,
+    ProcessResult,
+    _kill_process_tree,
+)
 
 _HOST_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
 _REPOSITORY_SEGMENT = r"[A-Za-z0-9_.-]+"
@@ -132,6 +139,8 @@ class SubprocessWriteRunner:
             stderr=subprocess.PIPE,
             shell=False,
             env=environment,
+            start_new_session=_PROCESS_START_NEW_SESSION,
+            creationflags=_PROCESS_CREATIONFLAGS,
         )
         if process.stdin is None or process.stdout is None or process.stderr is None:  # pragma: no cover
             process.kill()
@@ -146,10 +155,45 @@ class SubprocessWriteRunner:
 
         def kill() -> None:
             with kill_lock:
-                try:
+                if getattr(process, "pid", None) is None:
                     process.kill()
-                except (OSError, ProcessLookupError):
-                    pass
+                else:
+                    _kill_process_tree(process)
+
+        def reap() -> None:
+            try:
+                process.wait(timeout=_PROCESS_CLEANUP_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                pass
+
+        def join_workers(deadline: float, *, suppress_errors: bool = False) -> bool:
+            for worker in workers:
+                if worker.ident is None:
+                    continue
+                try:
+                    worker.join(timeout=max(0.0, deadline - time.monotonic()))
+                except BaseException:
+                    if not suppress_errors:
+                        raise
+            return not any(worker.ident is not None and worker.is_alive() for worker in workers)
+
+        def cleanup() -> None:
+            deadline = time.monotonic() + _PROCESS_CLEANUP_TIMEOUT_SECONDS
+            kill()
+            reap()
+            join_workers(deadline)
+
+        def cleanup_suppressing_errors() -> None:
+            deadline = time.monotonic() + _PROCESS_CLEANUP_TIMEOUT_SECONDS
+            try:
+                kill()
+            except BaseException:
+                pass
+            try:
+                reap()
+            except BaseException:
+                pass
+            join_workers(deadline, suppress_errors=True)
 
         def read_bounded(
             pipe: BinaryIO,
@@ -199,41 +243,35 @@ class SubprocessWriteRunner:
             threading.Thread(
                 target=write_stdin,
                 args=(process.stdin,),
-                daemon=False,
+                daemon=True,
             ),
             threading.Thread(
                 target=read_bounded,
                 args=(process.stdout, stdout, max_stdout_bytes),
-                daemon=False,
+                daemon=True,
             ),
             threading.Thread(
                 target=read_bounded,
                 args=(process.stderr, stderr, max_stderr_bytes),
-                daemon=False,
+                daemon=True,
             ),
         )
+        deadline = time.monotonic() + timeout
         try:
             for worker in workers:
                 worker.start()
             returncode = process.wait(timeout=timeout)
-            for worker in workers:
-                worker.join()
+            if not join_workers(deadline):
+                raise subprocess.TimeoutExpired(cmd=argv, timeout=timeout)
         except subprocess.TimeoutExpired:
-            kill()
-            process.wait()
-            for worker in workers:
-                if worker.ident is not None:
-                    worker.join()
+            try:
+                cleanup()
+            except BaseException as error:
+                cleanup_suppressing_errors()
+                raise _WriteProcessStartedError(type(error).__name__) from error
             raise
         except BaseException as error:
-            kill()
-            try:
-                process.wait()
-            except BaseException:
-                pass
-            for worker in workers:
-                if worker.ident is not None:
-                    worker.join()
+            cleanup_suppressing_errors()
             raise _WriteProcessStartedError(type(error).__name__) from error
 
         if thread_errors and not output_limit_reached.is_set():
