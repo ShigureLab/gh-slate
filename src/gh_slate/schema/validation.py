@@ -6,7 +6,7 @@ from collections.abc import Iterable, Mapping
 from decimal import DecimalException
 from typing import NoReturn, cast
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import SchemaError as JsonSchemaSchemaError, ValidationError
 from referencing import Registry
 from referencing.exceptions import NoSuchResource, Unresolvable
@@ -34,6 +34,7 @@ from gh_slate.schema.errors import SchemaDiagnostic, SchemaError
 from gh_slate.schema.keywords import (
     SchemaEvaluationLimitExceeded,
     evaluation_budget,
+    is_supported_regex,
 )
 
 DEFAULT_MAX_ERRORS = 32
@@ -72,6 +73,9 @@ _SCHEMA_SINGLE_KEYWORDS = frozenset(
     }
 )
 _REFERENCE_KEYWORDS = ("$dynamicRef", "$ref")
+
+_SCHEMA_FORMAT_CHECKER = FormatChecker()
+_SCHEMA_FORMAT_CHECKER.checks("regex")(is_supported_regex)
 
 
 class _FalseSchema(dict[str, object]):
@@ -306,7 +310,10 @@ def validate_schema(
         to_metaschema_value(snapshot.document),
     )
     try:
-        Draft202012Validator.check_schema(validator_schema)
+        Draft202012Validator.check_schema(
+            validator_schema,
+            format_checker=_SCHEMA_FORMAT_CHECKER,
+        )
     except JsonSchemaSchemaError as error:
         _raise_single(
             "schema is not valid draft 2020-12",

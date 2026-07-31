@@ -68,6 +68,18 @@ def bounded_keyword(keyword: Any) -> Any:
     return validate
 
 
+def is_supported_regex(value: object) -> bool:
+    """Return whether *value* is valid in the runtime regex dialect."""
+
+    if not isinstance(value, str):
+        return True
+    try:
+        regex.compile(value, flags=regex.VERSION0)
+    except regex.error:
+        return False
+    return True
+
+
 def _compile(pattern: str) -> Any:
     _checkpoint()
     try:

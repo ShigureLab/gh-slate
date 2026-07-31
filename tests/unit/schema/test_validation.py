@@ -100,6 +100,26 @@ def test_regex_keywords_are_bounded_and_preserve_normal_semantics() -> None:
     assert captured.value.code == "schema_evaluation_limit"
 
 
+def test_schema_regex_format_uses_the_runtime_regex_dialect() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "pattern": r"^\p{L}+$"},
+        },
+    }
+
+    validate_schema(schema)
+    validate_data({"name": "release猫"}, schema)
+
+    with pytest.raises(SchemaError) as mismatch:
+        validate_data({"name": "release-42"}, schema)
+    assert mismatch.value.code == "schema_validation_failed"
+
+    with pytest.raises(SchemaError) as invalid:
+        validate_schema({"pattern": "["})
+    assert invalid.value.code == "schema_invalid"
+
+
 def test_pattern_properties_and_unevaluated_properties_share_safe_matching() -> None:
     schema = {
         "type": "object",
