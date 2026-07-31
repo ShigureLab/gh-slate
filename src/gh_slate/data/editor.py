@@ -31,10 +31,81 @@ def _editor_error(message: str, *, code: str, **details: object) -> DataError:
     return DataError(message, code=code, details=details)
 
 
-def select_editor(environ: Mapping[str, str] | None = None) -> tuple[str, ...]:
+def _split_windows_command_line(value: str) -> tuple[str, ...]:
+    """Split one trusted Windows command line without shell expansion.
+
+    This follows the backslash-before-quote rules used by the Microsoft C
+    runtime and ``subprocess.list2cmdline``. Ordinary backslashes are data, so
+    unquoted paths such as ``C:\\Windows\\notepad.exe`` remain intact.
+    """
+
+    arguments: list[str] = []
+    index = 0
+    while index < len(value):
+        while index < len(value) and value[index] in " \t":
+            index += 1
+        if index == len(value):
+            break
+
+        argument: list[str] = []
+        quoted = False
+        while index < len(value):
+            character = value[index]
+            if character in " \t" and not quoted:
+                break
+            if character == "\\":
+                start = index
+                while index < len(value) and value[index] == "\\":
+                    index += 1
+                backslashes = index - start
+                if index < len(value) and value[index] == '"':
+                    argument.extend("\\" * (backslashes // 2))
+                    if backslashes % 2:
+                        argument.append('"')
+                    elif quoted and index + 1 < len(value) and value[index + 1] == '"':
+                        argument.append('"')
+                        index += 1
+                    else:
+                        quoted = not quoted
+                    index += 1
+                    continue
+                argument.extend("\\" * backslashes)
+                continue
+            if character == '"':
+                if quoted and index + 1 < len(value) and value[index + 1] == '"':
+                    argument.append('"')
+                    index += 2
+                    continue
+                quoted = not quoted
+                index += 1
+                continue
+            argument.append(character)
+            index += 1
+
+        if quoted:
+            raise ValueError("unterminated quoted argument")
+        arguments.append("".join(argument))
+        while index < len(value) and value[index] in " \t":
+            index += 1
+
+    return tuple(arguments)
+
+
+def _split_editor_command(value: str, *, windows: bool) -> tuple[str, ...]:
+    if windows:
+        return _split_windows_command_line(value)
+    return tuple(shlex.split(value, posix=True))
+
+
+def select_editor(
+    environ: Mapping[str, str] | None = None,
+    *,
+    platform: str | None = None,
+) -> tuple[str, ...]:
     """Resolve an editor command without invoking a shell."""
 
     environment = os.environ if environ is None else environ
+    windows = (os.name if platform is None else platform) == "nt"
     for variable in EDITOR_ENVIRONMENT_ORDER:
         value = environment.get(variable)
         if value is None or not value.strip():
@@ -46,7 +117,7 @@ def select_editor(environ: Mapping[str, str] | None = None) -> tuple[str, ...]:
                 variable=variable,
             )
         try:
-            argv = tuple(shlex.split(value, posix=True))
+            argv = _split_editor_command(value, windows=windows)
         except ValueError:
             raise _editor_error(
                 f"{variable} is not a valid editor command",

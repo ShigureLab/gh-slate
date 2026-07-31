@@ -50,6 +50,44 @@ def test_select_editor_skips_empty_values_and_rejects_bad_commands() -> None:
     assert nul.value.code == "data_editor_command_invalid"
 
 
+def test_select_editor_preserves_windows_paths_and_quoted_executables() -> None:
+    assert select_editor(
+        {"GH_EDITOR": r"C:\Windows\notepad.exe"},
+        platform="nt",
+    ) == (r"C:\Windows\notepad.exe",)
+    assert select_editor(
+        {"GH_EDITOR": r'"C:\Program Files\Editor\editor.exe" --wait'},
+        platform="nt",
+    ) == (r"C:\Program Files\Editor\editor.exe", "--wait")
+
+
+def test_select_editor_round_trips_windows_list2cmdline() -> None:
+    expected = (
+        r"C:\Program Files\Editor\editor.exe",
+        "--label",
+        'say "hello"',
+        "C:\\path with spaces\\",
+    )
+
+    assert (
+        select_editor(
+            {"GH_EDITOR": subprocess.list2cmdline(expected)},
+            platform="nt",
+        )
+        == expected
+    )
+
+
+def test_select_editor_rejects_unterminated_windows_quotes() -> None:
+    with pytest.raises(DataError) as malformed:
+        select_editor(
+            {"GH_EDITOR": r'"C:\Program Files\Editor\editor.exe'},
+            platform="nt",
+        )
+
+    assert malformed.value.code == "data_editor_command_invalid"
+
+
 def test_edit_json_passes_an_argv_array_and_validates_result() -> None:
     observed: dict[str, object] = {}
 
