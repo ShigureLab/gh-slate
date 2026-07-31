@@ -69,30 +69,23 @@ def _shape_for(value: JsonValue) -> _Shape:
 
 
 def _merge(left: _Shape, right: _Shape) -> _Shape:
-    types = left.types | right.types
-    if "number" in types:
-        types.discard("integer")
+    left.types.update(right.types)
+    if "number" in left.types:
+        left.types.discard("integer")
 
-    properties: dict[str, _Shape] = {}
-    for key in sorted(left.properties.keys() | right.properties.keys()):
+    for key, right_property in right.properties.items():
         left_property = left.properties.get(key)
-        right_property = right.properties.get(key)
         if left_property is None:
-            assert right_property is not None
-            properties[key] = right_property
-        elif right_property is None:
-            properties[key] = left_property
+            left.properties[key] = right_property
         else:
-            properties[key] = _merge(left_property, right_property)
+            _merge(left_property, right_property)
 
     if left.items is None:
-        items = right.items
-    elif right.items is None:
-        items = left.items
-    else:
-        items = _merge(left.items, right.items)
+        left.items = right.items
+    elif right.items is not None:
+        _merge(left.items, right.items)
 
-    return _Shape(types=types, properties=properties, items=items)
+    return left
 
 
 def _schema_for(shape: _Shape) -> dict[str, object]:

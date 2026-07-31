@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
 from decimal import Decimal
 from types import MappingProxyType
@@ -10,7 +11,7 @@ import pytest
 from gh_slate.codec.json import canonical_json_bytes
 from gh_slate.codec.model import JSON_SCHEMA_DIALECT_2020_12
 from gh_slate.schema.errors import SchemaError
-from gh_slate.schema.inference import infer_schema
+from gh_slate.schema.inference import _merge, _Shape, infer_schema
 
 
 def _document(data: object) -> dict[str, object]:
@@ -219,6 +220,28 @@ def test_inference_is_independent_of_object_and_array_observation_order() -> Non
     }
 
     assert canonical_json_bytes(infer_schema(first).to_json()) == canonical_json_bytes(infer_schema(second).to_json())
+
+
+def test_shape_merge_reuses_the_accumulated_property_map() -> None:
+    left = _Shape({"object"}, properties={"left": _Shape({"null"})})
+    original_properties = left.properties
+
+    merged = _merge(left, _Shape({"object"}, properties={"right": _Shape({"string"})}))
+
+    assert merged is left
+    assert merged.properties is original_properties
+    assert set(merged.properties) == {"left", "right"}
+
+
+def test_inference_merges_many_distinct_array_properties_linearly() -> None:
+    data = {"rows": [{f"k{index}": None} for index in range(8_000)]}
+    started = time.monotonic()
+
+    with pytest.raises(SchemaError) as caught:
+        infer_schema(data)
+
+    assert caught.value.code == "schema_size_limit"
+    assert time.monotonic() - started < 5
 
 
 def test_inference_does_not_invent_constraints() -> None:
