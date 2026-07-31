@@ -386,6 +386,55 @@ def test_process_tree_kill_uses_a_posix_process_group(monkeypatch: pytest.Monkey
     assert process.killed is True
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups are unavailable on Windows")
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt(), SystemExit(130)])
+def test_default_runner_reaps_process_group_when_wait_is_interrupted(
+    monkeypatch: pytest.MonkeyPatch,
+    interruption: BaseException,
+) -> None:
+    calls: list[tuple[int, signal.Signals]] = []
+
+    class Process:
+        pid = 321
+        stdout = io.BytesIO(b"{}")
+        stderr = io.BytesIO(b"")
+        wait_calls = 0
+        killed = 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.wait_calls += 1
+            if self.wait_calls == 1:
+                raise interruption
+            return -signal.SIGKILL
+
+        def kill(self) -> None:
+            self.killed += 1
+
+    process = Process()
+    monkeypatch.setattr(
+        process_module,
+        "_spawn_process",
+        lambda argv, *, environment: (
+            cast("subprocess.Popen[bytes]", process),
+            None,
+        ),
+    )
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: calls.append((pid, sig)))
+
+    with pytest.raises(type(interruption)):
+        SubprocessRunner().run(
+            ("gh", "version"),
+            timeout=1,
+            hostname=None,
+            max_stdout_bytes=1024,
+            max_stderr_bytes=1024,
+        )
+
+    assert calls == [(321, signal.SIGKILL)]
+    assert process.killed == 1
+    assert process.wait_calls == 2
+
+
 def test_process_tree_kill_uses_retained_windows_job_after_leader_exit() -> None:
     class Process:
         pid = 456

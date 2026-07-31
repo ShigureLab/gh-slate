@@ -162,6 +162,20 @@ class SubprocessRunner:
                     reader.join(timeout=max(0.0, deadline - time.monotonic()))
                 return not any(reader.is_alive() for reader in readers)
 
+            def cleanup_after_failure() -> None:
+                cleanup_deadline = time.monotonic() + _PROCESS_CLEANUP_TIMEOUT_SECONDS
+                for cleanup in (
+                    kill,
+                    reap,
+                    lambda: join_readers(cleanup_deadline),
+                ):
+                    try:
+                        cleanup()
+                    except BaseException:
+                        # Cleanup must not replace the timeout or interruption
+                        # that made the remote process outcome relevant.
+                        pass
+
             def read_bounded(
                 pipe: BinaryIO,
                 buffer: bytearray,
@@ -204,9 +218,10 @@ class SubprocessRunner:
             try:
                 returncode = process.wait(timeout=max(0.0, deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
-                kill()
-                reap()
-                join_readers(time.monotonic() + _PROCESS_CLEANUP_TIMEOUT_SECONDS)
+                cleanup_after_failure()
+                raise
+            except BaseException:
+                cleanup_after_failure()
                 raise
             if not join_readers(deadline):
                 kill()
