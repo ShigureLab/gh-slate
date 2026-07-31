@@ -74,6 +74,10 @@ _SCHEMA_SINGLE_KEYWORDS = frozenset(
 _REFERENCE_KEYWORDS = ("$dynamicRef", "$ref")
 
 
+class _FalseSchema(dict[str, object]):
+    """A unique runtime equivalent of one source ``false`` schema."""
+
+
 def _pointer(parts: Iterable[object]) -> tuple[str, bool]:
     encoded: list[str] = []
     encoded_bytes = 0
@@ -395,17 +399,55 @@ def _schema_locations(schema: object) -> dict[int, tuple[object, ...]]:
     return locations
 
 
+def _project_false_schemas(schema: object) -> object:
+    """Give each boolean-false schema a unique identity for diagnostics."""
+
+    if schema is False:
+        return _FalseSchema({"not": {}})
+    if schema is True or not isinstance(schema, Mapping):
+        return schema
+
+    typed = cast("Mapping[str, object]", schema)
+    result = dict(typed)
+    for keyword in _SCHEMA_SINGLE_KEYWORDS:
+        child = typed.get(keyword)
+        if isinstance(child, (bool, Mapping)):
+            result[keyword] = _project_false_schemas(child)
+
+    for keyword in _SCHEMA_ARRAY_KEYWORDS:
+        children = typed.get(keyword)
+        if not isinstance(children, (list, tuple)):
+            continue
+        result[keyword] = [
+            (_project_false_schemas(child) if isinstance(child, (bool, Mapping)) else child) for child in children
+        ]
+
+    for keyword in _SCHEMA_MAP_KEYWORDS:
+        children = typed.get(keyword)
+        if not isinstance(children, Mapping):
+            continue
+        result[keyword] = {
+            name: (_project_false_schemas(child) if isinstance(child, (bool, Mapping)) else child)
+            for name, child in children.items()
+        }
+    return result
+
+
 def _validation_diagnostic(
     error: ValidationError,
     *,
     schema_locations: Mapping[int, tuple[object, ...]],
 ) -> SchemaDiagnostic:
-    keyword = error.validator if isinstance(error.validator, str) else None
+    false_schema = isinstance(error.schema, _FalseSchema)
+    keyword = None if false_schema else (error.validator if isinstance(error.validator, str) else None)
     schema_path = tuple(error.absolute_schema_path)
     if isinstance(error.schema, Mapping):
         source_path = schema_locations.get(id(error.schema))
-        if source_path is not None and (keyword is None or keyword in error.schema):
-            schema_path = source_path if keyword is None else (*source_path, keyword)
+        if source_path is not None:
+            if false_schema:
+                schema_path = source_path
+            elif keyword is None or keyword in error.schema:
+                schema_path = source_path if keyword is None else (*source_path, keyword)
     return _diagnostic(
         code="validation_failed" if keyword is None else keyword,
         message=_validation_message(keyword),
@@ -509,7 +551,7 @@ def validate_data(
     )
     validator_schema = cast(
         "bool | Mapping[str, object]",
-        to_validator_value(snapshot.document),
+        _project_false_schemas(to_validator_value(snapshot.document)),
     )
     validator_data = to_validator_value(frozen)
     registry: Registry[object] = Registry(retrieve=_deny_retrieve)

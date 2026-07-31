@@ -438,6 +438,73 @@ def test_validation_diagnostic_resolves_local_ref_to_source_pointer() -> None:
     assert diagnostic.keyword == "type"
 
 
+def test_false_schema_ref_diagnostics_keep_each_source_location() -> None:
+    schema = {
+        "$defs": {
+            "deny/first": False,
+            "deny~second": False,
+        },
+        "properties": {
+            "first": {"$ref": "#/$defs/deny~1first"},
+            "second": {"$ref": "#/$defs/deny~0second"},
+        },
+    }
+
+    with pytest.raises(SchemaError) as captured:
+        validate_data({"first": None, "second": None}, schema)
+
+    assert [
+        (diagnostic.data_pointer, diagnostic.schema_pointer, diagnostic.keyword)
+        for diagnostic in captured.value.diagnostics
+    ] == [
+        ("/first", "/$defs/deny~1first", None),
+        ("/second", "/$defs/deny~0second", None),
+    ]
+
+
+def test_false_schema_diagnostic_follows_an_anchored_ref_chain() -> None:
+    schema = {
+        "$defs": {
+            "deny/value": False,
+            "alias": {
+                "$anchor": "deny-alias",
+                "$ref": "#/$defs/deny~1value",
+            },
+        },
+        "properties": {
+            "value": {"$ref": "#deny-alias"},
+        },
+    }
+
+    with pytest.raises(SchemaError) as captured:
+        validate_data({"value": "forbidden"}, schema)
+
+    diagnostic = captured.value.diagnostics[0]
+    assert diagnostic.data_pointer == "/value"
+    assert diagnostic.schema_pointer == "/$defs/deny~1value"
+    assert diagnostic.keyword is None
+
+
+def test_false_instance_values_are_not_projected_as_schemas() -> None:
+    schema = {
+        "properties": {
+            "constant": {"const": False},
+            "choice": {"enum": [False]},
+        }
+    }
+
+    assert validate_data({"constant": False, "choice": False}, schema) == {
+        "constant": False,
+        "choice": False,
+    }
+
+    with pytest.raises(SchemaError) as captured:
+        validate_data({}, {"not": {}})
+    diagnostic = captured.value.diagnostics[0]
+    assert diagnostic.schema_pointer == "/not"
+    assert diagnostic.keyword == "not"
+
+
 def test_diagnostics_are_rfc6901_sorted_and_truncated() -> None:
     schema = {
         "type": "object",
