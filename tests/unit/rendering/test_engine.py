@@ -245,6 +245,46 @@ def test_materialized_comment_round_trips_and_rerenders_byte_identically() -> No
     assert render_state(decoded.state).markdown == decoded.visible_markdown
 
 
+def test_materialization_persists_schema_resolved_table_columns() -> None:
+    state = StateV1(
+        name="ci",
+        revision=1,
+        controller=ControllerV1(login="ci-bot"),
+        data={"jobs": [{"name": "linux", "status": "passed"}]},
+        data_schema=validate_schema(
+            {
+                "type": "object",
+                "properties": {
+                    "jobs": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "status": {"type": "string"},
+                                "name": {"type": "string"},
+                            },
+                        },
+                    }
+                },
+            }
+        ),
+        renderer=TableRendererV1(selector=".jobs").to_descriptor(),
+        render_sha256=_EMPTY_HASH,
+    )
+
+    materialized = materialize_comment(state)
+    decoded = decode_comment(materialized.encoded.body)
+
+    expected_columns = [
+        {"path": ["status"], "header": "status"},
+        {"path": ["name"], "header": "name"},
+    ]
+    assert materialized.state.renderer.to_json()["columns"] == expected_columns
+    assert decoded.state.renderer.to_json()["columns"] == expected_columns
+    assert not decoded.drifted
+    assert render_state(decoded.state).markdown == decoded.visible_markdown
+
+
 def test_render_state_does_not_silently_migrate_legacy_renderer_descriptor() -> None:
     descriptor = RendererDescriptorV1(
         kind="builtin-table",

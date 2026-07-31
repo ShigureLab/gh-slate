@@ -463,11 +463,24 @@ def render_state(
         slate=context,
         limits=limits,
     )
-    # Decoding and rerendering an existing state must not silently migrate its
-    # renderer descriptor. Creation code resolves a fresh descriptor through
-    # ``render`` before constructing StateV1; explicit migrations can do the
-    # same. This preserves permanent state-v1 fixtures and unknown default
-    # spellings byte-for-byte at the state boundary.
+    if state.renderer.kind != "jinja":
+        parsed = parse_renderer_descriptor(state.renderer)
+        resolved = parse_renderer_descriptor(rendered.renderer)
+        if (
+            isinstance(parsed, TableRendererV1)
+            and not parsed.columns
+            and isinstance(resolved, TableRendererV1)
+            and resolved.columns
+        ):
+            # An unresolved table descriptor is not stable state: schema
+            # canonicalization can reorder its properties before the next
+            # render. Persist the columns chosen from the original schema.
+            return rendered
+
+    # Decoding and rerendering an existing resolved state must not silently
+    # migrate its renderer descriptor. This preserves permanent state-v1
+    # fixtures and unknown default spellings byte-for-byte at the state
+    # boundary.
     return replace(rendered, renderer=state.renderer)
 
 
