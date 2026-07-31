@@ -119,7 +119,20 @@ def test_schema_regex_format_uses_the_runtime_regex_dialect() -> None:
         validate_schema({"pattern": "["})
     assert invalid.value.code == "schema_invalid"
 
-    for pattern in (r"\a", r"\R", r"\X", r"\m", r"\M", r"\h", r"\H", r"\U0001F600", r"\k"):
+    for pattern in (
+        r"\a",
+        r"\R",
+        r"\X",
+        r"\m",
+        r"\M",
+        r"\h",
+        r"\H",
+        r"\U0001F600",
+        r"\k",
+        r"(?P<x>a)",
+        r"(?<x>a)(?P=x)",
+        r"(?'x'a)",
+    ):
         with pytest.raises(SchemaError) as unsupported_escape:
             validate_schema({"pattern": pattern})
         assert unsupported_escape.value.code == "schema_invalid"
@@ -138,6 +151,11 @@ def test_schema_regex_format_uses_the_runtime_regex_dialect() -> None:
         (r"^abc$", "abc", "abc\n"),
         (r"^\cC$", "\x03", r"\cC"),
         (r"^(?<letter>a)\k<letter>$", "aa", "ab"),
+        (r"^\k<x>(?<x>a)$", "a", "aa"),
+        (r"^(?:(?<x>a)|b)\k<x>$", "b", "a"),
+        (r"^(?<x>a)?\k<x>$", "", "a"),
+        (r"^(?<$>a)\k<$>$", "aa", "ab"),
+        (r"^(?<\u0061>a)\k<a>$", "aa", "ab"),
     ],
 )
 def test_ecmascript_regex_semantics(pattern: str, accepted: str, rejected: str) -> None:
@@ -173,6 +191,18 @@ def test_pattern_properties_use_ecmascript_ascii_shorthands() -> None:
     assert captured.value.details["error_count"] == 1
     assert captured.value.truncated is False
     assert captured.value.diagnostics[0].keyword == "additionalProperties"
+
+
+def test_pattern_properties_use_ecmascript_unmatched_named_backreferences() -> None:
+    schema = {
+        "type": "object",
+        "patternProperties": {r"^(?:(?<x>a)|b)\k<x>$": True},
+        "additionalProperties": False,
+    }
+
+    validate_data({"aa": None, "b": None}, schema)
+    with pytest.raises(SchemaError):
+        validate_data({"a": None}, schema)
 
 
 def test_pattern_properties_and_unevaluated_properties_share_safe_matching() -> None:

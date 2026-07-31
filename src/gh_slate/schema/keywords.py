@@ -38,6 +38,14 @@ _ECMASCRIPT_ATOM_ESCAPES = {
     "S": f"[^{_ECMASCRIPT_CLASS_ESCAPES['s']}]",
 }
 _ECMASCRIPT_PASSTHROUGH_ESCAPES = frozenset("fnrtvpuPx")
+_ECMASCRIPT_IDENTIFIER_START = regex.compile(
+    r"\A(?:[$_]|\p{ID_Start})\Z",
+    flags=regex.VERSION0,
+)
+_ECMASCRIPT_IDENTIFIER_CONTINUE = regex.compile(
+    r"\A(?:[$_\u200C\u200D]|\p{ID_Continue})\Z",
+    flags=regex.VERSION0,
+)
 
 
 class SchemaEvaluationLimitExceeded(Exception):
@@ -113,15 +121,71 @@ def _class_escape_is_range_endpoint(
     return following < len(source) - 1 and source[following] == "-" and source[following + 1] != "]"
 
 
+def _ecmascript_group_name(source: str) -> str:
+    decoded: list[str] = []
+    index = 0
+    while index < len(source):
+        if source[index] != "\\":
+            decoded.append(source[index])
+            index += 1
+            continue
+        if index + 1 >= len(source) or source[index + 1] != "u":
+            raise ValueError("invalid ECMA-262 group name escape")
+        if index + 2 < len(source) and source[index + 2] == "{":
+            closing_brace = source.find("}", index + 3)
+            if closing_brace < 0:
+                raise ValueError("invalid ECMA-262 group name escape")
+            hexadecimal = source[index + 3 : closing_brace]
+            index = closing_brace + 1
+        else:
+            hexadecimal = source[index + 2 : index + 6]
+            if len(hexadecimal) != 4:
+                raise ValueError("invalid ECMA-262 group name escape")
+            index += 6
+        try:
+            codepoint = int(hexadecimal, 16)
+        except ValueError:
+            raise ValueError("invalid ECMA-262 group name escape") from None
+        if not hexadecimal or codepoint > 0x10FFFF:
+            raise ValueError("invalid ECMA-262 group name escape")
+        decoded.append(chr(codepoint))
+
+    name = "".join(decoded)
+    if not name or _ECMASCRIPT_IDENTIFIER_START.fullmatch(name[0]) is None:
+        raise ValueError("invalid ECMA-262 group name")
+    if any(_ECMASCRIPT_IDENTIFIER_CONTINUE.fullmatch(character) is None for character in name[1:]):
+        raise ValueError("invalid ECMA-262 group name")
+    return name
+
+
 def _ecmascript_pattern(source: str) -> str:
     """Translate the supported ECMA-262 regex surface to ``regex`` syntax."""
 
     result: list[str] = []
+    group_names: dict[str, str] = {}
+
+    def safe_group_name(raw_name: str) -> str:
+        name = _ecmascript_group_name(raw_name)
+        if name not in group_names:
+            group_names[name] = f"g{len(group_names)}"
+        return group_names[name]
+
     in_class = False
     class_content_start = -1
     index = 0
     while index < len(source):
         character = source[index]
+        if not in_class and character == "(" and source.startswith("(?", index):
+            if source.startswith(("(?P", "(?'", "(?("), index):
+                raise ValueError("unsupported Python regex group syntax")
+            if source.startswith("(?<", index) and index + 3 < len(source) and source[index + 3] not in "=!":
+                closing_bracket = source.find(">", index + 3)
+                if closing_bracket < 0:
+                    raise ValueError("invalid ECMA-262 named capture")
+                safe_name = safe_group_name(source[index + 3 : closing_bracket])
+                result.append(f"(?P<{safe_name}>")
+                index = closing_bracket + 1
+                continue
         if character == "\\":
             if index + 1 >= len(source):
                 raise ValueError("trailing regex escape")
@@ -161,8 +225,12 @@ def _ecmascript_pattern(source: str) -> str:
                 closing_bracket = source.find(">", index + 3)
                 if closing_bracket < 0 or closing_bracket == index + 3:
                     raise ValueError("invalid ECMA-262 named backreference")
-                name = source[index + 3 : closing_bracket]
-                result.append(rf"\g<{name}>")
+                safe_name = safe_group_name(source[index + 3 : closing_bracket])
+                # In ECMA-262, a backreference to a capture that has not
+                # participated (including a forward reference) matches the
+                # empty string. Python's regex engine needs an explicit
+                # conditional to preserve that behavior.
+                result.append(f"(?({safe_name})\\g<{safe_name}>|)")
                 index = closing_bracket + 1
                 continue
             if escaped.isascii() and escaped.isalpha() and escaped not in _ECMASCRIPT_PASSTHROUGH_ESCAPES:
