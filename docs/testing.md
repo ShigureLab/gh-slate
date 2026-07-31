@@ -69,43 +69,65 @@ compatibility.
 
 ## Tagged release gate
 
-Before pushing any `v*` tag, an administrator must create a
-`gh-slate-release` GitHub Environment and make it the release trust boundary:
+The private Free-plan repository cannot use a protected Environment with the
+review and tag-policy guarantees the release needs. Its enforceable trust root
+is therefore deliberately smaller: only release maintainers may have write or
+admin access to any repository ref. Everyone else must contribute through a
+fork and pull request. Keep the repository's default Actions token read-only
+and disable workflow approval through that token. A user who can write an
+arbitrary ref can otherwise add a same-named workflow, request PyPI OIDC or a
+write-scoped `GITHUB_TOKEN`, and bypass an in-repository approval convention.
 
-- require at least one release-maintainer reviewer and enable prevention of
-  self-review;
-- restrict deployments to the repository's protected release tags, backed by
-  a tag ruleset that prevents ordinary contributors from creating, moving, or
-  deleting `v*` tags;
-- store `GH_SLATE_LIVE_TOKEN`,
-  `GH_SLATE_LIVE_DISPOSABLE_ISSUE_URL`,
-  `GH_SLATE_LIVE_DISPOSABLE_PR_URL`, and
-  `GH_SLATE_RELEASE_ADMIN_TOKEN` only as environment secrets. Do not retain
-  repository- or organization-level copies that a tag workflow could request
-  without the environment;
-- configure the PyPI Trusted Publisher to require the exact
-  `gh-slate-release` environment.
+The release path separates unprivileged candidate execution from publishing:
 
-The workflow's default-branch ancestry job catches accidental unmerged tags,
-but is defense in depth only: a tag can contain a modified workflow. Required
-environment review, environment-only credentials, the PyPI environment claim,
-and the external tag ruleset are the actual security boundaries. Until all of
-them are configured, do not push a release tag.
+1. A `v*` tag runs `release-candidate.yml` from the tagged commit with only
+   `contents: read`. It has no secrets, write permission, or OIDC permission,
+   and every Action reference is a full commit SHA.
+2. Only a successful candidate run can trigger `release.yml`. Its read-only
+   source-rebuild job checks out the exact candidate SHA and uses pinned
+   `uv 0.11.28`, offline mode, and a fixed source epoch to rebuild the wheel and
+   sdist independently.
+3. The intake verifier is checked out at the immutable `workflow_sha`, not the
+   moving default-branch tip. It fetches the canonical candidate workflow and
+   triggering run through the Actions API, then binds workflow ID, path, run
+   attempt, repository ID, commit, and tag to the artifact context. It requires
+   the candidate SHA in current default-branch history, requires the lightweight
+   tag to still point to that SHA, byte-compares both Python distributions with
+   the independent rebuild, deterministically rebuilds all extension assets
+   from the accepted source, and rechecks the exact SHA256 manifest.
+4. Jobs that execute candidate code never receive PyPI OIDC or
+   `contents: write`. The live job uses its job-scoped `GITHUB_TOKEN` with only
+   Issue/Pull Request comment permissions. Configure the same-repository
+   disposable targets as `GH_SLATE_LIVE_DISPOSABLE_ISSUE_URL` and
+   `GH_SLATE_LIVE_DISPOSABLE_PR_URL` repository variables; there are no release
+   Actions secrets.
+5. Write-scoped jobs only download and hash-check the accepted files. They do
+   not check out or execute candidate code. The first creates or updates a
+   draft release, PyPI publishes the same wheel and sdist with OIDC, and the
+   final job compares every staged asset before publishing the draft as stable.
+   The draft-to-published sequence is compatible with immutable releases.
 
-The tagged workflow uses a dedicated `GH_SLATE_LIVE_TOKEN` environment secret,
-not the workflow repository's scoped `GITHUB_TOKEN`. Scope that secret only to
-the disposable test repository, give it read access plus Issue/Pull Request
-comment write access, and set
-`GH_SLATE_LIVE_DISPOSABLE_ISSUE_URL` /
-`GH_SLATE_LIVE_DISPOSABLE_PR_URL` to targets that token can access. A missing
-secret or either missing target fails before the live harness starts.
+Configure the PyPI Trusted Publisher with owner `ShigureLab`, repository
+`gh-slate`, workflow filename `release.yml`, and no Environment claim. PyPI's
+workflow identity does not replace repository access control: do not grant a
+non-release-maintainer write access while this same-repository design is in
+use. Before doing so, move publishing to a separately controlled release
+repository or enable a paid/public protection boundary with equivalent
+external approval. A missing live-target variable, mismatched tag, stale
+candidate SHA, changed artifact, unexpected existing prerelease, or absent
+Trusted Publisher fails the release closed.
 
-The current remote extension smoke stages the verified assets as a visible
-prerelease, installs the exact platform asset with `gh extension install`, and
-promotes that same release only after the remaining gates pass. The workflow
-therefore uses a separate `GH_SLATE_RELEASE_ADMIN_TOKEN` environment secret
-with only Administration (read) access to query the workflow repository's
-immutable-release setting. It fails closed when that secret is absent, the
-setting cannot be read, or immutable releases are enabled or enforced by the
-owner. Publishing an immutable stable release requires a future separate
-staging-tag flow rather than mutating the tested prerelease.
+Before the first release, change the repository Actions default token to
+read-only and disable pull-request approval through that token. The checked-in
+workflows also declare explicit minimum permissions, so a later repository
+default cannot silently widen them. Configure both disposable target variables
+and verify the PyPI Trusted Publisher before pushing a tag. If repository or
+organization policy supports required SHA pinning, enable it in addition to the
+checked-in full-SHA references.
+
+GitHub concurrency is mutual exclusion, not a durable FIFO queue: a newer
+pending publisher can replace an older pending one. Push only one release tag,
+wait for its `Release` workflow to finish, and only then start another release.
+During that window, release maintainers must not move or delete the tag, edit
+the draft release, or start a second release. The private Free-plan design has
+no external tag lock, so these are explicit exclusive-writer operating rules.

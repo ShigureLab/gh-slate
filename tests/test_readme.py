@@ -197,6 +197,12 @@ def test_install_and_safety_contracts_are_documented() -> None:
     assert "does not guarantee FIFO event ordering" in readme
     assert "refetch the current resource" in readme
     assert "This README is the user guide" in readme
+    assert "unprivileged Release Candidate" in readme
+    assert "exclusive write access" in readme
+    assert "do not store release credentials as Actions secrets" in readme
+    assert "byte-identical, source-bound artifacts" in readme
+    assert "full commit SHA" in readme
+    assert "Release one tag at a time" in readme
 
 
 def test_every_gh_extension_quickstart_command_parses() -> None:

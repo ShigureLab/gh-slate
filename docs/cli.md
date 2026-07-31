@@ -1597,9 +1597,12 @@ Deliverables:
   clean installation tests, and root extension-launcher packaging tests;
 - a `release-verify` gate that checks tag/version consistency and installs and
   tests the exact artifacts that will be published;
-- release workflow ordering so tests and artifact verification complete before
-  PyPI publication, followed by a non-draft stable GitHub Release and an
-  install-from-release extension smoke test.
+- an unprivileged tag candidate workflow plus an immutable-verifier
+  `workflow_run` publisher that validates canonical run identity and requires
+  byte-identical independent source rebuilds;
+- release ordering so the extension and live gates complete before a draft
+  GitHub Release is staged, PyPI receives the verified Python files, and that
+  exact draft becomes stable.
 
 Acceptance gates:
 
@@ -1610,8 +1613,11 @@ Acceptance gates:
 - self-extracting assets publish a verified private staging directory through
   one atomic symlink; stale legacy locks and orphan stages never block startup,
   and concurrent launchers converge on one ready cache;
-- the release workflow publishes the already-verified artifacts rather than
-  rebuilding different ones;
+- no tag-controlled workflow receives a release secret, write token, or OIDC
+  permission, and privileged jobs never execute candidate code;
+- the release workflow publishes only artifacts that match its independent
+  deterministic source rebuild, with full-SHA Action pins and the private
+  repository's exclusive-write ACL documented as the release trust boundary;
 - GitHub.com live E2E, artifact installation, extension installation, and skill
   installation pass before declaring `0.1.0` stable.
 

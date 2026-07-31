@@ -1,176 +1,293 @@
 name: Release
 
 on:
-  push:
-    tags: ['v*']
-  workflow_dispatch:
+  workflow_run:
+    workflows: ['Release Candidate']
+    types: [completed]
 
-permissions:
-  contents: read
+permissions: {}
+
+concurrency:
+  group: gh-slate-release
+  cancel-in-progress: false
 
 jobs:
-  release-provenance:
-    name: Require the tag commit on the trusted default branch
+  source-rebuild:
+    name: Independently rebuild the candidate Python distributions
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
 
     steps:
-      - name: Checkout trusted default-branch history
-        uses: actions/checkout@v7
+      - name: Checkout the exact candidate source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ github.event.repository.default_branch }}
-          fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
 
-      # This catches accidental tags before an environment approval. The
-      # protected environment below is the security boundary because a tag can
-      # carry a modified copy of this workflow and omit this check.
-      - name: Require the tagged commit to be merged
-        if: github.event_name == 'push' && github.ref_type == 'tag'
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: |
-          default_ref="refs/remotes/origin/${DEFAULT_BRANCH}"
-          git show-ref --verify "${default_ref}"
-          git cat-file -e "${GITHUB_SHA}^{commit}"
-          git merge-base --is-ancestor "${GITHUB_SHA}" "${default_ref}"
-
-  release-gate:
-    name: Test and verify exact release artifacts
-    needs: release-provenance
-    runs-on: ubuntu-latest
-    environment: gh-slate-release
-    permissions:
-      contents: read
-
-    steps:
-      - name: Checkout tagged source
-        uses: actions/checkout@v7
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v9.0.0
+      - name: Install pinned uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: 0.11.28
 
       - name: Install Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.14'
 
-      - name: Install just
-        uses: extractions/setup-just@v4
+      - name: Rebuild wheel and sdist from the accepted source bytes
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Install Prettier
-        run: npm install --global prettier
-
-      - name: Install locked development dependencies
-        run: just ci-install
-
-      - name: Validate and install the bundled agent skill
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SKILL_INSTALL_DIR: ${{ runner.temp }}/installed-gh-slate-skill
-        run: |
-          gh skill publish --dry-run .
-          gh skill install . gh-slate \
-            --from-local \
-            --dir "${SKILL_INSTALL_DIR}"
-          test -f "${SKILL_INSTALL_DIR}/gh-slate/SKILL.md"
-          uv run python scripts/check_skill.py \
-            "${SKILL_INSTALL_DIR}/gh-slate"
-          gh skill publish --dry-run "${SKILL_INSTALL_DIR}"
-
-      - name: Run formatting and static gates
-        run: |
-          just ci-fmt-check
-          just ci-lint
-
-      - name: Run the complete deterministic suite
-        run: just ci-test
-
-      - name: Require disposable live targets for a tag
-        if: github.event_name == 'push' && github.ref_type == 'tag'
-        env:
-          ISSUE_TARGET: ${{ secrets.GH_SLATE_LIVE_DISPOSABLE_ISSUE_URL }}
-          LIVE_TOKEN: ${{ secrets.GH_SLATE_LIVE_TOKEN }}
-          PR_TARGET: ${{ secrets.GH_SLATE_LIVE_DISPOSABLE_PR_URL }}
-        run: |
-          test -n "${ISSUE_TARGET}"
-          test -n "${LIVE_TOKEN}"
-          test -n "${PR_TARGET}"
-
-      - name: Run credentialed Issue and Pull Request lifecycle gates
-        if: github.event_name == 'push' && github.ref_type == 'tag'
-        env:
-          GH_TOKEN: ${{ secrets.GH_SLATE_LIVE_TOKEN }}
-          GH_SLATE_LIVE_CONFIRM: I_UNDERSTAND
-          GH_SLATE_LIVE_DISPOSABLE_ISSUE_URL: ${{ secrets.GH_SLATE_LIVE_DISPOSABLE_ISSUE_URL }}
-          GH_SLATE_LIVE_DISPOSABLE_PR_URL: ${{ secrets.GH_SLATE_LIVE_DISPOSABLE_PR_URL }}
-        run: uv run pytest -q tests/live/test_github_e2e.py -rs
-
-      - name: Create a clean artifact directory
-        run: |
-          test ! -e release-artifacts
-          mkdir -p release-artifacts/python
-
-      - name: Build wheel and sdist once
+          SOURCE_DATE_EPOCH: '0'
         run: >-
-          uv build --no-sources
-          --out-dir release-artifacts/python
+          uv build --offline --no-sources
+          --out-dir source-rebuilt-python
 
-      - name: Verify metadata, clean installs, CLIs, and extension bundles
-        shell: bash
-        run: |
-          arguments=(
-            --project-root .
-            --dist-dir release-artifacts/python
-            --manifest release-artifacts/SHA256SUMS
-          )
-          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            arguments+=(
-              --tag "${GITHUB_REF_NAME}"
-              --extension-dir release-artifacts/github
-            )
-          fi
-          uv run python scripts/release_verify.py "${arguments[@]}"
-
-      - name: Upload the one verified artifact set
-        uses: actions/upload-artifact@v7
+      - name: Upload the independent source rebuild
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: verified-release-artifacts
-          path: release-artifacts/
+          name: source-rebuilt-python
+          path: source-rebuilt-python/
           if-no-files-found: error
+          overwrite: true
           retention-days: 7
 
-  stage-release:
-    name: Stage verified GitHub Release assets
+  intake:
+    name: Accept one trusted default-branch candidate
+    needs: source-rebuild
     if: >-
-      github.event_name == 'push' &&
-      github.ref_type == 'tag' &&
-      startsWith(github.ref_name, 'v')
-    needs: release-gate
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
-    environment: gh-slate-release
     permissions:
+      actions: read
+      contents: read
+    outputs:
+      sha: ${{ steps.candidate.outputs.sha }}
+      tag: ${{ steps.candidate.outputs.tag }}
+      version: ${{ steps.candidate.outputs.version }}
+
+    steps:
+      - name: Checkout the trusted default-branch verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require the candidate SHA on the default branch
+        env:
+          CANDIDATE_SHA: ${{ github.event.workflow_run.head_sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        shell: bash
+        run: |
+          [[ "${CANDIDATE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          default_ref="refs/remotes/origin/${DEFAULT_BRANCH}"
+          git show-ref --verify "${default_ref}"
+          git cat-file -e "${CANDIDATE_SHA}^{commit}"
+          git merge-base --is-ancestor "${CANDIDATE_SHA}" "${default_ref}"
+          git worktree add --detach candidate-source "${CANDIDATE_SHA}"
+
+      - name: Fetch the canonical workflow and exact triggering run metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          gh api \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/release-candidate.yml" \
+            > candidate-workflow.json
+          gh api \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${CANDIDATE_RUN_ID}" \
+            > triggering-run.json
+
+      - name: Download only the triggering run's candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: verified-release-artifacts
+          path: release-artifacts
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Download the independent source rebuild
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: source-rebuilt-python
+          path: source-rebuilt-python
+
+      - name: Validate candidate identity, source, artifacts, and hashes
+        id: candidate
+        env:
+          CANDIDATE_REPOSITORY: ${{ github.repository }}
+          CANDIDATE_REPOSITORY_ID: ${{ github.repository_id }}
+          CANDIDATE_WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
+          CANDIDATE_RUN_ID: ${{ github.event.workflow_run.id }}
+          CANDIDATE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          CANDIDATE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          python3 scripts/intake_release_candidate.py \
+            --artifact-root release-artifacts \
+            --rebuilt-python-dir source-rebuilt-python \
+            --project-root candidate-source \
+            --workflow-metadata candidate-workflow.json \
+            --workflow-run-metadata triggering-run.json \
+            --expected-repository "${CANDIDATE_REPOSITORY}" \
+            --expected-repository-id "${CANDIDATE_REPOSITORY_ID}" \
+            --expected-workflow-id "${CANDIDATE_WORKFLOW_ID}" \
+            --expected-run-id "${CANDIDATE_RUN_ID}" \
+            --expected-run-attempt "${CANDIDATE_RUN_ATTEMPT}" \
+            --expected-sha "${CANDIDATE_SHA}" \
+            --github-output "${GITHUB_OUTPUT}"
+
+      - name: Require the lightweight tag to still name the candidate commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ steps.candidate.outputs.sha }}
+          RELEASE_TAG: ${{ steps.candidate.outputs.tag }}
+        shell: bash
+        run: |
+          tag_sha="$({
+            gh api \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" \
+              --jq 'if .object.type == "commit" then .object.sha else "invalid" end'
+          })"
+          test "${tag_sha}" = "${RELEASE_SHA}"
+
+      - name: Forward only the validated artifact set
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: trusted-release-artifacts
+          path: release-artifacts/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  live-gate:
+    name: Run credentialed Issue and Pull Request lifecycle gates
+    needs: intake
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout the accepted candidate SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.intake.outputs.sha }}
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: 0.11.28
+
+      - name: Install Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.14'
+
+      - name: Install locked development dependencies
+        run: uv sync --locked --all-extras --dev
+
+      - name: Require same-repository disposable live targets
+        env:
+          ISSUE_TARGET: ${{ vars.GH_SLATE_LIVE_DISPOSABLE_ISSUE_URL }}
+          PR_TARGET: ${{ vars.GH_SLATE_LIVE_DISPOSABLE_PR_URL }}
+        run: |
+          test -n "${ISSUE_TARGET}"
+          test -n "${PR_TARGET}"
+
+      - name: Exercise the accepted candidate with a job-scoped token
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_SLATE_LIVE_CONFIRM: I_UNDERSTAND
+          GH_SLATE_LIVE_DISPOSABLE_ISSUE_URL: ${{ vars.GH_SLATE_LIVE_DISPOSABLE_ISSUE_URL }}
+          GH_SLATE_LIVE_DISPOSABLE_PR_URL: ${{ vars.GH_SLATE_LIVE_DISPOSABLE_PR_URL }}
+        run: uv run pytest -q tests/live/test_github_e2e.py -rs
+
+  extension-smoke:
+    name: Execute the exact extension asset before publication
+    needs: intake
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+
+    steps:
+      - name: Download the trusted artifact set
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: trusted-release-artifacts
+          path: release-artifacts
+
+      - name: Recheck exact artifact hashes
+        working-directory: release-artifacts
+        run: sha256sum --check SHA256SUMS
+
+      - name: Execute the Linux AMD64 release asset
+        env:
+          EXPECTED_VERSION: ${{ needs.intake.outputs.version }}
+          GH_NO_UPDATE_NOTIFIER: '1'
+          XDG_CACHE_HOME: ${{ runner.temp }}/gh-slate-extension-cache
+        shell: bash
+        run: |
+          asset="release-artifacts/github/gh-slate-linux-amd64"
+          chmod u+x "${asset}"
+          test "$("${asset}" --version)" = "gh slate ${EXPECTED_VERSION}"
+          "${asset}" --help | grep -F "usage: gh slate"
+
+  stage-release:
+    name: Stage exact assets in a draft GitHub Release
+    needs:
+      - intake
+      - live-gate
+      - extension-smoke
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
       contents: write
     outputs:
       already_stable: ${{ steps.release_state.outputs.already_stable }}
 
     steps:
+      - name: Require the release tag to remain fixed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.intake.outputs.sha }}
+          RELEASE_TAG: ${{ needs.intake.outputs.tag }}
+        shell: bash
+        run: |
+          tag_sha="$({
+            gh api \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" \
+              --jq 'if .object.type == "commit" then .object.sha else "invalid" end'
+          })"
+          test "${tag_sha}" = "${RELEASE_SHA}"
+
       - name: Inspect the existing tagged release
         id: release_state
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.intake.outputs.tag }}
         shell: bash
         run: |
           error_file="$(mktemp)"
           trap 'rm -f "${error_file}"' EXIT
-          if release_state="$(
+          if release_state="$({
             gh api \
               --method GET \
               -H "X-GitHub-Api-Version: 2026-03-10" \
-              "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" \
+              "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
               --jq '
                 if (
                   ((.draft | type) != "boolean") or
@@ -186,7 +303,7 @@ jobs:
                 end
               ' \
               2>"${error_file}"
-          )"; then
+          })"; then
             :
           elif grep -Fq "HTTP 404" "${error_file}"; then
             release_state="absent"
@@ -196,138 +313,124 @@ jobs:
           fi
 
           case "${release_state}" in
-            absent|prerelease)
+            absent|draft)
               echo "already_stable=false" >> "${GITHUB_OUTPUT}"
               ;;
             stable)
               echo "already_stable=true" >> "${GITHUB_OUTPUT}"
               ;;
-            draft)
-              echo "::error::Refusing to replace an existing draft release for ${GITHUB_REF_NAME}."
+            prerelease)
+              echo "::error::Refusing the legacy prerelease state for ${RELEASE_TAG}." >&2
               exit 1
               ;;
             *)
-              echo "::error::GitHub returned an invalid release state: ${release_state}."
+              echo "::error::GitHub returned an invalid release state: ${release_state}." >&2
               exit 1
               ;;
           esac
           echo "release_state=${release_state}" >> "${GITHUB_OUTPUT}"
 
-      - name: Require mutable staged releases
-        if: steps.release_state.outputs.already_stable != 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GH_SLATE_RELEASE_ADMIN_TOKEN }}
-        shell: bash
-        run: |
-          test -n "${GH_TOKEN}"
-          release_policy="$(
-            gh api \
-              --method GET \
-              -H "X-GitHub-Api-Version: 2026-03-10" \
-              "repos/${GITHUB_REPOSITORY}/immutable-releases" \
-              --jq '
-                if (
-                  ((.enabled | type) == "boolean") and
-                  ((.enforced_by_owner | type) == "boolean")
-                ) then
-                  if (.enabled or .enforced_by_owner) then
-                    "immutable"
-                  else
-                    "mutable"
-                  end
-                else
-                  "invalid"
-                end
-              '
-          )"
-          if [[ "${release_policy}" != "mutable" ]]; then
-            echo "::error::The staged prerelease smoke requires immutable releases to be disabled; observed ${release_policy}."
-            exit 1
-          fi
-
-      - name: Download the verified artifact set
-        if: steps.release_state.outputs.already_stable != 'true'
-        uses: actions/download-artifact@v8
+      - name: Download the trusted artifact set
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: verified-release-artifacts
+          name: trusted-release-artifacts
           path: release-artifacts
 
       - name: Recheck exact artifact hashes
-        if: steps.release_state.outputs.already_stable != 'true'
         working-directory: release-artifacts
         run: sha256sum --check SHA256SUMS
 
-      - name: Stage a non-latest prerelease for extension installation
+      - name: Stage a draft release without executing candidate code
         if: steps.release_state.outputs.already_stable != 'true'
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
-          tag_name: ${{ github.ref_name }}
-          draft: false
-          prerelease: true
+          tag_name: ${{ needs.intake.outputs.tag }}
+          target_commitish: ${{ needs.intake.outputs.sha }}
+          draft: true
+          prerelease: false
           make_latest: false
           generate_release_notes: true
           fail_on_unmatched_files: true
+          overwrite_files: true
           files: |
             release-artifacts/python/*.whl
             release-artifacts/python/*.tar.gz
             release-artifacts/github/gh-slate-*
             release-artifacts/SHA256SUMS
 
-  extension-smoke:
-    name: Install and execute the tagged GitHub CLI extension
-    if: >-
-      github.event_name == 'push' &&
-      github.ref_type == 'tag' &&
-      startsWith(github.ref_name, 'v')
-    needs: stage-release
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    env:
-      GH_NO_UPDATE_NOTIFIER: '1'
-      GH_TOKEN: ${{ github.token }}
-
-    steps:
-      - name: Isolate the extension installation
-        run: echo "GH_CONFIG_DIR=${RUNNER_TEMP}/gh-slate-extension-config" >> "${GITHUB_ENV}"
-
-      - name: Install uv for the released source bundle
-        uses: astral-sh/setup-uv@v9.0.0
-
-      - name: Install from the tagged GitHub Release and execute it
+      - name: Prove the GitHub Release contains only the accepted files
+        env:
+          ALREADY_STABLE: ${{ steps.release_state.outputs.already_stable }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.intake.outputs.tag }}
         shell: bash
         run: |
-          gh extension install "${GITHUB_REPOSITORY}" --pin "${GITHUB_REF_NAME}"
-          expected_version="${GITHUB_REF_NAME#v}"
-          test "$(gh slate --version)" = "gh slate ${expected_version}"
-          gh slate --help | grep -F "usage: gh slate"
-          gh extension list | grep -F "${GITHUB_REPOSITORY}"
-
-      - name: Remove the isolated smoke installation
-        if: always()
-        run: gh extension remove slate || true
+          mkdir staged-assets
+          gh release download "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --dir staged-assets
+          expected_assets=(
+            release-artifacts/python/*.whl
+            release-artifacts/python/*.tar.gz
+            release-artifacts/github/gh-slate-*
+            release-artifacts/SHA256SUMS
+          )
+          printf '%s\n' "${expected_assets[@]##*/}" \
+            | LC_ALL=C sort > expected-assets.txt
+          find staged-assets \
+            -maxdepth 1 \
+            -type f \
+            -exec basename '{}' ';' \
+            | LC_ALL=C sort > staged-assets.txt
+          cmp expected-assets.txt staged-assets.txt
+          for artifact in "${expected_assets[@]}"; do
+            cmp "${artifact}" \
+              "staged-assets/$(basename "${artifact}")"
+          done
+          expected_state=$'true\tfalse'
+          if [[ "${ALREADY_STABLE}" == "true" ]]; then
+            expected_state=$'false\tfalse'
+          fi
+          test "$({
+            gh release view "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --json isDraft,isPrerelease \
+              --jq '[.isDraft,.isPrerelease] | @tsv'
+          })" = "${expected_state}"
 
   publish-pypi:
     name: Publish verified Python artifacts to PyPI
-    if: >-
-      github.event_name == 'push' &&
-      github.ref_type == 'tag' &&
-      startsWith(github.ref_name, 'v')
     needs:
-      - release-gate
+      - intake
+      - stage-release
       - extension-smoke
+      - live-gate
     runs-on: ubuntu-latest
-    environment: gh-slate-release
     permissions:
+      actions: read
       contents: read
       id-token: write
 
     steps:
-      - name: Download the verified artifact set
-        uses: actions/download-artifact@v8
+      - name: Require the release tag to remain fixed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.intake.outputs.sha }}
+          RELEASE_TAG: ${{ needs.intake.outputs.tag }}
+        shell: bash
+        run: |
+          tag_sha="$({
+            gh api \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" \
+              --jq 'if .object.type == "commit" then .object.sha else "invalid" end'
+          })"
+          test "${tag_sha}" = "${RELEASE_SHA}"
+
+      - name: Download the trusted artifact set
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: verified-release-artifacts
+          name: trusted-release-artifacts
           path: release-artifacts
 
       - name: Recheck exact artifact hashes
@@ -335,7 +438,7 @@ jobs:
         run: sha256sum --check SHA256SUMS
 
       - name: Publish the already-verified wheel and sdist
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           packages-dir: release-artifacts/python
           skip-existing: true
@@ -343,7 +446,7 @@ jobs:
       - name: Verify the exact PyPI file set and hashes
         env:
           PYPI_PROJECT: gh-slate
-          PYPI_VERSION: ${{ github.ref_name }}
+          PYPI_VERSION: ${{ needs.intake.outputs.version }}
         run: |
           python3 - <<'PY'
           import hashlib
@@ -366,7 +469,7 @@ jobs:
               path.name: hashlib.sha256(path.read_bytes()).hexdigest()
               for path in expected_paths
           }
-          version = os.environ["PYPI_VERSION"].removeprefix("v")
+          version = os.environ["PYPI_VERSION"]
           url = f"https://pypi.org/pypi/{os.environ['PYPI_PROJECT']}/{version}/json"
           actual = {}
           for attempt in range(12):
@@ -407,28 +510,38 @@ jobs:
           PY
 
   publish-release:
-    name: Promote the verified prerelease to stable
-    if: >-
-      github.event_name == 'push' &&
-      github.ref_type == 'tag' &&
-      startsWith(github.ref_name, 'v')
+    name: Publish the exact draft as the stable GitHub Release
     needs:
-      - release-gate
+      - intake
       - stage-release
       - extension-smoke
+      - live-gate
       - publish-pypi
     runs-on: ubuntu-latest
-    environment: gh-slate-release
     permissions:
+      actions: read
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
+      RELEASE_SHA: ${{ needs.intake.outputs.sha }}
+      RELEASE_TAG: ${{ needs.intake.outputs.tag }}
 
     steps:
-      - name: Download the same verified artifact set
-        uses: actions/download-artifact@v8
+      - name: Require the release tag to remain fixed
+        shell: bash
+        run: |
+          tag_sha="$({
+            gh api \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" \
+              --jq 'if .object.type == "commit" then .object.sha else "invalid" end'
+          })"
+          test "${tag_sha}" = "${RELEASE_SHA}"
+
+      - name: Download the same trusted artifact set
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: verified-release-artifacts
+          name: trusted-release-artifacts
           path: release-artifacts
 
       - name: Recheck exact artifact hashes
@@ -438,7 +551,7 @@ jobs:
       - name: Download the staged GitHub Release assets
         run: |
           mkdir released-assets
-          gh release download "${GITHUB_REF_NAME}" \
+          gh release download "${RELEASE_TAG}" \
             --repo "${GITHUB_REPOSITORY}" \
             --dir released-assets
 
@@ -465,19 +578,19 @@ jobs:
               "released-assets/$(basename "${artifact}")"
           done
 
-      - name: Promote to a stable latest release only after every gate
+      - name: Publish the draft only after every gate
         if: needs.stage-release.outputs.already_stable != 'true'
         run: |
-          gh release edit "${GITHUB_REF_NAME}" \
+          gh release edit "${RELEASE_TAG}" \
             --repo "${GITHUB_REPOSITORY}" \
-            --prerelease=false \
+            --draft=false \
             --latest
 
       - name: Assert the tagged release is stable
         run: |
-          test "$(
-            gh release view "${GITHUB_REF_NAME}" \
+          test "$({
+            gh release view "${RELEASE_TAG}" \
               --repo "${GITHUB_REPOSITORY}" \
               --json isDraft,isPrerelease \
               --jq '[.isDraft,.isPrerelease] | @tsv'
-          )" = $'false\tfalse'
+          })" = $'false\tfalse'

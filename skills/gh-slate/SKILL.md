@@ -30,15 +30,17 @@ follow-up command:
 gh_slate_compatible() {
   local expected="$1"
   shift
-  local output version major minor patch suffix
+  local output version major minor patch pre post dev
   output="$("$@" --version 2>/dev/null)" || return 1
   [[ "$output" == "$expected "* ]] || return 1
   version="${output#"$expected "}"
-  [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)([-+][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] || return 1
+  [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)((a|b|rc)[0-9]+)?(\.post[0-9]+|-[0-9]+)?(\.dev[0-9]+)?(\+[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ ]] || return 1
   major="${BASH_REMATCH[1]}"
   minor="${BASH_REMATCH[2]}"
   patch="${BASH_REMATCH[3]}"
-  suffix="${BASH_REMATCH[4]}"
+  pre="${BASH_REMATCH[4]}"
+  post="${BASH_REMATCH[6]}"
+  dev="${BASH_REMATCH[7]}"
   major="${major#"${major%%[!0]*}"}"
   minor="${minor#"${minor%%[!0]*}"}"
   patch="${patch#"${patch%%[!0]*}"}"
@@ -46,7 +48,7 @@ gh_slate_compatible() {
   if [[ -z "$minor" ]]; then return 1; fi
   if [[ "$minor" != 1 ]]; then return 0; fi
   if [[ -n "$patch" ]]; then return 0; fi
-  [[ -z "$suffix" || "$suffix" == +* ]]
+  [[ -z "$pre" && ( -z "$dev" || -n "$post" ) ]]
 }
 
 if gh_slate_compatible "gh slate" gh slate; then

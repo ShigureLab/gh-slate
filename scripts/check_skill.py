@@ -49,7 +49,13 @@ _FENCE = re.compile(
     re.DOTALL | re.MULTILINE,
 )
 _LONG_FLAG = re.compile(r"(?<![A-Za-z0-9])--[a-z][a-z0-9-]*")
-_VERSION = re.compile(r"\A([0-9]+)\.([0-9]+)\.([0-9]+)(?:[.+-].*)?\Z")
+_VERSION = re.compile(
+    r"\A([0-9]+)\.([0-9]+)\.([0-9]+)"
+    r"(?:(?:a|b|rc)[0-9]+)?"
+    r"(?:\.post[0-9]+|-[0-9]+)?"
+    r"(?:\.dev[0-9]+)?"
+    r"(?:\+[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?\Z"
+)
 
 
 class SkillCheckError(RuntimeError):
@@ -184,7 +190,7 @@ def _recipe_arguments(body: str) -> list[list[str]]:
     required_probe_lines = {
         'output="$("$@" --version 2>/dev/null)" || return 1',
         '[[ "$output" == "$expected "* ]] || return 1',
-        '[[ "$version" =~ ^([0-9]+)\\.([0-9]+)\\.([0-9]+)([-+][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] || return 1',
+        '[[ "$version" =~ ^([0-9]+)\\.([0-9]+)\\.([0-9]+)((a|b|rc)[0-9]+)?(\\.post[0-9]+|-[0-9]+)?(\\.dev[0-9]+)?(\\+[0-9A-Za-z]+(\\.[0-9A-Za-z]+)*)?$ ]] || return 1',
         'if gh_slate_compatible "gh slate" gh slate; then',
         'elif gh_slate_compatible "gh-slate" gh-slate; then',
         "gh_slate_compatible() {",

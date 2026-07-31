@@ -156,6 +156,39 @@ def test_skill_resolver_prefers_a_compatible_extension(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(os.name == "nt" or not Path("/bin/bash").is_file(), reason="resolver recipes require Bash")
+@pytest.mark.parametrize(
+    ("extension", "expected"),
+    [
+        ("gh slate 0.1.0.post1", "gh slate 0.1.0.post1\n"),
+        ("gh slate 0.1.0.post1.dev1", "gh slate 0.1.0.post1.dev1\n"),
+        ("gh slate 0.1.0-1.dev1", "gh slate 0.1.0-1.dev1\n"),
+        ("gh slate 0.1.0.dev1", "gh-slate 0.1.0\n"),
+        ("gh slate 0.1.0rc1", "gh-slate 0.1.0\n"),
+        ("gh slate 0.1.0.rc1", "gh-slate 0.1.0\n"),
+        ("gh slate 0.2.0.dev1", "gh slate 0.2.0.dev1\n"),
+        ("gh slate 0.2.0rc1", "gh slate 0.2.0rc1\n"),
+        ("gh slate 0.2.0+linux.arm64", "gh slate 0.2.0+linux.arm64\n"),
+        ("gh slate 0.2.0.foo", "gh-slate 0.1.0\n"),
+        ("gh slate 0.2.0+bad..local", "gh-slate 0.1.0\n"),
+    ],
+)
+def test_skill_resolver_compares_pep440_release_suffixes(
+    tmp_path: Path,
+    extension: str,
+    expected: str,
+) -> None:
+    result = _run_resolver(
+        tmp_path,
+        extension=extension,
+        direct="gh-slate 0.1.0",
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == expected
+    assert result.stderr == ""
+
+
+@pytest.mark.skipif(os.name == "nt" or not Path("/bin/bash").is_file(), reason="resolver recipes require Bash")
 def test_skill_resolver_rejects_two_old_candidates(tmp_path: Path) -> None:
     result = _run_resolver(
         tmp_path,

@@ -292,19 +292,33 @@ just release-verify
 ```
 
 `just release` adds all deterministic gates and tag/version verification, then
-pushes only that version tag. The tagged workflow still requires disposable
-live targets and their dedicated least-privilege token, installs the bundled
-skill, stages and remotely installs the verified extension asset, publishes
-the verified Python artifacts, and only then promotes the GitHub Release to
-stable. Direct `just publish` is disabled so it cannot bypass this ordering.
-All release credentials must be scoped only to a protected
-`gh-slate-release` Environment with required reviewers and self-review
-disabled; the PyPI Trusted Publisher and protected `v*` tag ruleset must use
-the same trust boundary. A workflow-local ancestry check is only defense in
-depth because a tag can carry a modified workflow.
-The staged-promotion workflow fails closed if repository or organization
-immutable releases are enabled; see [testing](docs/testing.md) for the release
-secret and staging constraints.
+pushes only that version tag. The tag runs an unprivileged Release Candidate
+workflow with a read-only token and no secrets. A separate `workflow_run`
+publisher is pinned to its trusted workflow commit, checks the triggering
+workflow ID, path, run attempt, repository, commit, and tag through the Actions
+API, then independently rebuilds the Python distributions and extension
+assets. Only byte-identical, source-bound artifacts can reach write or PyPI
+OIDC jobs. Every referenced Action is pinned to a full commit SHA. The
+publisher runs the live gate with a job-scoped `GITHUB_TOKEN`, stages a draft
+GitHub Release, publishes the verified Python files, and only then makes the
+exact draft stable. Direct `just publish` is disabled so it cannot bypass this
+ordering.
+
+This private repository's release trust boundary is exclusive write access:
+only release maintainers may have write or admin permission, while all other
+contributors must use fork-based pull requests. Keep the default Actions token
+read-only and do not store release credentials as Actions secrets. Configure
+the PyPI Trusted Publisher for `ShigureLab/gh-slate` and the top-level
+`.github/workflows/release.yml` without an Environment claim. Before granting
+any non-release-maintainer write access, move publishing to a separately
+controlled repository or enable repository protections that provide an
+equivalent external approval boundary. See [testing](docs/testing.md) for the
+full model and disposable target variables. Before the first release, also set
+the repository's default Actions token to read-only, disable pull-request
+approval through that token, configure both disposable live-target variables,
+and register the exact PyPI Trusted Publisher. Release one tag at a time; wait
+for its publisher run to finish, and do not move the tag or edit its draft
+release while that run is active.
 
 An opt-in live harness exists for disposable GitHub.com Issue and Pull Request
 targets, but it is skipped unless the exact confirmation and both target URLs

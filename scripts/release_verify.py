@@ -476,9 +476,11 @@ is_recovery_stage_path() {{
 find_recovery_terminal() {{
   local candidate
   local hop
+  recovery_root_target=""
   recovery_terminal=""
   [[ -L "${{recovery_link}}" ]] || return 1
   candidate="$(readlink "${{recovery_link}}")" || return 1
+  recovery_root_target="${{candidate}}"
   for (( hop = 0; hop < 16; hop++ )); do
     is_recovery_stage_path "${{candidate}}" || return 1
     if [[ -L "${{candidate}}" ]]; then
@@ -492,16 +494,35 @@ find_recovery_terminal() {{
   return 1
 }}
 
+resolve_ready_recovery_target() {{
+  local attempt
+  local candidate
+  recovery_target=""
+  for (( attempt = 0; attempt < 4; attempt++ )); do
+    [[ -L "${{recovery_link}}" && -f "${{recovery_link}}/.ready" ]] || continue
+    candidate="$(cd -- "${{recovery_link}}" 2>/dev/null && pwd -P)" || continue
+    is_recovery_stage_path "${{candidate}}" || return 1
+    [[ -f "${{candidate}}/.ready" ]] || continue
+    recovery_target="${{candidate}}"
+    return 0
+  done
+  return 1
+}}
+
 mkdir -p "${{install_root}}"
 if [[ ! -f "${{ready_file}}" ]]; then
   stage_dir="$(mktemp -d "${{install_root}}/.{version}-${{payload_sha256}}.stage.XXXXXX")"
   payload_file="${{stage_dir}}/.payload"
   publication_link=""
+  claimed_recovery_terminal=""
   preserve_stage=0
   cleanup() {{
     rm -f "${{payload_file}}"
     if [[ -n "${{publication_link}}" ]]; then
       rm -f "${{publication_link}}"
+    fi
+    if [[ -n "${{claimed_recovery_terminal}}" && -L "${{claimed_recovery_terminal}}" && -L "${{recovery_link}}" && "$(readlink "${{claimed_recovery_terminal}}")" == "${{stage_dir}}" && "$(readlink "${{recovery_link}}")" == "${{stage_dir}}" ]]; then
+      rm -f "${{claimed_recovery_terminal}}"
     fi
     if (( ! preserve_stage )); then
       rm -rf "${{stage_dir}}"
@@ -545,16 +566,30 @@ if [[ ! -f "${{ready_file}}" ]]; then
       recovery_terminal=""
       if find_recovery_terminal; then
         if ln -sn "${{stage_dir}}" "${{recovery_terminal}}" 2>/dev/null; then
-          owns_recovery=1
+          current_recovery_root="$(readlink "${{recovery_link}}" 2>/dev/null || :)"
+          if [[ "${{current_recovery_root}}" == "${{recovery_root_target}}" ]]; then
+            owns_recovery=1
+            claimed_recovery_terminal="${{recovery_terminal}}"
+          else
+            rm -f "${{recovery_terminal}}"
+          fi
         fi
       fi
     fi
-    if [[ -L "${{recovery_link}}" && -f "${{recovery_link}}/.ready" ]]; then
-      recovery_target="$(readlink "${{recovery_link}}")"
-      if ! is_recovery_stage_path "${{recovery_target}}"; then
-        echo "error: gh-slate extension recovery target is invalid" >&2
-        exit 1
+    if (( owns_recovery )); then
+      publication_link="${{stage_dir}}/.recover-publish"
+      ln -sn "${{stage_dir}}" "${{publication_link}}"
+      if [[ "$(uname -s)" == "Darwin" ]]; then
+        mv -fh -- "${{publication_link}}" "${{recovery_link}}"
+      else
+        mv -fT -- "${{publication_link}}" "${{recovery_link}}"
       fi
+      publication_link=""
+      if [[ -n "${{claimed_recovery_terminal}}" && -L "${{claimed_recovery_terminal}}" && -L "${{recovery_link}}" && "$(readlink "${{claimed_recovery_terminal}}")" == "${{stage_dir}}" && "$(readlink "${{recovery_link}}")" == "${{stage_dir}}" ]]; then
+        rm -f "${{claimed_recovery_terminal}}"
+      fi
+    fi
+    if resolve_ready_recovery_target; then
       if (( ! owns_recovery )); then
         preserve_stage=0
       fi
