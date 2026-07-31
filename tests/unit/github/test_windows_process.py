@@ -167,8 +167,11 @@ def test_windows_launcher_exits_without_running_command_after_real_pipe_eof(
     kernel32 = windows_process._kernel32()
     gate_read, gate_write = windows_process._create_gate(kernel32)
     marker = tmp_path / "command-ran"
-    os.set_handle_inheritable(gate_read, True)
-    startupinfo = subprocess.STARTUPINFO()
+    set_handle_inheritable = os.__dict__["set_handle_inheritable"]
+    startupinfo_type = subprocess.__dict__["STARTUPINFO"]
+    creationflags = cast("int", subprocess.__dict__["CREATE_NEW_PROCESS_GROUP"])
+    set_handle_inheritable(gate_read, True)
+    startupinfo = startupinfo_type()
     startupinfo.lpAttributeList = {"handle_list": [gate_read]}
     try:
         process = subprocess.Popen(
@@ -189,10 +192,10 @@ def test_windows_launcher_exits_without_running_command_after_real_pipe_eof(
             shell=False,
             close_fds=True,
             startupinfo=startupinfo,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+            creationflags=creationflags,
         )
     finally:
-        os.set_handle_inheritable(gate_read, False)
+        set_handle_inheritable(gate_read, False)
         windows_process._close_handle(kernel32, gate_write)
         windows_process._close_handle(kernel32, gate_read)
 
