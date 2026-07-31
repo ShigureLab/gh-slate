@@ -440,13 +440,13 @@ def test_doctor_checks_host_auth_actor_and_local_runtime_without_writes(
 
     assert [call[0] for call in runner.calls] == [
         ("gh", "version"),
-        ("gh", "auth", "status", "--json", "hosts", "--hostname", HOST),
+        ("gh", "auth", "status", "--active", "--hostname", HOST),
         ("gh", "api", "--hostname", HOST, "--method", "GET", "user"),
         ("gh", "version"),
-        ("gh", "auth", "status", "--json", "hosts", "--hostname", HOST),
+        ("gh", "auth", "status", "--active", "--hostname", HOST),
         ("gh", "api", "--hostname", HOST, "--method", "GET", "user"),
         ("gh", "version"),
-        ("gh", "auth", "status", "--json", "hosts", "--hostname", HOST),
+        ("gh", "auth", "status", "--active", "--hostname", HOST),
         ("gh", "api", "--hostname", HOST, "--method", "GET", "user"),
     ]
     _assert_only_read_calls(runner)

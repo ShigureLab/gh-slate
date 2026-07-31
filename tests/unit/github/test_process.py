@@ -234,20 +234,38 @@ def test_pr_view_qualifies_repository_with_hostname() -> None:
 
 
 def test_auth_status_propagates_hostname_and_never_requests_a_token() -> None:
-    runner = FakeRunner(results=[success(b'{"hosts":{}}')])
+    runner = FakeRunner(results=[success(b"github.example.com\n")])
 
-    process(runner).auth_status("github.example.com")
+    assert process(runner).auth_status("github.example.com") is None
 
     assert runner.calls[0][0] == (
         "gh",
         "auth",
         "status",
-        "--json",
-        "hosts",
+        "--active",
         "--hostname",
         "github.example.com",
     )
+    assert "--json" not in runner.calls[0][0]
     assert "--show-token" not in runner.calls[0][0]
+
+
+def test_auth_status_propagates_nonzero_status_without_parsing_output() -> None:
+    runner = FakeRunner(
+        results=[
+            ProcessResult(
+                returncode=1,
+                stdout=b"github.com\n",
+                stderr=b"not logged in\n",
+            )
+        ]
+    )
+
+    with pytest.raises(GhSlateError) as caught:
+        process(runner).auth_status()
+
+    assert caught.value.code == "gh_command_failed"
+    assert caught.value.details["returncode"] == 1
 
 
 def test_version_is_strict_nonempty_utf8_text() -> None:
@@ -297,7 +315,7 @@ def test_default_runner_never_uses_a_shell_and_inherits_environment(
     assert captured["stdin"] == subprocess.DEVNULL
     assert captured["stdout"] == subprocess.PIPE
     assert captured["stderr"] == subprocess.PIPE
-    assert captured["timeout"] == 1.5
+    assert 0 < cast("float", captured["timeout"]) <= 1.5
     assert captured["start_new_session"] is (os.name != "nt")
     assert captured["creationflags"] == (subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0)
     environment = cast("dict[str, str]", captured["env"])
@@ -367,6 +385,9 @@ def test_process_tree_kill_uses_absolute_windows_taskkill(monkeypatch: pytest.Mo
         pid = 456
         killed = False
 
+        def poll(self) -> None:
+            return None
+
         def kill(self) -> None:
             self.killed = True
 
@@ -396,6 +417,35 @@ def test_process_tree_kill_uses_absolute_windows_taskkill(monkeypatch: pytest.Mo
     assert captured["stderr"] is subprocess.DEVNULL
     assert captured["timeout"] == 1.0
     assert captured["check"] is False
+    assert process.killed is True
+
+
+def test_process_tree_kill_skips_windows_taskkill_after_leader_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Process:
+        pid = 456
+        killed = False
+
+        def poll(self) -> int:
+            return 0
+
+        def kill(self) -> None:
+            self.killed = True
+
+    process = Process()
+
+    def unexpected_run(*args: object, **kwargs: object) -> None:
+        raise AssertionError((args, kwargs))
+
+    monkeypatch.setattr(subprocess, "run", unexpected_run)
+
+    _kill_process_tree(
+        cast("subprocess.Popen[bytes]", process),
+        platform="nt",
+        environment={"SystemRoot": r"C:\Windows"},
+    )
+
     assert process.killed is True
 
 

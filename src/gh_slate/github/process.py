@@ -47,26 +47,31 @@ def _kill_process_tree(
     environment: Mapping[str, str] = os.environ,
 ) -> None:
     if platform == "nt":
-        system_root = environment.get("SystemRoot")
-        try:
-            if system_root is None:
-                raise OSError("SystemRoot is unavailable")
-            subprocess.run(
-                (
-                    ntpath.join(system_root, "System32", "taskkill.exe"),
-                    "/PID",
-                    str(process.pid),
-                    "/T",
-                    "/F",
-                ),
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=_PROCESS_CLEANUP_TIMEOUT_SECONDS,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+        # taskkill resolves a tree by its numeric leader PID. Once the leader
+        # has exited that PID may be reused, so never target it after poll()
+        # has observed a terminal status. Popen.kill() below uses the retained
+        # process handle and remains safe for the direct process.
+        if process.poll() is None:
+            system_root = environment.get("SystemRoot")
+            try:
+                if system_root is None:
+                    raise OSError("SystemRoot is unavailable")
+                subprocess.run(
+                    (
+                        ntpath.join(system_root, "System32", "taskkill.exe"),
+                        "/PID",
+                        str(process.pid),
+                        "/T",
+                        "/F",
+                    ),
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=_PROCESS_CLEANUP_TIMEOUT_SECONDS,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                pass
     else:
         try:
             os.killpg(process.pid, signal.SIGKILL)
@@ -124,6 +129,7 @@ class SubprocessRunner:
             start_new_session=_PROCESS_START_NEW_SESSION,
             creationflags=_PROCESS_CREATIONFLAGS,
         )
+        deadline = time.monotonic() + timeout
         if process.stdout is None or process.stderr is None:  # pragma: no cover
             process.kill()
             process.wait()
@@ -188,9 +194,8 @@ class SubprocessRunner:
         for reader in readers:
             reader.start()
 
-        deadline = time.monotonic() + timeout
         try:
-            returncode = process.wait(timeout=timeout)
+            returncode = process.wait(timeout=max(0.0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
             kill()
             reap()
@@ -612,11 +617,13 @@ class GhProcess:
             hostname=hostname,
         )
 
-    def auth_status(self, hostname: str | None = None) -> JsonValue:
-        return self.run_json(
-            ("auth", "status", "--json", "hosts"),
-            hostname=hostname,
+    def auth_status(self, hostname: str | None = None) -> None:
+        arguments = tuple(
+            _validate_argument(argument, subject="gh argument") for argument in ("auth", "status", "--active")
         )
+        normalized = _with_hostname(arguments, hostname)
+        _validate_read_only(normalized)
+        self._invoke(normalized, hostname=hostname)
 
     def version(self) -> str:
         stdout, _stderr = self._invoke(("version",), hostname=None)
