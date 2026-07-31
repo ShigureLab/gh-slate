@@ -158,7 +158,11 @@ the state, so a later update does not depend on the original checkout:
 gh slate apply deployment --target https://github.com/OWNER/REPO/pull/42 --mode create --data deployment.json --schema deployment.schema.json --template deployment.md.j2 --dry-run
 ```
 
-Remove `--dry-run` only after reviewing the rendered Markdown.
+Remove `--dry-run` only after reviewing the rendered Markdown. Pure
+`gh slate render` can preview target-independent templates; when a template
+references `slate.repository`, `slate.number`, or `slate.url`, use the
+target-aware `apply --dry-run` form above so size and branch checks use the real
+Issue or Pull Request context.
 
 ### Add or change a JSON Schema
 
