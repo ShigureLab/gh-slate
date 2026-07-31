@@ -9,6 +9,8 @@ import threading
 from ctypes import wintypes
 from typing import TYPE_CHECKING, Any, cast
 
+from gh_slate.github.process import _ProcessHandoffInterrupted
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -16,6 +18,7 @@ _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS = 9
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 _PROCESS_TERMINATE = 0x0001
 _PROCESS_SET_QUOTA = 0x0100
+_RELEASE_BYTE = 1
 _ERROR_PREFIX = b"\0gh-slate-windows-launch-error:"
 
 
@@ -67,10 +70,21 @@ def _kernel32() -> Any:
         wintypes.DWORD,
     )
     library.SetInformationJobObject.restype = wintypes.BOOL
-    library.CreateEventW.argtypes = (ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR)
-    library.CreateEventW.restype = wintypes.HANDLE
-    library.SetEvent.argtypes = (wintypes.HANDLE,)
-    library.SetEvent.restype = wintypes.BOOL
+    library.CreatePipe.argtypes = (
+        ctypes.POINTER(wintypes.HANDLE),
+        ctypes.POINTER(wintypes.HANDLE),
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    )
+    library.CreatePipe.restype = wintypes.BOOL
+    library.WriteFile.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.c_void_p,
+    )
+    library.WriteFile.restype = wintypes.BOOL
     library.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
     library.OpenProcess.restype = wintypes.HANDLE
     library.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
@@ -106,15 +120,24 @@ class WindowsJob:
 
     def terminate(self) -> None:
         with self._lock:
-            if self._handle is not None:
-                self._kernel32.TerminateJobObject(self._handle, 1)
+            if self._handle is None:
+                return
+            if self._kernel32.TerminateJobObject(self._handle, 1):
+                return
+            error = _last_error()
+            if not self._kernel32.TerminateJobObject(self._handle, 1):
+                raise error
 
     def close(self) -> None:
         with self._lock:
             handle = self._handle
+            if handle is None:
+                return
+            if not self._kernel32.CloseHandle(handle):
+                error = _last_error()
+                if not self._kernel32.CloseHandle(handle):
+                    raise error
             self._handle = None
-        if handle is not None:
-            self._kernel32.CloseHandle(handle)
 
     def launch_error(self, stderr: bytes) -> OSError | None:
         prefix = _ERROR_PREFIX + self._nonce.encode("ascii") + b":"
@@ -165,6 +188,46 @@ def _create_job(kernel32: Any, *, nonce: str) -> WindowsJob:
     return WindowsJob(job_handle, nonce=nonce, kernel32=kernel32)
 
 
+def _create_gate(kernel32: Any) -> tuple[int, int]:
+    raw_read = wintypes.HANDLE()
+    raw_write = wintypes.HANDLE()
+    if not kernel32.CreatePipe(
+        ctypes.byref(raw_read),
+        ctypes.byref(raw_write),
+        None,
+        0,
+    ):
+        raise _last_error()
+    read_handle = _handle_value(raw_read)
+    write_handle = _handle_value(raw_write)
+    if not read_handle or not write_handle:  # pragma: no cover - Win32 contract
+        raise OSError("Windows process gate returned an invalid handle")
+    return read_handle, write_handle
+
+
+def _close_handle(kernel32: Any, handle: int) -> None:
+    if kernel32.CloseHandle(handle):
+        return
+    error = _last_error()
+    if not kernel32.CloseHandle(handle):
+        raise error
+
+
+def _release_gate(kernel32: Any, handle: int) -> None:
+    release = ctypes.c_ubyte(_RELEASE_BYTE)
+    bytes_written = wintypes.DWORD()
+    if not kernel32.WriteFile(
+        handle,
+        ctypes.byref(release),
+        1,
+        ctypes.byref(bytes_written),
+        None,
+    ):
+        raise _last_error()
+    if bytes_written.value != 1:  # pragma: no cover - synchronous pipe contract
+        raise OSError("Windows process gate release was incomplete")
+
+
 def spawn_windows_process(
     argv: tuple[str, ...],
     *,
@@ -176,24 +239,50 @@ def spawn_windows_process(
     kernel32 = _kernel32()
     nonce = secrets.token_hex(16)
     job = _create_job(kernel32, nonce=nonce)
-    raw_event = kernel32.CreateEventW(None, True, False, None)
-    event_handle = _handle_value(raw_event)
-    if not event_handle:
-        job.close()
-        raise _last_error()
+    try:
+        gate_read, gate_write = _create_gate(kernel32)
+    except BaseException as error:
+        try:
+            job.close()
+        except BaseException as close_error:
+            raise close_error from error
+        raise
 
     process: subprocess.Popen[bytes] | None = None
+    gate_read_open = True
+    gate_write_open = True
+    release_attempted = False
+
+    def close_gate() -> None:
+        nonlocal gate_read_open, gate_write_open
+        first_error: BaseException | None = None
+        if gate_write_open:
+            try:
+                _close_handle(kernel32, gate_write)
+                gate_write_open = False
+            except BaseException as error:
+                first_error = error
+        if gate_read_open:
+            try:
+                _close_handle(kernel32, gate_read)
+                gate_read_open = False
+            except BaseException as error:
+                if first_error is None:
+                    first_error = error
+        if first_error is not None:
+            raise first_error
+
     try:
         set_handle_inheritable = os.__dict__["set_handle_inheritable"]
-        set_handle_inheritable(event_handle, True)
+        set_handle_inheritable(gate_read, True)
         startupinfo_type = subprocess.__dict__["STARTUPINFO"]
         startupinfo = startupinfo_type()
-        startupinfo.lpAttributeList = {"handle_list": [event_handle]}
+        startupinfo.lpAttributeList = {"handle_list": [gate_read]}
         launcher = (
             sys.executable,
             "-m",
             "gh_slate.github._windows_launcher",
-            str(event_handle),
+            str(gate_read),
             nonce,
             *argv,
         )
@@ -210,7 +299,7 @@ def spawn_windows_process(
                 creationflags=cast("int", subprocess.__dict__["CREATE_NEW_PROCESS_GROUP"]),
             )
         finally:
-            set_handle_inheritable(event_handle, False)
+            set_handle_inheritable(gate_read, False)
 
         raw_process = kernel32.OpenProcess(
             _PROCESS_SET_QUOTA | _PROCESS_TERMINATE,
@@ -225,24 +314,44 @@ def spawn_windows_process(
         finally:
             kernel32.CloseHandle(process_handle)
 
-        if not kernel32.SetEvent(event_handle):
-            raise _last_error()
+        # Set this before entering WriteFile: an interruption during the C call
+        # cannot prove whether the child observed the release byte.
+        release_attempted = True
+        _release_gate(kernel32, gate_write)
+        close_gate()
         return process, job
-    except BaseException:
-        job.terminate()
+    except BaseException as error:
+        cleanup_error: BaseException | None = None
+        try:
+            close_gate()
+        except BaseException as caught:
+            cleanup_error = caught
+        try:
+            job.terminate()
+        except BaseException as caught:
+            if cleanup_error is None:
+                cleanup_error = caught
         if process is not None:
             try:
                 process.kill()
-            except OSError:
-                pass
+            except BaseException as caught:
+                if cleanup_error is None:
+                    cleanup_error = caught
             try:
                 process.wait(timeout=1.0)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
-        job.close()
+            except (OSError, subprocess.TimeoutExpired) as caught:
+                if cleanup_error is None:
+                    cleanup_error = caught
+        try:
+            job.close()
+        except BaseException as caught:
+            if cleanup_error is None:
+                cleanup_error = caught
+        if release_attempted:
+            raise _ProcessHandoffInterrupted(type(error).__name__) from error
+        if cleanup_error is not None:
+            raise cleanup_error from error
         raise
-    finally:
-        kernel32.CloseHandle(event_handle)
 
 
 __all__ = ["WindowsJob", "spawn_windows_process"]

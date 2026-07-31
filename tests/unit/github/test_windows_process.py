@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -10,10 +10,11 @@ from gh_slate.github._windows_process import WindowsJob
 
 
 class FakeKernel32:
-    def __init__(self, *, assign: bool = True) -> None:
+    def __init__(self, *, assign: bool = True, write_error: BaseException | None = None) -> None:
         self.assign = assign
+        self.write_error = write_error
         self.assigned: list[tuple[int, int]] = []
-        self.set_events: list[int] = []
+        self.writes: list[int] = []
         self.terminated: list[tuple[int, int]] = []
         self.closed: list[int] = []
 
@@ -23,8 +24,22 @@ class FakeKernel32:
     def SetInformationJobObject(self, *args: object) -> bool:
         return True
 
-    def CreateEventW(self, *args: object) -> int:
-        return 22
+    def CreatePipe(
+        self,
+        read: object,
+        write: object,
+        security: object,
+        size: int,
+    ) -> bool:
+        windows_process.ctypes.cast(
+            cast("Any", read),
+            windows_process.ctypes.POINTER(windows_process.wintypes.HANDLE),
+        ).contents.value = 22
+        windows_process.ctypes.cast(
+            cast("Any", write),
+            windows_process.ctypes.POINTER(windows_process.wintypes.HANDLE),
+        ).contents.value = 23
+        return True
 
     def OpenProcess(self, *args: object) -> int:
         return 33
@@ -33,8 +48,21 @@ class FakeKernel32:
         self.assigned.append((job, process))
         return self.assign
 
-    def SetEvent(self, event: int) -> bool:
-        self.set_events.append(event)
+    def WriteFile(
+        self,
+        handle: int,
+        buffer: object,
+        size: int,
+        written: object,
+        overlapped: object,
+    ) -> bool:
+        self.writes.append(handle)
+        if self.write_error is not None:
+            raise self.write_error
+        windows_process.ctypes.cast(
+            cast("Any", written),
+            windows_process.ctypes.POINTER(windows_process.wintypes.DWORD),
+        ).contents.value = 1
         return True
 
     def TerminateJobObject(self, job: int, code: int) -> bool:
@@ -52,9 +80,24 @@ def test_windows_launcher_waits_for_assignment_before_starting_command(
     events: list[object] = []
 
     class Kernel32:
-        def WaitForSingleObject(self, handle: int, timeout: int) -> int:
-            events.append(("wait", handle, timeout))
-            return 0
+        def ReadFile(
+            self,
+            handle: int,
+            buffer: object,
+            size: int,
+            bytes_read: object,
+            overlapped: object,
+        ) -> bool:
+            events.append(("read", handle))
+            windows_launcher.ctypes.cast(
+                cast("Any", buffer),
+                windows_launcher.ctypes.POINTER(windows_launcher.ctypes.c_ubyte),
+            ).contents.value = 1
+            windows_launcher.ctypes.cast(
+                cast("Any", bytes_read),
+                windows_launcher.ctypes.POINTER(windows_launcher.wintypes.DWORD),
+            ).contents.value = 1
+            return True
 
         def CloseHandle(self, handle: int) -> bool:
             events.append(("close", handle))
@@ -69,12 +112,46 @@ def test_windows_launcher_waits_for_assignment_before_starting_command(
     monkeypatch.setattr(windows_launcher.subprocess, "run", run)
 
     assert windows_launcher.main() == 0
-    assert events[:2] == [("wait", 22, 0xFFFFFFFF), ("close", 22)]
+    assert events[:2] == [("read", 22), ("close", 22)]
     assert events[2] == (
         "run",
         ("gh", "version"),
         {"shell": False, "check": False, "close_fds": False},
     )
+
+
+def test_windows_launcher_refuses_to_start_after_gate_eof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reported: list[OSError] = []
+
+    class Kernel32:
+        def ReadFile(
+            self,
+            handle: int,
+            buffer: object,
+            size: int,
+            bytes_read: object,
+            overlapped: object,
+        ) -> bool:
+            return False
+
+        def CloseHandle(self, handle: int) -> bool:
+            return True
+
+    monkeypatch.setattr(windows_launcher, "_kernel32", Kernel32)
+    monkeypatch.setattr(windows_launcher, "_last_error_number", lambda: 109)
+    monkeypatch.setattr(windows_launcher, "_report_launch_error", lambda nonce, error: reported.append(error))
+    monkeypatch.setattr(windows_launcher.sys, "argv", ["launcher", "22", "abc", "gh", "version"])
+    monkeypatch.setattr(
+        windows_launcher.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("the real command must remain gated"),
+    )
+
+    assert windows_launcher.main() == 125
+    assert len(reported) == 1
+    assert reported[0].errno == 109
 
 
 def test_windows_job_retains_tree_handle_after_leader_exit_and_closes_once() -> None:
@@ -87,6 +164,41 @@ def test_windows_job_retains_tree_handle_after_leader_exit_and_closes_once() -> 
 
     assert kernel32.terminated == [(11, 1)]
     assert kernel32.closed == [11]
+
+
+def test_windows_job_retains_handle_after_cleanup_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Kernel32:
+        def __init__(self) -> None:
+            self.terminate_results = iter((False, False, True))
+            self.close_results = iter((False, False, True))
+            self.terminated = 0
+            self.closed = 0
+
+        def TerminateJobObject(self, handle: int, code: int) -> bool:
+            self.terminated += 1
+            return next(self.terminate_results)
+
+        def CloseHandle(self, handle: int) -> bool:
+            self.closed += 1
+            return next(self.close_results)
+
+    kernel32 = Kernel32()
+    job = WindowsJob(11, nonce="abc", kernel32=kernel32)
+    monkeypatch.setattr(windows_process, "_last_error", lambda: OSError("cleanup failed"))
+
+    with pytest.raises(OSError, match="cleanup failed"):
+        job.terminate()
+    job.terminate()
+
+    with pytest.raises(OSError, match="cleanup failed"):
+        job.close()
+    job.close()
+    job.close()
+
+    assert kernel32.terminated == 3
+    assert kernel32.closed == 3
 
 
 @pytest.mark.parametrize(
@@ -150,9 +262,76 @@ def test_windows_assignment_failure_never_releases_the_gated_command(
 
     assert launched and launched[0][-2:] == ("gh", "version")
     assert kernel32.assigned == [(11, 33)]
-    assert kernel32.set_events == []
+    assert kernel32.writes == []
     assert process.killed == 1
     assert process.waited == 1
     assert kernel32.terminated == [(11, 1)]
-    assert kernel32.closed == [33, 11, 22]
+    assert kernel32.closed == [33, 23, 22, 11]
     assert inherited == [(22, True), (22, False)]
+
+
+def test_windows_release_interruption_is_a_handoff_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kernel32 = FakeKernel32(write_error=KeyboardInterrupt())
+    process = type(
+        "Process",
+        (),
+        {
+            "pid": 44,
+            "kill": lambda self: None,
+            "wait": lambda self, timeout=None: 1,
+        },
+    )()
+
+    class StartupInfo:
+        lpAttributeList: dict[str, list[int]]
+
+    monkeypatch.setattr(windows_process, "_kernel32", lambda: kernel32)
+    monkeypatch.setattr(windows_process, "_last_error", lambda: OSError("unused"))
+    monkeypatch.setitem(
+        windows_process.os.__dict__,
+        "set_handle_inheritable",
+        lambda handle, value: None,
+    )
+    monkeypatch.setitem(windows_process.subprocess.__dict__, "STARTUPINFO", StartupInfo)
+    monkeypatch.setitem(windows_process.subprocess.__dict__, "CREATE_NEW_PROCESS_GROUP", 512)
+    monkeypatch.setattr(windows_process.subprocess, "Popen", lambda argv, **kwargs: process)
+
+    with pytest.raises(windows_process._ProcessHandoffInterrupted) as captured:
+        windows_process.spawn_windows_process(("gh", "version"), environment=None)
+
+    assert captured.value.error_type == "KeyboardInterrupt"
+    assert kernel32.writes == [23]
+    assert kernel32.terminated == [(11, 1)]
+    assert kernel32.closed == [33, 23, 22, 11]
+
+
+def test_windows_popen_interruption_cancels_the_pipe_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kernel32 = FakeKernel32()
+
+    class StartupInfo:
+        lpAttributeList: dict[str, list[int]]
+
+    monkeypatch.setattr(windows_process, "_kernel32", lambda: kernel32)
+    monkeypatch.setitem(
+        windows_process.os.__dict__,
+        "set_handle_inheritable",
+        lambda handle, value: None,
+    )
+    monkeypatch.setitem(windows_process.subprocess.__dict__, "STARTUPINFO", StartupInfo)
+    monkeypatch.setitem(windows_process.subprocess.__dict__, "CREATE_NEW_PROCESS_GROUP", 512)
+    monkeypatch.setattr(
+        windows_process.subprocess,
+        "Popen",
+        lambda argv, **kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        windows_process.spawn_windows_process(("gh", "version"), environment=None)
+
+    assert kernel32.writes == []
+    assert kernel32.terminated == [(11, 1)]
+    assert kernel32.closed == [23, 22, 11]
