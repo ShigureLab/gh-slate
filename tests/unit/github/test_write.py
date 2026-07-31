@@ -13,6 +13,7 @@ from typing import Any, cast
 
 import pytest
 
+import gh_slate.github.write as write_module
 from gh_slate.errors import GhSlateError
 from gh_slate.github.process import ProcessResult
 from gh_slate.github.write import (
@@ -85,6 +86,29 @@ def writer(
     if max_stderr_bytes is not None:
         limits = replace(limits, max_stderr_bytes=max_stderr_bytes)
     return GhWriteProcess(runner=runner, limits=limits)
+
+
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt(), SystemExit(130)])
+def test_write_response_parse_interrupt_has_an_unknown_outcome(
+    interruption: BaseException,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = FakeWriteRunner(results=[success()])
+
+    def interrupt(*_args: object, **_kwargs: object) -> object:
+        raise interruption
+
+    monkeypatch.setattr(write_module, "strict_loads", interrupt)
+
+    with pytest.raises(GhWriteOutcomeUnknown) as caught:
+        writer(runner).post(
+            "repos/owner/repo/issues/42/comments",
+            {"body": "safe"},
+        )
+
+    assert caught.value.code == "gh_write_response_interrupted"
+    assert caught.value.details == {"error_type": type(interruption).__name__}
+    assert len(runner.calls) == 1
 
 
 @pytest.mark.parametrize(

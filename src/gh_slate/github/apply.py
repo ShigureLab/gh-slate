@@ -610,6 +610,23 @@ def _verify_remote(
             unknown=True,
             reason=f"refetch_failed:{type(error).__name__}",
         ) from None
+    except (KeyboardInterrupt, SystemExit) as error:
+        if recovery_kind is None:
+            raise ApplyError(
+                "the write was sent, but its remote state verification was interrupted",
+                code="post_write_verification_unknown",
+                details={
+                    "name": request.name,
+                    "reason": f"refetch_failed:{type(error).__name__}",
+                },
+                hints=("inspect the slate before attempting another mutation",),
+            ) from None
+        raise _verification_error(
+            request,
+            recovery_kind=recovery_kind,
+            unknown=True,
+            reason=f"refetch_failed:{type(error).__name__}",
+        ) from None
 
     if not candidates:
         raise _verification_error(

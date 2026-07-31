@@ -507,6 +507,12 @@ class GhWriteProcess:
                 "GitHub CLI write returned invalid JSON",
                 code="gh_write_json_invalid",
             ) from None
+        except (KeyboardInterrupt, SystemExit) as error:
+            raise _unknown(
+                "GitHub CLI write response parsing was interrupted; the remote outcome is unknown",
+                code="gh_write_response_interrupted",
+                error_type=type(error).__name__,
+            ) from None
 
     def post(
         self,

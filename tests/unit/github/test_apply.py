@@ -785,6 +785,39 @@ def test_post_write_refetch_failure_is_unknown_and_never_retries() -> None:
     assert remote.comment_reads == 3
 
 
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt(), SystemExit(130)])
+@pytest.mark.parametrize(
+    ("write_behavior", "expected_code"),
+    [
+        ("normal", "post_write_verification_unknown"),
+        ("timeout-applied", "write_timeout_unknown"),
+        ("ambiguous-applied", "write_outcome_unknown"),
+    ],
+)
+def test_post_write_verification_interrupt_is_unknown_and_never_retries(
+    write_behavior: str,
+    expected_code: str,
+    interruption: BaseException,
+) -> None:
+    remote = FakeGitHub(write_behavior=write_behavior)
+
+    def interrupt_after_write(_github: FakeGitHub) -> None:
+        raise interruption
+
+    remote.before_comment_read[3] = interrupt_after_write
+
+    with pytest.raises(ApplyError) as caught:
+        _apply(
+            remote,
+            renderer=_renderer(),
+        )
+
+    assert caught.value.code == expected_code
+    assert caught.value.details["reason"] == f"refetch_failed:{type(interruption).__name__}"
+    assert [call[0] for call in remote.write_calls] == ["POST"]
+    assert remote.comment_reads == 3
+
+
 def test_timeout_refetch_confirms_success_without_replaying_the_post() -> None:
     remote = FakeGitHub(
         write_behavior="timeout-applied",
