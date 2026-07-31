@@ -320,6 +320,7 @@ class CommentStore:
                     "comment_id": candidate.comment.id,
                     "cause_code": candidate.error_code,
                 },
+                hints=("inspect the raw comment and delete it with exact confirmation if it cannot be recovered",),
             )
         return ManagedSlate(
             name=name,

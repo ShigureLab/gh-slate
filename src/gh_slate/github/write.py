@@ -36,7 +36,7 @@ _PATCH_COMMENT_ENDPOINT = re.compile(
     rf"\Arepos/{_REPOSITORY_SEGMENT}/{_REPOSITORY_SEGMENT}"
     r"/issues/comments/[1-9][0-9]*\Z"
 )
-_ALLOWED_METHODS = frozenset({"PATCH", "POST"})
+_ALLOWED_METHODS = frozenset({"DELETE", "PATCH", "POST"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -393,7 +393,7 @@ def _method(value: object) -> str:
     normalized = value.upper()
     if normalized not in _ALLOWED_METHODS:
         raise _error(
-            "GitHub API write adapter only permits POST and PATCH",
+            "GitHub API write adapter only permits POST, PATCH, and DELETE",
             code="gh_write_method_forbidden",
         )
     return normalized
@@ -416,14 +416,21 @@ class GhWriteProcess:
         self,
         method: object,
         endpoint: object,
-        payload: Mapping[str, object],
+        payload: Mapping[str, object] | None = None,
         *,
         hostname: str | None = None,
     ) -> JsonValue:
         request_method = _method(method)
         request_endpoint = _endpoint(request_method, endpoint)
         request_hostname = _hostname(hostname)
-        if (
+        if request_method == "DELETE":
+            if payload is not None:
+                raise _error(
+                    "GitHub API DELETE payload must be omitted",
+                    code="gh_write_payload_invalid",
+                )
+            request_body = b""
+        elif (
             not isinstance(payload, Mapping)
             or len(payload) != 1
             or "body" not in payload
@@ -433,13 +440,14 @@ class GhWriteProcess:
                 "GitHub API write payload must contain exactly one string body",
                 code="gh_write_payload_invalid",
             )
-        try:
-            request_body = canonical_json_bytes(payload)
-        except CodecError:
-            raise _error(
-                "GitHub API write payload is not canonical JSON data",
-                code="gh_write_payload_invalid",
-            ) from None
+        else:
+            try:
+                request_body = canonical_json_bytes(payload)
+            except CodecError:
+                raise _error(
+                    "GitHub API write payload is not canonical JSON data",
+                    code="gh_write_payload_invalid",
+                ) from None
         if len(request_body) > self.limits.max_input_bytes:
             raise _error(
                 "GitHub API write payload exceeds the configured byte limit",
@@ -449,14 +457,14 @@ class GhWriteProcess:
             )
 
         hostname_arguments = ("--hostname", request_hostname) if request_hostname is not None else ()
+        input_arguments = ("--input", "-") if request_method != "DELETE" else ()
         argv = (
             self.executable,
             "api",
             *hostname_arguments,
             "--method",
             request_method,
-            "--input",
-            "-",
+            *input_arguments,
             request_endpoint,
         )
         try:
@@ -537,6 +545,14 @@ class GhWriteProcess:
                 returncode=result.returncode,
                 stderr_bytes=len(result.stderr),
             )
+        if request_method == "DELETE":
+            if result.stdout:
+                raise _unknown(
+                    "GitHub CLI DELETE returned unexpected output",
+                    code="gh_write_delete_output_invalid",
+                    stdout_bytes=len(result.stdout),
+                )
+            return None
         try:
             return strict_loads(
                 result.stdout,
@@ -586,6 +602,18 @@ class GhWriteProcess:
             "PATCH",
             endpoint,
             payload,
+            hostname=hostname,
+        )
+
+    def delete(
+        self,
+        endpoint: str,
+        *,
+        hostname: str | None = None,
+    ) -> JsonValue:
+        return self._request(
+            "DELETE",
+            endpoint,
             hostname=hostname,
         )
 

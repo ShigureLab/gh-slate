@@ -1,0 +1,11 @@
+{
+  "action": "opened",
+  "issue": {
+    "number": 42,
+    "html_url": "https://github.enterprise.example/acme/widgets/issues/42"
+  },
+  "repository": {
+    "full_name": "acme/widgets",
+    "html_url": "https://github.enterprise.example/acme/widgets"
+  }
+}

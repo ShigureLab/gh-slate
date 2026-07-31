@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "repository": {
+      "maxLength": 201,
+      "pattern": "^[^/\\s]{1,100}/[^/\\s]{1,100}$",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "target_number": {
+      "maximum": 9223372036854775807,
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "repository",
+    "target_number"
+  ],
+  "type": "object"
+}

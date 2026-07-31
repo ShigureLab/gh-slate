@@ -1,0 +1,62 @@
+name: gh-slate same-repository pull request dashboard example
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited, ready_for_review, converted_to_draft, closed]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: gh-slate-${{ github.repository_id }}-pr-${{ github.event.pull_request.number }}-pr-dashboard
+  cancel-in-progress: false
+
+jobs:
+  update:
+    # pull_request tokens are read-only for forks and Dependabot. Use the
+    # reducer/consumer pair below when either must receive a dashboard.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out only the trusted default branch
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: trusted
+          persist-credentials: false
+
+      - name: Install the exact gh-slate release
+        run: python -m pip install --disable-pip-version-check 'gh-slate==0.1.0'
+
+      - name: Fetch the current Pull Request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SLATE_REPOSITORY: ${{ github.repository }}
+          SLATE_TARGET: ${{ github.event.pull_request.number }}
+          SLATE_DATA: ${{ runner.temp }}/gh-slate-pr-data.json
+        run: >-
+          python trusted/examples/actions/scripts/current_target_to_slate.py
+          pull_request
+          --repository "$SLATE_REPOSITORY"
+          --number "$SLATE_TARGET"
+          --output "$SLATE_DATA"
+          --github-env "$GITHUB_ENV"
+
+      - name: Apply one complete snapshot
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SLATE_REPOSITORY: ${{ github.repository }}
+          SLATE_DATA: ${{ runner.temp }}/gh-slate-pr-data.json
+        run: >-
+          gh-slate apply pr-dashboard
+          --target "$GH_SLATE_CURRENT_TARGET"
+          --repo "$SLATE_REPOSITORY"
+          --mode upsert
+          --data "$SLATE_DATA"
+          --schema trusted/examples/actions/schemas/pull-request-dashboard.schema.json
+          --template trusted/examples/actions/templates/pull-request-dashboard.md.j2
+          --json

@@ -1,10 +1,9 @@
 # gh-slate CLI design
 
-Status: implementation-backed through batch 7; jq-style data CRUD and remote
-schema commands are complete offline, and batch 8 is the next implementation
-layer. The
-credentialed Issue/PR smoke gate remains open, so the snapshot MVP is not yet
-labelled alpha-ready.
+Status: implementation-backed through batch 8; recovery, deletion, fault
+injection, and Actions examples are complete offline, and batch 9 is the next
+implementation layer. The credentialed GitHub.com Issue/PR and live GHES gates
+have not been run, so the project is not yet labelled alpha- or beta-ready.
 
 `gh-slate` manages named, data-backed dashboard comments on GitHub Issues and
 Pull Requests.
@@ -474,6 +473,15 @@ gh slate repair ci-summary --from-state --target 42
 gh slate data edit ci-summary --target 42
 ```
 
+`repair --from-state` never imports or interprets the manually edited
+Markdown. It rerenders the stored typed state, verifies that the projection
+still matches the stored render hash, and replaces only the visible remainder
+of the existing marker. The canonical payload, state hash, and functional
+revision stay byte-for-byte unchanged. An already valid projection is
+`unchanged` and performs no PATCH. A drifted repair compares the complete
+selected comment body again immediately before its single PATCH, then refetches
+and verifies the same comment, state hash, and canonical projection.
+
 Deleting the whole comment requires confirmation:
 
 ```bash
@@ -481,8 +489,21 @@ gh slate delete ci-summary --target 42 --confirm ci-summary
 gh slate delete ci-summary --target 42 --yes
 ```
 
-The second form is intended for non-interactive automation. Neither repair nor
-delete has a generic `--force` flag.
+`--confirm` is case-sensitive and must equal the validated slate name; it and
+`--yes` are mutually exclusive. Confirmation is checked before authentication,
+target resolution, or any comment read. The second form is intended for
+non-interactive automation. Deletion still requires exactly one
+controller-authored marker match and a complete-body second read; it never
+turns a duplicate match into a bulk delete. After the one DELETE request, the
+command reports success only when a refetch confirms that the selected slate
+is absent. A timeout, failed response, or failed refetch is recovered by
+observation and is never blindly retried. Neither repair nor delete has a
+generic `--force` flag.
+
+Deletion is also the explicit escape hatch for one corrupt, uniquely named
+marker authored by the current controller. Because its state cannot be trusted,
+the successful JSON result reports `revision` and `state_sha256` as `null`.
+Repair still requires a fully decodable renderer and state.
 
 ## 5. jq-style data CRUD
 
@@ -864,7 +885,9 @@ The supported v1 model is one writer per slate:
 
 Timeout recovery first refetches the comment. If its state hash is the intended
 hash, the operation succeeded. Otherwise the result is reported as unknown or
-conflicted; create/update is not blindly retried.
+conflicted; create, update, repair, and delete are not blindly retried. Repair
+and delete also pin the exact comment body seen before their write, but that
+second read still does not turn the GitHub API into compare-and-swap.
 
 ## 10. Size, safety, and trust boundaries
 
@@ -906,6 +929,9 @@ permissions:
 ```
 
 Use only the write permission needed by the target type where possible.
+Runnable examples and their security invariants live under
+`examples/actions/`; the repository's static gate checks their event,
+permission, concurrency, trusted-checkout, and bounded-artifact contracts.
 
 ## 11. Exit codes
 
@@ -918,8 +944,13 @@ Use only the write permission needed by the target type where possible.
 ```
 
 Created, updated, and unchanged are represented by the operation result, not by
-different success exit codes. Diagnostics go to stderr. `data get` may use
-documented jq-compatible query exit behavior when `--exit-status` is supplied.
+different success exit codes. Diagnostics go to stderr. After a command has
+successfully parsed a `--json` option, business errors use the same canonical
+`{"error": ...}` object exposed by the Python error API; without `--json`,
+`error[code]` and `hint:` lines remain the human contract. Argparse usage
+errors happen before command options are available and remain ordinary usage
+text. `data get` may use documented jq-compatible query exit behavior when
+`--exit-status` is supplied.
 
 ## 12. Installation surface
 
@@ -1476,6 +1507,13 @@ Markdown import, or concurrency CAS.
 
 Branch: `codex/recovery-hardening`
 
+Status: implementation complete with unit, property, fake-`gh`, launcher, GHES
+contract-fixture, and Actions static coverage. The disposable GitHub.com
+Issue/PR harness is checked in but skipped without explicit confirmation and
+target URLs; it was not run for this change. No live GHES instance was
+available, so GHES support remains contract-tested rather than claimed as
+live-validated.
+
 Goal: close recovery and automation paths without changing the frozen wire or
 renderer behavior.
 
@@ -1496,6 +1534,11 @@ Deliverables:
 
 Acceptance gates:
 
+- JSON diagnostics normalize finite float details through an exact decimal
+  representation and fall back to the original code/message/hints when details
+  are cyclic, non-finite, or otherwise unsupported;
+- repair and delete select the controller by immutable user ID, including after
+  a login rename;
 - repair restores only the visible projection and follows the documented
   functional revision rule;
 - delete cannot run without an exact name confirmation or `--yes`;
@@ -1510,7 +1553,9 @@ Acceptance gates:
 Not included: controller adoption, Markdown import, JSON Patch, or an implicit
 wire/renderer migration.
 
-Structured beta is complete after this batch.
+The structured-beta label may be applied after this batch's credentialed
+GitHub.com gate is actually recorded. A skipped live harness is not that
+evidence.
 
 ### 14.10 Batch 9: bundled skill and release
 

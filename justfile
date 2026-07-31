@@ -14,6 +14,9 @@ lint:
   uv run ty check --error-on-warning src/gh_slate tests
   uv run ruff check .
 
+check-actions-examples:
+  uv run python scripts/check_actions_examples.py
+
 fmt-docs:
   prettier --write '**/*.md'
 
@@ -52,6 +55,7 @@ ci-fmt-check:
 
 ci-lint:
   just lint
+  just check-actions-examples
 
 ci-test:
   uv run pytest --reruns 3 --reruns-delay 1

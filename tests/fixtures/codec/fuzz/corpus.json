@@ -1,0 +1,81 @@
+[
+  {
+    "id": "empty-text",
+    "kind": "text",
+    "value": "",
+    "error_code": "missing_marker"
+  },
+  {
+    "id": "ordinary-comment",
+    "kind": "text",
+    "value": "This is not a managed gh-slate comment.\n",
+    "error_code": "missing_marker"
+  },
+  {
+    "id": "marker-not-at-start",
+    "kind": "text",
+    "value": "prefix\n<!-- gh-slate:v1 name=ci encoding=zlib+base64 state=0000000000000000000000000000000000000000000000000000000000000000\nAAAA\n-->\n\nvisible",
+    "error_code": "marker_not_at_start"
+  },
+  {
+    "id": "unsupported-version",
+    "kind": "text",
+    "value": "<!-- gh-slate:v999 name=ci encoding=zlib+base64 state=0000000000000000000000000000000000000000000000000000000000000000\nAAAA\n-->\n\nvisible",
+    "error_code": "unsupported_marker_version"
+  },
+  {
+    "id": "invalid-marker-shape",
+    "kind": "text",
+    "value": "<!-- gh-slate:v1 name=ci encoding=zlib+base64 state=not-a-hash\n!!!!\n-->\n\nvisible",
+    "error_code": "invalid_marker"
+  },
+  {
+    "id": "valid-base64-invalid-zlib",
+    "kind": "text",
+    "value": "<!-- gh-slate:v1 name=ci encoding=zlib+base64 state=0000000000000000000000000000000000000000000000000000000000000000\nAAAA\n-->\n\nvisible",
+    "error_code": "invalid_zlib"
+  },
+  {
+    "id": "invalid-utf8",
+    "kind": "hex",
+    "value": "ff0080",
+    "error_code": "invalid_utf8"
+  },
+  {
+    "id": "valid-comment-truncated-in-payload",
+    "kind": "valid_truncate",
+    "keep_bytes": 200,
+    "error_code": "invalid_marker"
+  },
+  {
+    "id": "valid-comment-payload-char-flip",
+    "kind": "valid_payload_char_flip",
+    "payload_index": 0,
+    "replacement": "A",
+    "error_code": "invalid_zlib"
+  },
+  {
+    "id": "valid-comment-payload-bit-flip",
+    "kind": "valid_payload_bit_flip",
+    "payload_index": 0,
+    "xor": 1,
+    "error_code": "invalid_zlib"
+  },
+  {
+    "id": "valid-comment-duplicate-marker-splice",
+    "kind": "valid_duplicate_splice",
+    "error_code": "duplicate_marker"
+  },
+  {
+    "id": "valid-comment-body-near-limit",
+    "kind": "valid_pad_to_body_bytes",
+    "body_bytes": 65535,
+    "error_code": "codec_size_limit"
+  },
+  {
+    "id": "valid-comment-body-over-limit",
+    "kind": "valid_pad_to_body_bytes",
+    "body_bytes": 65537,
+    "error_code": "codec_size_limit"
+  }
+]
