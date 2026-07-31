@@ -1,0 +1,345 @@
+from __future__ import annotations
+
+import subprocess
+from dataclasses import replace
+from decimal import Decimal
+from types import MappingProxyType
+from typing import cast
+
+import pytest
+
+from gh_slate.rendering import _jq_worker as worker_module, jq as jq_module
+from gh_slate.rendering.errors import RenderingError
+from gh_slate.rendering.jq import DEFAULT_JQ_LIMITS, JqLimits, select_one
+
+
+def test_select_one_returns_one_immutable_json_projection() -> None:
+    source = {"jobs": [{"name": "linux"}, {"name": "macos"}]}
+
+    result = select_one(source, ".jobs")
+
+    assert result == (
+        MappingProxyType({"name": "linux"}),
+        MappingProxyType({"name": "macos"}),
+    )
+    assert source == {"jobs": [{"name": "linux"}, {"name": "macos"}]}
+
+
+@pytest.mark.parametrize(
+    ("filter_text", "code"),
+    [
+        (".missing | empty", "jq_no_result"),
+        (".[]", "jq_multiple_results"),
+        (".foo[", "jq_compile_error"),
+        ('error("nope")', "jq_runtime_error"),
+    ],
+)
+def test_select_one_has_stable_cardinality_and_jq_errors(filter_text: str, code: str) -> None:
+    with pytest.raises(RenderingError) as caught:
+        select_one({"a": 1, "b": 2}, filter_text)
+
+    assert caught.value.code == code
+
+
+@pytest.mark.parametrize(
+    "filter_text",
+    [
+        "env",
+        "$ENV.HOME",
+        "$JQ_BUILD_CONFIGURATION",
+        "builtins",
+        "get_jq_origin",
+        "get_prog_origin",
+        "get_search_list",
+        "have_decnum",
+        "have_literal_numbers",
+        '"helpers" | modulemeta',
+        "fromdate",
+        "fromdateiso8601",
+        "now",
+        "localtime",
+        "strflocaltime",
+        "todate",
+        "todateiso8601",
+        "input",
+        "inputs",
+        "input_filename",
+        "input_line_number",
+        'import "secrets" as secrets; .',
+        'include "secrets"; .',
+        'module {"name": "secrets"}; .',
+        '"\\(env.HOME)"',
+        '"\\(j0)"',
+        '"\\((1 # keep scanning\n), env.HOME)"',
+    ],
+)
+def test_selector_rejects_host_observation_facilities(filter_text: str) -> None:
+    with pytest.raises(RenderingError) as caught:
+        select_one({"env": "data"}, filter_text)
+
+    assert caught.value.code == "jq_filter_forbidden"
+
+
+def test_selector_rejects_every_platform_dependent_c_math_builtin() -> None:
+    expected = {
+        "acos",
+        "acosh",
+        "asin",
+        "asinh",
+        "atan",
+        "atan2",
+        "atanh",
+        "cbrt",
+        "ceil",
+        "copysign",
+        "cos",
+        "cosh",
+        "drem",
+        "erf",
+        "erfc",
+        "exp",
+        "exp10",
+        "exp2",
+        "expm1",
+        "fabs",
+        "fdim",
+        "floor",
+        "fma",
+        "fmax",
+        "fmin",
+        "fmod",
+        "frexp",
+        "gamma",
+        "hypot",
+        "j0",
+        "j1",
+        "jn",
+        "ldexp",
+        "lgamma",
+        "lgamma_r",
+        "log",
+        "log10",
+        "log1p",
+        "log2",
+        "logb",
+        "modf",
+        "nearbyint",
+        "nextafter",
+        "nexttoward",
+        "pow",
+        "pow10",
+        "remainder",
+        "rint",
+        "round",
+        "scalb",
+        "scalbln",
+        "significand",
+        "sin",
+        "sinh",
+        "sqrt",
+        "tan",
+        "tanh",
+        "tgamma",
+        "trunc",
+        "y0",
+        "y1",
+        "yn",
+    }
+    assert jq_module._PLATFORM_DEPENDENT_MATH_IDENTIFIERS == expected
+
+    for identifier in sorted(expected):
+        with pytest.raises(RenderingError) as caught:
+            select_one(None, identifier)
+        assert caught.value.code == "jq_filter_forbidden"
+        assert caught.value.details["token"] == identifier
+
+
+def test_selector_rejects_every_time_dependent_builtin() -> None:
+    expected = {
+        "fromdate",
+        "fromdateiso8601",
+        "gmtime",
+        "localtime",
+        "mktime",
+        "now",
+        "strftime",
+        "strflocaltime",
+        "strptime",
+        "todate",
+        "todateiso8601",
+    }
+    assert jq_module._NONDETERMINISTIC_IDENTIFIERS - jq_module._PLATFORM_DEPENDENT_MATH_IDENTIFIERS == expected
+
+    for identifier in sorted(expected):
+        with pytest.raises(RenderingError) as caught:
+            select_one(None, identifier)
+        assert caught.value.code == "jq_filter_forbidden"
+        assert caught.value.details["token"] == identifier
+
+
+def test_selector_scan_is_token_aware_for_data_strings_fields_and_comments() -> None:
+    source = {
+        "env": "data",
+        "j0": "math field",
+        "modulemeta": "module field",
+        "now": "stored",
+    }
+
+    assert select_one(source, ".env # import module include $ENV") == "data"
+    assert select_one(source, ".j0") == "math field"
+    assert select_one(source, ".modulemeta") == "module field"
+    assert select_one(source, ".now # now localtime") == "stored"
+    assert select_one(source, '"env import include module modulemeta j0 $ENV"') == (
+        "env import include module modulemeta j0 $ENV"
+    )
+
+
+def test_selector_limit_is_measured_in_utf8_bytes() -> None:
+    limits = replace(DEFAULT_JQ_LIMITS, max_selector_bytes=3)
+
+    with pytest.raises(RenderingError) as caught:
+        select_one(None, '"é"', limits=limits)
+
+    assert caught.value.code == "jq_filter_limit"
+    assert caught.value.details == {"actual_bytes": 4, "max_bytes": 3}
+
+
+def test_source_and_output_limits_are_enforced() -> None:
+    with pytest.raises(RenderingError) as source_error:
+        select_one("abcdef", ".", limits=replace(DEFAULT_JQ_LIMITS, max_source_bytes=4))
+    assert source_error.value.code == "jq_source_limit"
+
+    with pytest.raises(RenderingError) as output_error:
+        select_one(None, '"abcdef"', limits=replace(DEFAULT_JQ_LIMITS, max_output_bytes=4))
+    assert output_error.value.code == "jq_output_limit"
+
+
+def test_invalid_source_is_wrapped_at_the_rendering_boundary() -> None:
+    with pytest.raises(RenderingError) as caught:
+        select_one({"not_json": 1.5}, ".")
+
+    assert caught.value.code == "jq_source_invalid"
+    assert caught.value.details["cause"] == "json_type_unsupported"
+
+
+def test_timeout_is_reported_stably(monkeypatch: pytest.MonkeyPatch) -> None:
+    def time_out(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise subprocess.TimeoutExpired(cmd="worker", timeout=0.01)
+
+    monkeypatch.setattr(subprocess, "run", time_out)
+
+    with pytest.raises(RenderingError) as caught:
+        select_one(None, ".", limits=replace(DEFAULT_JQ_LIMITS, timeout_seconds=0.01))
+
+    assert caught.value.code == "jq_timeout"
+
+
+def test_worker_uses_isolated_process_controls(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed: dict[str, object] = {}
+
+    def complete(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        observed["command"] = command
+        observed.update(kwargs)
+        return subprocess.CompletedProcess(command, 0, b'{"ok":true,"results":[null]}', b"")
+
+    monkeypatch.setattr(subprocess, "run", complete)
+
+    assert select_one(None, ".") is None
+    assert observed["env"] == jq_module._worker_environment()
+    assert observed["check"] is False
+    assert observed["input"] == b"null"
+    assert observed["stdout"] is subprocess.PIPE
+    assert observed["stderr"] is subprocess.DEVNULL
+    assert "capture_output" not in observed
+    assert observed["cwd"] != "."
+    assert cast_list(observed["command"])[1] == "-I"
+
+
+def test_worker_environment_preserves_only_windows_system_root() -> None:
+    parent = {
+        "SystemRoot": "C:\\Windows",
+        "GH_TOKEN": "must-not-leak",
+        "HOME": "must-not-leak",
+    }
+
+    assert jq_module._worker_environment(platform="win32", environment=parent) == {"SystemRoot": "C:\\Windows"}
+    assert jq_module._worker_environment(platform="linux", environment=parent) == {}
+
+    with pytest.raises(RenderingError) as caught:
+        jq_module._worker_environment(platform="win32", environment={})
+    assert caught.value.code == "jq_worker_error"
+    assert caught.value.details == {"os_error": "SystemRootMissing"}
+
+
+def test_worker_applies_a_windows_job_memory_limit_instead_of_unix_rlimits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    guard = object()
+    observed: list[tuple[str, int, int | None]] = []
+
+    def windows_limit(memory_bytes: int) -> object:
+        observed.append(("windows", memory_bytes, None))
+        return guard
+
+    def unix_limits(memory_bytes: int, cpu_seconds: int) -> None:
+        observed.append(("unix", memory_bytes, cpu_seconds))
+
+    monkeypatch.setattr(worker_module, "_apply_windows_memory_limit", windows_limit)
+    monkeypatch.setattr(worker_module, "_apply_unix_limits", unix_limits)
+
+    assert worker_module._apply_process_limits(4096, 3, platform="nt") is guard
+    assert worker_module._apply_process_limits(8192, 5, platform="posix") is None
+    assert observed == [("windows", 4096, None), ("unix", 8192, 5)]
+
+
+def cast_list(value: object) -> list[str]:
+    assert isinstance(value, list)
+    assert all(isinstance(item, str) for item in value)
+    return cast("list[str]", value)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        b"not json",
+        b'{"ok":true,"results":NaN}',
+        b'{"ok":true,"results":[1,2,3]}',
+        b'{"ok":false,"kind":"made-up"}',
+        b'{"ok":true,"results":[null],"extra":1}',
+    ],
+)
+def test_worker_protocol_is_strict(monkeypatch: pytest.MonkeyPatch, response: bytes) -> None:
+    def complete(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(command, 0, response, b"")
+
+    monkeypatch.setattr(subprocess, "run", complete)
+
+    with pytest.raises(RenderingError) as caught:
+        select_one(None, ".")
+
+    assert caught.value.code == "jq_worker_protocol"
+
+
+def test_libjq_large_integer_rounding_is_projection_only_and_strings_stay_exact() -> None:
+    exact_integer = Decimal(9007199254740993)
+    source = {"number": exact_integer, "string": "9007199254740993"}
+
+    assert select_one(source, ".number") == Decimal(9007199254740992)
+    assert select_one(source, ".string") == "9007199254740993"
+    assert source["number"] == exact_integer
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "max_selector_bytes",
+        "max_source_bytes",
+        "max_output_bytes",
+        "timeout_seconds",
+        "max_memory_bytes",
+        "max_cpu_seconds",
+    ],
+)
+def test_jq_limits_require_positive_values(field: str) -> None:
+    with pytest.raises(ValueError, match=field):
+        JqLimits(**{field: 0})

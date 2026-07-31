@@ -14,6 +14,10 @@ the same payload bytes across zlib implementations.
 forms such as `-0.000`, exponent notation, and unsorted object keys. Its
 canonicalization must match `state.canonical.json`.
 
+The `minimal` vector also freezes a complete `builtin-table@1` descriptor. Its
+stored state must rerender byte-for-byte to `visible.md`; this fixture was
+finalized together with the first renderer implementation, before release.
+
 Every fixture directory and every file in it must be registered in
 `manifest.json`; unregistered compatibility vectors are rejected by tests.
 `.gitattributes` fixes wire fixture checkout to LF so byte hashes are portable

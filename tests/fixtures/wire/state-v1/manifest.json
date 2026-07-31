@@ -9,9 +9,9 @@
       "visible.md": "ba2546884f603968fcd36a3e5aab919b747bb6906f99fce08c77600b7853cbae"
     },
     "minimal": {
-      "comment.md": "4ee54d3a9c5fb30f2bba64915440fe9053053d2ed4d8ab03687af6a14c4ddf3a",
-      "expected.json": "df0c98d15952acfccc617bc0f3af9477aa8e6e5ec99f6e183dbb7f57ccb996e8",
-      "state.canonical.json": "db7a150c36b738b469fb85a9a3cff5d6717c45ac377d8aba5c275e34fef541f5",
+      "comment.md": "9368f87e2022bce8ad9b7c5ca0d453e5e4baefc14dcda2a066f1972ab132974f",
+      "expected.json": "6537bc20b6f3e1482d06568524cc11fe93dde7589ea1e6bdcfb298757c97a6de",
+      "state.canonical.json": "93ab81c8494ab01bcbe312bcf3b9e5e1010f168222203a7989b74f357ec505b8",
       "visible.md": "06e6aeb0ab519d41fb7e9bf3ad4d9fe92a1d230b8cb5b2ed25dfcfc7d5faf09d"
     }
   }

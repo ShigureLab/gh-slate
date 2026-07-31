@@ -8,6 +8,7 @@ import pytest
 from gh_slate.codec.errors import CodecError
 from gh_slate.codec.model import (
     JSON_SCHEMA_DIALECT_2020_12,
+    MAX_GITHUB_LOGIN_BYTES,
     MAX_GITHUB_USER_ID,
     MAX_RENDERER_VERSION,
     MAX_REVISION,
@@ -47,6 +48,25 @@ def _state_json() -> dict[str, object]:
         },
         "render_sha256": _DIGEST,
     }
+
+
+@pytest.mark.parametrize(
+    "login",
+    [
+        "a" * (MAX_GITHUB_LOGIN_BYTES + 1),
+        "猫" * 14,
+    ],
+)
+def test_controller_login_is_bounded_by_the_github_actor_contract(
+    login: str,
+) -> None:
+    assert ControllerV1(login="a" * MAX_GITHUB_LOGIN_BYTES).login == ("a" * MAX_GITHUB_LOGIN_BYTES)
+
+    with pytest.raises(CodecError) as caught:
+        ControllerV1(login=login)
+
+    assert caught.value.code == "invalid_state"
+    assert caught.value.details == {"path": "controller.login"}
 
 
 def test_state_round_trips_and_preserves_unknown_renderer_configuration() -> None:

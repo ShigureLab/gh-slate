@@ -1,23 +1,26 @@
 # gh-slate CLI design
 
-Status: proposal for the first implementation.
+Status: implementation-backed through batch 4; the local rendering foundation
+is complete and batch 5 is the next implementation layer.
 
 `gh-slate` manages named, data-backed dashboard comments on GitHub Issues and
 Pull Requests.
 
-The central model is:
+The central model has one reversible state boundary and one one-way rendering
+boundary:
 
 ```text
-typed JSON state + optional JSON Schema + renderer specification
-                              ↓
-                     rendered Markdown
-                              ↓
-              one named GitHub issue comment
+managed comment envelope  <-- encode/decode -->  typed StateV1
+                                                    |
+                                                  render
+                                                    v
+                                             visible Markdown
 ```
 
 The hidden typed state is the source of truth. The visible Markdown is a
 projection of that state, not a database that `gh-slate` tries to reverse
-engineer.
+engineer. The envelope and visible projection are stored together in one named
+GitHub Issue or Pull Request comment.
 
 ## 1. Design decisions
 
@@ -55,16 +58,24 @@ null      null or string?
 Nested objects, escaped pipes, newlines, and user formatting make the problem
 worse. A JSON Schema alone cannot make arbitrary edited Markdown lossless.
 
-The supported round-trip invariant is:
+The reversible boundary is the managed comment envelope to and from canonical,
+typed `StateV1`. Rendering is a separate deterministic projection from
+`StateV1` to Markdown:
 
 ```text
-decode(encode(state)) == canonicalize(state)
-render(decode(comment).state) == comment.visible_markdown
+decode_state(encode_state(StateV1)) == canonicalize(StateV1)
+render(StateV1) -> normalized visible Markdown
 ```
+
+The second line is intentionally not a bidirectional arrow. v1 does not define
+`parse_markdown(Markdown) -> typed data`, even for output produced by the
+built-in table or list renderer.
 
 The comment stores canonical typed JSON and, when supplied, its JSON Schema.
 `gh slate data get` decodes the state directly. It never infers state by parsing
-the rendered table or list.
+the rendered table or list. When the stored render hash verifies, rerendering
+the decoded `StateV1` must reproduce the normalized visible Markdown byte for
+byte.
 
 Manual edits to the visible Markdown produce a render-hash mismatch. Mutating
 commands fail with a drift error instead of guessing user intent or silently
@@ -86,6 +97,13 @@ and rerender it:
 - renderer kind, version, and resolved options;
 - Jinja source when the renderer is Jinja;
 - revision and integrity hashes.
+
+The repository, number, and comment URL are target context rather than portable
+state. A remote rerender obtains them from the comment location and must pass
+the same `SlateContext` used for the previous render. The pure local command has
+no target, so it exposes those three fields as explicit JSON `null` values. The
+rendering API refuses to rerender a stored Jinja state without an explicit
+target context; built-in table/list renderers do not depend on it.
 
 Storing only a template path is insufficient: a later CI run may not have the
 same checkout, branch, file, or Contents API permission. A future version may
@@ -214,6 +232,24 @@ Data keys are not promoted to global variables. Jinja uses an immutable sandbox,
 not expose environment variables, tokens, network access, or arbitrary Python
 objects.
 
+The v1 adapter canonicalizes the `data` object through the JSON codec before
+exposing an immutable value. It clears Jinja's default globals, filters, and
+tests, then installs only the documented filters and the minimal
+`defined`/`undefined`/`none` tests. Attribute and callable access are denied;
+includes, imports, extends, calls, macros, call blocks, multiplication, and
+power expressions are rejected from the parsed AST. Containers cannot be
+interpolated implicitly and must pass through `md_table`, `md_list`, or
+`compact_json`.
+
+The default execution profile accepts at most 64 KiB of UTF-8 template source,
+2,000 AST nodes, a conservative 1,000-unit loop-work budget, and 48 KiB of
+streamed UTF-8 output. The implementation hard caps configurable AST and loop
+budgets at 10,000. It consumes generated chunks incrementally and fails when
+their cumulative UTF-8 size crosses the output limit. The canonical renderer
+descriptor, including JSON escaping and field overhead, must independently fit
+the 64 KiB renderer-component limit; a source at the raw ceiling may therefore
+be rejected. A limit violation is a validation error before any remote write.
+
 Built-in deterministic filters include:
 
 ```jinja2
@@ -239,6 +275,23 @@ gh slate apply test-matrix \
 produce exactly one value. It is stored in the renderer specification and is
 reevaluated after every data update.
 
+Renderer selectors run in an isolated Python subprocess with isolated-mode
+imports, an empty environment, and an empty temporary working directory.
+Environment, build, and module facilities (`env`, `$ENV`, `import`, `include`,
+`module`, and `modulemeta`) are rejected before evaluation. Stored selectors
+also reject time/date wrappers and the complete jq 1.7 C math builtin surface,
+whose availability and results depend on the host OS and C library. The default
+selector profile limits the filter to 16 KiB, canonical input and jq output to
+256 KiB each, wall time to 2 seconds, address space to 512 MiB, and CPU time to
+2 seconds. OS memory and CPU rlimits are applied where supported; the wall
+timeout and byte limits remain mandatory on every platform.
+
+The isolated result is parsed back through the immutable JSON codec, so jq
+cannot mutate the input `StateV1`. libjq nevertheless uses IEEE-754 numeric
+semantics: a selected integer outside the exactly representable range may be
+rounded in the projection. Identifiers and arbitrary-precision values that
+must remain exact through a jq projection must be encoded as strings.
+
 The accepted `table@1` shape is an array of objects: one row per item.
 
 `table@1` deliberately rejects mixed arrays, scalar roots, and object-of-object
@@ -255,6 +308,16 @@ For an array of objects, column order is resolved once and stored:
 New fields do not silently rearrange or extend an existing table. Reapplying
 `--columns` explicitly changes the renderer specification.
 
+Every stored column path is a non-empty JSON array of typed path segments.
+String segments select object keys and non-negative integer segments select
+array indexes. For example, `["job", "name"]` and
+`["attempts", 0, "duration_ms"]` are paths; `.job.name`, JSON Pointer, and a
+single dotted string are not. This representation preserves a key such as
+`"key.with.dot"` and distinguishes the object key `"0"` from array index `0`.
+The `--columns name,status` shorthand and Jinja's
+`md_table(columns=["name", "status"])` each resolve to one-string-segment paths
+before the renderer descriptor is stored.
+
 An empty array can render an empty table when columns or an item schema are
 available. Otherwise it renders `_No data._` and asks for explicit columns.
 
@@ -269,9 +332,11 @@ Default cell rendering is deterministic:
 | missing property | `—`                             |
 | array/object     | compact JSON in code formatting |
 
-Pipes, backslashes, backticks, and newlines are escaped for GitHub-flavored
-Markdown tables. Raw Markdown cells require an explicit trusted renderer option;
-they are never inferred from a string.
+ASCII punctuation is emitted as inert numeric character references and newlines
+as trusted `<br>` elements, so emphasis, links, images, mentions, autolinks,
+table delimiters, and HTML in untrusted strings remain display text. Raw
+Markdown cells require an explicit trusted renderer option; they are never
+inferred from a string.
 
 ### 4.3 Built-in list renderer
 
@@ -294,6 +359,15 @@ Arrays retain their order and index labels. Empty objects, empty arrays, null,
 missing values, and empty strings have distinct projections. Depth or item
 limits always render an explicit truncation notice; they never silently drop
 content.
+
+The shared default local-render profile permits at most 500 table rows, 64
+table columns, 8 list levels, 1,000 rendered list items, and 48 KiB of UTF-8
+Markdown. The stored list defaults are lower (4 levels and 500 items).
+Row/item/depth truncation is explicit; excess columns or output bytes are
+validation errors.
+
+Both built-in renderers are one-way projections. Their Markdown, including
+escaping and truncation notices, is never parsed back into typed data.
 
 `--template`, `--table`, and `--list` are mutually exclusive renderer choices.
 When updating an existing slate, omitting all three reuses the embedded renderer.
@@ -359,6 +433,16 @@ gh slate render ci-summary \
 # Fetch stored state and verify that it still renders deterministically.
 gh slate render ci-summary --target 42
 ```
+
+Local file and stdin reads are bounded before allocation. JSON input is capped
+at the strict parser's 8 MiB source limit and then at the smaller canonical
+data/schema component limits; Jinja input is capped at 64 KiB before decoding.
+Local render also enforces the canonical renderer-component and visible-output
+limits, so a successful preview is eligible for later state materialization.
+Because a target-sensitive Jinja branch cannot be bounded using placeholder
+values, pure local render rejects templates that reference
+`slate.repository`, `slate.number`, or `slate.url`. Use `apply --dry-run` with
+the intended target to preview and validate those templates without writing.
 
 `view` prints the visible Markdown by default. `--json` returns identity,
 controller, renderer, schema presence, revision, hashes, drift status, and
@@ -565,9 +649,11 @@ layout do not become entangled.
 
 Round-trip guarantees follow JSON semantics. They do not promise to preserve
 whitespace, object key spelling order, or a number's original textual lexeme.
-Full jq updates also inherit jq's numeric semantics. IDs or integers requiring
-lexical or arbitrary-precision preservation should be stored as strings and
-described as strings in the schema.
+Both renderer selectors and full jq updates inherit libjq's IEEE-754 numeric
+semantics. A jq projection may therefore round an otherwise valid canonical
+JSON integer. IDs or integers requiring lexical or arbitrary-precision
+preservation should be stored as strings and described as strings in the
+schema.
 
 JSON ingestion rejects duplicate object keys, NaN, and Infinity.
 
@@ -653,11 +739,11 @@ The decoded envelope is conceptually:
       "selector": ".jobs",
       "columns": [
          {
-            "path": ".name",
+            "path": ["name"],
             "header": "Job"
          },
          {
-            "path": ".status",
+            "path": ["status"],
             "header": "Status"
          }
       ]
@@ -760,7 +846,7 @@ turn a comment into artifact storage.
 Before writing, the CLI enforces conservative limits on:
 
 - template source;
-- canonical data and schema;
+- canonical data, schema, and renderer descriptor;
 - decompressed envelope;
 - rendered Markdown;
 - final UTF-8 comment body.
@@ -1015,18 +1101,20 @@ checking its evidence, and reporting the confirmed result.
 
 ## 14. Implementation plan
 
-The current `codex/cli-design` branch is batch 0: it freezes the initial CLI,
-state, rendering, ownership, and safety contract before implementation begins.
-The implementation should then use nine focused stacked PRs. This is more PRs
-than a coarse component split, but it keeps the wire format, local rendering,
-remote reads, and remote writes independently reviewable.
+The `codex/cli-design` branch is batch 0: it freezes the initial CLI, state,
+rendering, ownership, and safety contract. Batches 1 through 4 now provide the
+package, codec, schema, and local-rendering foundation. The implementation uses
+nine focused stacked PRs. This is more PRs than a coarse component split, but it
+keeps the wire format, local rendering, remote reads, and remote writes
+independently reviewable.
 
 The codec and renderer layers must merge before any remote write is enabled.
-The most important correctness property remains:
+The most important correctness properties remain:
 
 ```text
-decode(encode(state)) == canonicalize(state)
-render(decode(comment).state) == comment.visible_markdown
+decode_state(encode_state(StateV1)) == canonicalize(StateV1)
+render(StateV1) == normalized visible Markdown when render_sha256 verifies
+there is no Markdown-to-typed-data inverse in v1
 ```
 
 ### 14.1 Stack shape and delivery waves
@@ -1124,7 +1212,7 @@ Deliverables:
 Acceptance gates:
 
 - round-trip property tests prove
-  `decode(encode(state)) == canonicalize(state)`;
+  `decode_state(encode_state(StateV1)) == canonicalize(StateV1)`;
 - canonical bytes and hashes have deterministic golden assertions; permanent
   complete-comment fixtures must remain decodable but need not re-encode to the
   same non-canonical DEFLATE bytes across zlib versions;
@@ -1172,6 +1260,9 @@ independent of table columns and selectors.
 
 Branch: `codex/local-renderers`
 
+Status: complete. The adapters, integrated engine/CLI, golden fixtures,
+dependency probe, size/security boundaries, and acceptance tests are in place.
+
 Goal: deliver a deterministic offline rendering engine and the local `render`
 command.
 
@@ -1179,9 +1270,14 @@ Deliverables:
 
 - the maintained Python `jq` binding and one shared jq evaluation adapter;
 - `builtin-table@1` and `builtin-list@1`, including selectors, stored column
-  resolution, escaping, explicit truncation, and strict accepted shapes;
+  resolution with typed JSON segment arrays, escaping, explicit truncation, and
+  strict accepted shapes;
 - the sandboxed, immutable Jinja adapter with `StrictUndefined`, no loader, no
-  include/import, and the minimal documented context;
+  include/import, the minimal documented context, AST/loop/output budgets, and
+  streamed output enforcement;
+- isolated jq selector execution with no inherited environment or working
+  tree, bounded input/output/time/resources, and an explicit IEEE-754
+  projection caveat;
 - renderer descriptors that retain all resolved options and exact Jinja source;
 - the pure local `render` path and component/final-body size checks;
 - golden Markdown fixtures and deterministic rerender tests.
@@ -1190,11 +1286,15 @@ Acceptance gates:
 
 - all three renderers produce byte-stable Markdown for their golden fixtures;
 - table tests distinguish missing, null, empty string, empty array, and nested
-  JSON, and cover pipes, backslashes, backticks, and newlines;
+  JSON, cover inert punctuation and newlines, and prove that string and integer
+  path segments remain distinct;
 - list tests cover object ordering, array ordering, depth limits, and item
   limits without silent loss;
 - Jinja cannot access environment variables, files, network, dangerous Python
-  attributes, includes, or imports;
+  attributes, default globals, includes, imports, or mutation, and its
+  source/AST/loop/output limits fail deterministically;
+- jq selector tests prove subprocess isolation, byte/time/resource failures,
+  immutable projection results, and the documented large-integer behavior;
 - selectors that return zero or multiple values fail before rendering;
 - the dependency matrix installs the actual jq binding on every advertised
   Python/platform combination.
@@ -1202,8 +1302,8 @@ Acceptance gates:
 Not included: any GitHub API call, arbitrary Markdown reverse parsing, or
 automatic raw-Markdown cells.
 
-Foundation is complete after this batch. The wire format and renderer versions
-are now implementation-backed, but no remote command is allowed to write yet.
+Foundation is complete: the wire format and renderer versions are
+implementation-backed, but no remote command is allowed to write yet.
 
 ### 14.6 Batch 5: read-only GitHub comment store
 
@@ -1304,7 +1404,7 @@ Deliverables:
 Acceptance gates:
 
 - `"91"`, `91`, `true`, `"true"`, and `null` remain distinct through every
-  command and round-trip;
+  command and typed-state encode/decode round-trip;
 - paths work for keys containing dots and other special characters;
 - missing deletes, `--ignore-missing`, jq zero/multiple results, and
   scalar/array update results have explicit tested behavior;
