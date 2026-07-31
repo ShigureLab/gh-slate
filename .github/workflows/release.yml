@@ -124,9 +124,67 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      already_stable: ${{ steps.release_state.outputs.already_stable }}
 
     steps:
+      - name: Inspect the existing tagged release
+        id: release_state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          error_file="$(mktemp)"
+          trap 'rm -f "${error_file}"' EXIT
+          if release_state="$(
+            gh api \
+              --method GET \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" \
+              --jq '
+                if (
+                  ((.draft | type) != "boolean") or
+                  ((.prerelease | type) != "boolean")
+                ) then
+                  "invalid"
+                elif .draft then
+                  "draft"
+                elif .prerelease then
+                  "prerelease"
+                else
+                  "stable"
+                end
+              ' \
+              2>"${error_file}"
+          )"; then
+            :
+          elif grep -Fq "HTTP 404" "${error_file}"; then
+            release_state="absent"
+          else
+            cat "${error_file}" >&2
+            exit 1
+          fi
+
+          case "${release_state}" in
+            absent|prerelease)
+              echo "already_stable=false" >> "${GITHUB_OUTPUT}"
+              ;;
+            stable)
+              echo "already_stable=true" >> "${GITHUB_OUTPUT}"
+              ;;
+            draft)
+              echo "::error::Refusing to replace an existing draft release for ${GITHUB_REF_NAME}."
+              exit 1
+              ;;
+            *)
+              echo "::error::GitHub returned an invalid release state: ${release_state}."
+              exit 1
+              ;;
+          esac
+          echo "release_state=${release_state}" >> "${GITHUB_OUTPUT}"
+
       - name: Require mutable staged releases
+        if: steps.release_state.outputs.already_stable != 'true'
         env:
           GH_TOKEN: ${{ secrets.GH_SLATE_RELEASE_ADMIN_TOKEN }}
         shell: bash
@@ -158,16 +216,19 @@ jobs:
           fi
 
       - name: Download the verified artifact set
+        if: steps.release_state.outputs.already_stable != 'true'
         uses: actions/download-artifact@v8
         with:
           name: verified-release-artifacts
           path: release-artifacts
 
       - name: Recheck exact artifact hashes
+        if: steps.release_state.outputs.already_stable != 'true'
         working-directory: release-artifacts
         run: sha256sum --check SHA256SUMS
 
       - name: Stage a non-latest prerelease for extension installation
+        if: steps.release_state.outputs.already_stable != 'true'
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
@@ -246,6 +307,73 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: release-artifacts/python
+          skip-existing: true
+
+      - name: Verify the exact PyPI file set and hashes
+        env:
+          PYPI_PROJECT: gh-slate
+          PYPI_VERSION: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+
+          artifact_dir = Path("release-artifacts/python")
+          expected_paths = sorted(
+              (*artifact_dir.glob("*.whl"), *artifact_dir.glob("*.tar.gz")),
+          )
+          if len(expected_paths) != 2:
+              raise SystemExit(
+                  f"expected one wheel and one sdist, found {len(expected_paths)} files",
+              )
+          expected = {
+              path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+              for path in expected_paths
+          }
+          version = os.environ["PYPI_VERSION"].removeprefix("v")
+          url = f"https://pypi.org/pypi/{os.environ['PYPI_PROJECT']}/{version}/json"
+          actual = {}
+          for attempt in range(12):
+              request = urllib.request.Request(
+                  url,
+                  headers={"Accept": "application/json"},
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=15) as response:
+                      payload = json.load(response)
+              except urllib.error.HTTPError as error:
+                  if error.code != 404:
+                      raise
+                  payload = {"urls": []}
+
+              files = payload.get("urls")
+              if not isinstance(files, list):
+                  raise SystemExit("PyPI release JSON does not contain a file list")
+              actual = {}
+              for item in files:
+                  if not isinstance(item, dict):
+                      raise SystemExit("PyPI release JSON contains an invalid file")
+                  filename = item.get("filename")
+                  digests = item.get("digests")
+                  digest = digests.get("sha256") if isinstance(digests, dict) else None
+                  if not isinstance(filename, str) or not isinstance(digest, str):
+                      raise SystemExit("PyPI release JSON contains invalid file hashes")
+                  if filename in actual:
+                      raise SystemExit(f"PyPI returned duplicate filename {filename}")
+                  actual[filename] = digest
+              if actual == expected:
+                  break
+              if attempt == 11:
+                  raise SystemExit(
+                      f"PyPI file set or hashes differ: expected {expected!r}, observed {actual!r}",
+                  )
+              time.sleep(5)
+          PY
 
   publish-release:
     name: Promote the verified prerelease to stable
@@ -306,11 +434,15 @@ jobs:
           done
 
       - name: Promote to a stable latest release only after every gate
+        if: needs.stage-release.outputs.already_stable != 'true'
         run: |
           gh release edit "${GITHUB_REF_NAME}" \
             --repo "${GITHUB_REPOSITORY}" \
             --prerelease=false \
             --latest
+
+      - name: Assert the tagged release is stable
+        run: |
           test "$(
             gh release view "${GITHUB_REF_NAME}" \
               --repo "${GITHUB_REPOSITORY}" \

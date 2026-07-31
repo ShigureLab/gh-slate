@@ -262,6 +262,8 @@ def test_extension_assets_are_exact_executable_self_extracting_bundles(
     assert b"gh-slate-extension-v2" in content[:4096]
     assert b"mktemp -d" in content[:4096]
     assert b'payload_file="${stage_dir}/.payload"' in content[:4096]
+    assert b'[[ -L "${install_dir}" && ! -f "${ready_file}" ]]' in content[:4096]
+    assert b"preserve_stage=1" in content[:4096]
     assert b'ln -sn "${stage_dir}" "${install_dir}"' in content[:4096]
     assert b"pwd -P)" in content[:4096]
     if os.name != "nt":
@@ -388,6 +390,121 @@ def test_extension_asset_concurrently_publishes_one_ready_cache(
     assert not (published_stage / ".payload").exists()
 
 
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="the self-extracting extension assets require Bash and Unix symlinks",
+)
+def test_extension_asset_recovers_a_dangling_published_cache(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    assets = release_verify.build_extension_assets(
+        project,
+        tmp_path / "assets",
+        version=VERSION,
+    )
+    content = assets[0].read_bytes()
+    digest_match = re.search(
+        rb"(?m)^payload_sha256=([0-9a-f]{64})$",
+        content[:4096],
+    )
+    assert digest_match is not None
+    digest = digest_match.group(1).decode("ascii")
+
+    cache = tmp_path / "cache"
+    install_root = cache / "gh-slate-extension-v2"
+    install_root.mkdir(parents=True)
+    install = install_root / f"{VERSION}-{digest}"
+    install.symlink_to(install_root / "missing-stage")
+    environment = os.environ.copy()
+    environment["HOME"] = str(tmp_path / "home")
+    environment["XDG_CACHE_HOME"] = str(cache)
+    (tmp_path / "home").mkdir()
+
+    result = subprocess.run(
+        [assets[0], "--version"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "gh slate test\n"
+    assert install.is_symlink()
+    assert (install / ".ready").is_file()
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None or shutil.which("ln") is None,
+    reason="the signal-race test requires Bash, ln, and Unix symlinks",
+)
+def test_extension_asset_preserves_a_stage_when_signalled_during_publish(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    assets = release_verify.build_extension_assets(
+        project,
+        tmp_path / "assets",
+        version=VERSION,
+    )
+    content = assets[0].read_bytes()
+    digest_match = re.search(
+        rb"(?m)^payload_sha256=([0-9a-f]{64})$",
+        content[:4096],
+    )
+    assert digest_match is not None
+    digest = digest_match.group(1).decode("ascii")
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_ln = fake_bin / "ln"
+    fake_ln.write_text(
+        ('#!/usr/bin/env bash\nset -euo pipefail\n"${GH_SLATE_REAL_LN}" "$@"\nkill -TERM "${PPID}"\n'),
+        encoding="utf-8",
+    )
+    fake_ln.chmod(0o755)
+
+    cache = tmp_path / "cache"
+    environment = os.environ.copy()
+    environment["HOME"] = str(tmp_path / "home")
+    environment["XDG_CACHE_HOME"] = str(cache)
+    environment["GH_SLATE_REAL_LN"] = cast("str", shutil.which("ln"))
+    environment["PATH"] = f"{fake_bin}{os.pathsep}{environment['PATH']}"
+    (tmp_path / "home").mkdir()
+
+    interrupted = subprocess.run(
+        [assets[0], "--version"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=15,
+    )
+
+    assert interrupted.returncode != 0
+    install_root = cache / "gh-slate-extension-v2"
+    install = install_root / f"{VERSION}-{digest}"
+    assert install.is_symlink()
+    published_stage = install.resolve()
+    assert (published_stage / ".ready").is_file()
+    assert not (published_stage / ".payload").exists()
+
+    retried = subprocess.run(
+        [assets[0], "--version"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=15,
+    )
+
+    assert retried.returncode == 0, retried.stderr
+    assert retried.stdout == "gh slate test\n"
+    assert install.resolve() == published_stage
+
+
 def test_release_verification_writes_hashes_for_the_same_artifact_set(
     tmp_path: Path,
 ) -> None:
@@ -507,6 +624,45 @@ def test_release_workflow_consumes_one_verified_set_in_safe_order() -> None:
     assert "--prerelease=false" in promotion_text
     assert "--latest" in promotion_text
     assert "softprops/action-gh-release" not in repr(github_release["steps"])
+
+
+def test_release_workflow_rerun_preserves_an_existing_stable_release() -> None:
+    jobs = _workflow()["jobs"]
+    staged_release = jobs["stage-release"]
+    pypi = jobs["publish-pypi"]
+    github_release = jobs["publish-release"]
+
+    assert staged_release["outputs"]["already_stable"] == ("${{ steps.release_state.outputs.already_stable }}")
+    inspect = next(step for step in staged_release["steps"] if step.get("id") == "release_state")
+    inspect_text = str(inspect["run"])
+    assert "releases/tags/${GITHUB_REF_NAME}" in inspect_text
+    assert 'echo "already_stable=true"' in inspect_text
+    assert "draft)" in inspect_text
+
+    guarded_names = {
+        "Require mutable staged releases",
+        "Download the verified artifact set",
+        "Recheck exact artifact hashes",
+        "Stage a non-latest prerelease for extension installation",
+    }
+    guarded_steps = [step for step in staged_release["steps"] if step.get("name") in guarded_names]
+    assert len(guarded_steps) == len(guarded_names)
+    assert all(step["if"] == "steps.release_state.outputs.already_stable != 'true'" for step in guarded_steps)
+
+    pypi_publish = next(step for step in pypi["steps"] if step.get("uses") == "pypa/gh-action-pypi-publish@release/v1")
+    assert pypi_publish["with"]["skip-existing"] == "true"
+    pypi_text = _run_text(pypi)
+    assert "https://pypi.org/pypi/" in pypi_text
+    assert "hashlib.sha256" in pypi_text
+    assert "actual == expected" in pypi_text
+
+    promotion = next(
+        step
+        for step in github_release["steps"]
+        if step.get("name") == "Promote to a stable latest release only after every gate"
+    )
+    assert promotion["if"] == ("needs.stage-release.outputs.already_stable != 'true'")
+    assert any(step.get("name") == "Assert the tagged release is stable" for step in github_release["steps"])
 
 
 def test_workflow_dispatch_can_verify_but_cannot_publish() -> None:

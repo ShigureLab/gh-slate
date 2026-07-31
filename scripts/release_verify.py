@@ -461,13 +461,16 @@ install_dir="${{install_root}}/{version}-${{payload_sha256}}"
 ready_file="${{install_dir}}/.ready"
 
 mkdir -p "${{install_root}}"
+if [[ -L "${{install_dir}}" && ! -f "${{ready_file}}" ]]; then
+  rm -f "${{install_dir}}"
+fi
 if [[ ! -f "${{ready_file}}" ]]; then
   stage_dir="$(mktemp -d "${{install_root}}/.{version}-${{payload_sha256}}.stage.XXXXXX")"
   payload_file="${{stage_dir}}/.payload"
-  published=0
+  preserve_stage=0
   cleanup() {{
     rm -f "${{payload_file}}"
-    if (( ! published )); then
+    if (( ! preserve_stage )); then
       rm -rf "${{stage_dir}}"
     fi
   }}
@@ -496,8 +499,9 @@ if [[ ! -f "${{ready_file}}" ]]; then
   test -f "${{stage_dir}}/pyproject.toml"
   test -f "${{stage_dir}}/uv.lock"
   : > "${{stage_dir}}/.ready"
-  if ln -sn "${{stage_dir}}" "${{install_dir}}" 2>/dev/null; then
-    published=1
+  preserve_stage=1
+  if ! ln -sn "${{stage_dir}}" "${{install_dir}}" 2>/dev/null; then
+    preserve_stage=0
   fi
   trap - HUP INT TERM
   trap - EXIT
