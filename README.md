@@ -257,7 +257,9 @@ gh slate schema set ci-summary report.schema.json --target https://github.com/OW
 ```
 
 `schema infer` only prints by default; add `--apply` and an observed
-`--if-revision` to store the inferred schema.
+`--if-revision` to store the inferred schema. The `schema set` example
+assumes you edited `report.schema.json` after the initial apply; setting an
+identical schema is intentionally reported as `unchanged`.
 
 ### Query and update typed data
 
@@ -276,7 +278,7 @@ revision `1`; all pin that observation and reject an already-stale read:
 gh slate data set ci-summary '.jobs[1].status' --target https://github.com/OWNER/REPO/issues/42 --value-string passed --if-revision 1 --json
 gh slate data set ci-summary '.coverage' --target https://github.com/OWNER/REPO/issues/42 --value 91.7 --if-revision 1 --json
 gh slate data set ci-summary '.jobs[1]' --target https://github.com/OWNER/REPO/issues/42 --value-file windows-result.json --if-revision 1 --json
-gh slate data delete ci-summary '.legacy' '.jobs[2]' --target https://github.com/OWNER/REPO/issues/42 --ignore-missing --if-revision 1 --json
+gh slate data delete ci-summary '.jobs[1]' --target https://github.com/OWNER/REPO/issues/42 --if-revision 1 --json
 gh slate data update ci-summary '.jobs |= map(if .name == $name then .status = "passed" else . end)' --target https://github.com/OWNER/REPO/issues/42 --arg name windows --if-revision 1 --json
 gh slate data update ci-summary '.jobs[$index] = $result' --target https://github.com/OWNER/REPO/issues/42 --argjson index 1 --argjson result @windows-result.json --if-revision 1 --json
 ```
