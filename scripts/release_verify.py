@@ -459,17 +459,19 @@ cache_home="${{XDG_CACHE_HOME:-${{HOME:?HOME must be set}}/.cache}}"
 install_root="${{cache_home}}/gh-slate-extension-v2"
 install_dir="${{install_root}}/{version}-${{payload_sha256}}"
 ready_file="${{install_dir}}/.ready"
+recovery_link="${{install_dir}}.recover"
 
 mkdir -p "${{install_root}}"
-if [[ -L "${{install_dir}}" && ! -f "${{ready_file}}" ]]; then
-  rm -f "${{install_dir}}"
-fi
 if [[ ! -f "${{ready_file}}" ]]; then
   stage_dir="$(mktemp -d "${{install_root}}/.{version}-${{payload_sha256}}.stage.XXXXXX")"
   payload_file="${{stage_dir}}/.payload"
+  publication_link=""
   preserve_stage=0
   cleanup() {{
     rm -f "${{payload_file}}"
+    if [[ -n "${{publication_link}}" ]]; then
+      rm -f "${{publication_link}}"
+    fi
     if (( ! preserve_stage )); then
       rm -rf "${{stage_dir}}"
     fi
@@ -500,8 +502,24 @@ if [[ ! -f "${{ready_file}}" ]]; then
   test -f "${{stage_dir}}/uv.lock"
   : > "${{stage_dir}}/.ready"
   preserve_stage=1
-  if ! ln -sn "${{stage_dir}}" "${{install_dir}}" 2>/dev/null; then
+  if ln -sn "${{stage_dir}}" "${{install_dir}}" 2>/dev/null; then
+    :
+  elif [[ -f "${{ready_file}}" ]]; then
     preserve_stage=0
+  else
+    if ! ln -sn "${{stage_dir}}" "${{recovery_link}}" 2>/dev/null; then
+      preserve_stage=0
+    fi
+    if [[ -L "${{recovery_link}}" && -f "${{recovery_link}}/.ready" ]]; then
+      recovery_target="$(readlink "${{recovery_link}}")"
+      publication_link="${{stage_dir}}/.publish"
+      ln -sn "${{recovery_target}}" "${{publication_link}}"
+      if [[ "$(uname -s)" == "Darwin" ]]; then
+        mv -fh -- "${{publication_link}}" "${{install_dir}}"
+      else
+        mv -fT -- "${{publication_link}}" "${{install_dir}}"
+      fi
+    fi
   fi
   trap - HUP INT TERM
   trap - EXIT

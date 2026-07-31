@@ -262,9 +262,12 @@ def test_extension_assets_are_exact_executable_self_extracting_bundles(
     assert b"gh-slate-extension-v2" in content[:4096]
     assert b"mktemp -d" in content[:4096]
     assert b'payload_file="${stage_dir}/.payload"' in content[:4096]
-    assert b'[[ -L "${install_dir}" && ! -f "${ready_file}" ]]' in content[:4096]
+    assert b'rm -f "${install_dir}"' not in content[:4096]
+    assert b'recovery_link="${install_dir}.recover"' in content[:4096]
     assert b"preserve_stage=1" in content[:4096]
     assert b'ln -sn "${stage_dir}" "${install_dir}"' in content[:4096]
+    assert b'mv -fh -- "${publication_link}" "${install_dir}"' in content[:4096]
+    assert b'mv -fT -- "${publication_link}" "${install_dir}"' in content[:4096]
     assert b"pwd -P)" in content[:4096]
     if os.name != "nt":
         assert all(path.stat().st_mode & stat.S_IXUSR for path in assets)
@@ -434,6 +437,133 @@ def test_extension_asset_recovers_a_dangling_published_cache(
     assert result.stdout == "gh slate test\n"
     assert install.is_symlink()
     assert (install / ".ready").is_file()
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="the self-extracting extension assets require Bash and Unix symlinks",
+)
+def test_extension_asset_concurrently_recovers_one_dangling_cache(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    assets = release_verify.build_extension_assets(
+        project,
+        tmp_path / "assets",
+        version=VERSION,
+    )
+    content = assets[0].read_bytes()
+    digest_match = re.search(
+        rb"(?m)^payload_sha256=([0-9a-f]{64})$",
+        content[:4096],
+    )
+    assert digest_match is not None
+    digest = digest_match.group(1).decode("ascii")
+
+    cache = tmp_path / "cache"
+    install_root = cache / "gh-slate-extension-v2"
+    install_root.mkdir(parents=True)
+    install = install_root / f"{VERSION}-{digest}"
+    install.symlink_to(install_root / "missing-stage")
+    environment = os.environ.copy()
+    environment["HOME"] = str(tmp_path / "home")
+    environment["XDG_CACHE_HOME"] = str(cache)
+    (tmp_path / "home").mkdir()
+
+    def invoke() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [assets[0], "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+            timeout=20,
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = tuple(executor.map(lambda _index: invoke(), range(8)))
+
+    assert all(result.returncode == 0 for result in results)
+    assert all(result.stdout == "gh slate test\n" for result in results)
+    assert all(result.stderr == "" for result in results)
+    assert install.is_symlink()
+    published_stage = install.resolve()
+    assert (published_stage / ".ready").is_file()
+    recovery = Path(f"{install}.recover")
+    assert recovery.is_symlink()
+    assert recovery.resolve() == published_stage
+    private_stages = tuple(
+        path.resolve()
+        for path in install_root.iterdir()
+        if path.name.startswith(f".{VERSION}-{digest}.stage.") and path.is_dir()
+    )
+    assert private_stages == (published_stage,)
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="the self-extracting extension assets require Bash and Unix symlinks",
+)
+def test_extension_asset_finishes_a_previously_elected_recovery(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    assets = release_verify.build_extension_assets(
+        project,
+        tmp_path / "assets",
+        version=VERSION,
+    )
+    content = assets[0].read_bytes()
+    digest_match = re.search(
+        rb"(?m)^payload_sha256=([0-9a-f]{64})$",
+        content[:4096],
+    )
+    assert digest_match is not None
+    digest = digest_match.group(1).decode("ascii")
+
+    cache = tmp_path / "cache"
+    environment = os.environ.copy()
+    environment["HOME"] = str(tmp_path / "home")
+    environment["XDG_CACHE_HOME"] = str(cache)
+    (tmp_path / "home").mkdir()
+    initial = subprocess.run(
+        [assets[0], "--version"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=15,
+    )
+    assert initial.returncode == 0, initial.stderr
+
+    install_root = cache / "gh-slate-extension-v2"
+    install = install_root / f"{VERSION}-{digest}"
+    published_stage = install.resolve()
+    recovery = Path(f"{install}.recover")
+    recovery.symlink_to(published_stage)
+    install.unlink()
+    install.symlink_to(install_root / "missing-stage")
+
+    recovered = subprocess.run(
+        [assets[0], "--version"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=15,
+    )
+
+    assert recovered.returncode == 0, recovered.stderr
+    assert recovered.stdout == "gh slate test\n"
+    assert recovered.stderr == ""
+    assert install.resolve() == published_stage
+    assert recovery.resolve() == published_stage
+    private_stages = tuple(
+        path.resolve()
+        for path in install_root.iterdir()
+        if path.name.startswith(f".{VERSION}-{digest}.stage.") and path.is_dir()
+    )
+    assert private_stages == (published_stage,)
 
 
 @pytest.mark.skipif(
