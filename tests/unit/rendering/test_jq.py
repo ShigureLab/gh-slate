@@ -481,6 +481,34 @@ def test_worker_result_count_is_bounded_by_the_requested_limit(monkeypatch: pyte
     assert caught.value.code == "jq_result_limit"
 
 
+def test_worker_response_preserves_codec_valid_long_result_keys() -> None:
+    key = "k" * 65
+
+    result = select_one({key: "value"}, ".")
+
+    assert result == MappingProxyType({key: "value"})
+
+
+def test_worker_response_still_rejects_a_long_extra_envelope_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = json.dumps(
+        {"ok": True, "results": [None], "x" * 65: True},
+        separators=(",", ":"),
+    ).encode()
+
+    def complete(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(command, 0, response, b"")
+
+    monkeypatch.setattr(subprocess, "run", complete)
+
+    with pytest.raises(RenderingError) as caught:
+        select_one(None, ".")
+
+    assert caught.value.code == "jq_worker_protocol"
+    assert caught.value.details["reason"] == "unexpected_success_fields"
+
+
 def test_worker_protocol_reserves_nodes_for_the_response_envelope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

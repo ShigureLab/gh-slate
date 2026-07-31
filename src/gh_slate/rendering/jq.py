@@ -350,7 +350,7 @@ def _decode_worker_response(
                 max_nodes=_PROTOCOL_MAX_NODES,
                 max_string_bytes=max(limits.max_output_bytes, 64),
                 max_number_chars=1024,
-                max_key_bytes=64,
+                max_key_bytes=DEFAULT_JSON_LIMITS.max_key_bytes,
             ),
         )
     except CodecError:
