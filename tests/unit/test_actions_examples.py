@@ -132,7 +132,7 @@ def test_event_payload_contract_reduces_and_renders(
 
     assert reduced.returncode == 0, reduced.stderr
     assert rendered.returncode == 0, rendered.stderr
-    assert "Unsafe \\| title &#96;is&#96; escaped" in rendered.stdout
+    assert "Unsafe &#124; title &#96;is&#96; escaped" in rendered.stdout
     assert json.loads(data.read_text(encoding="utf-8"))["kind"] == kind
 
 

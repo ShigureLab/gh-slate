@@ -1534,6 +1534,11 @@ Deliverables:
 
 Acceptance gates:
 
+- JSON diagnostics normalize finite float details through an exact decimal
+  representation and fall back to the original code/message/hints when details
+  are cyclic, non-finite, or otherwise unsupported;
+- repair and delete select the controller by immutable user ID, including after
+  a login rename;
 - repair restores only the visible projection and follows the documented
   functional revision rule;
 - delete cannot run without an exact name confirmation or `--yes`;

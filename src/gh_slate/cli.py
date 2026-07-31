@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
+from collections.abc import Mapping
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from gh_slate import __version__
@@ -11,6 +14,82 @@ from gh_slate.invocation import display_command
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+_MAX_ERROR_DETAIL_DEPTH = 64
+
+
+def _normalize_error_json(
+    value: object,
+    *,
+    depth: int = 0,
+    active: set[int] | None = None,
+) -> object:
+    if value is None or isinstance(value, (bool, str, int)):
+        return value
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise ValueError("non-finite Decimal in error details")
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("non-finite float in error details")
+        return Decimal(repr(value))
+    if not isinstance(value, (Mapping, list, tuple)):
+        raise TypeError("unsupported value in error details")
+    if depth > _MAX_ERROR_DETAIL_DEPTH:
+        raise ValueError("error details exceed the nesting limit")
+
+    ancestors = set() if active is None else active
+    identity = id(value)
+    if identity in ancestors:
+        raise ValueError("cycle in error details")
+    ancestors.add(identity)
+    try:
+        if isinstance(value, Mapping):
+            normalized: dict[str, object] = {}
+            for key, item in value.items():
+                if not isinstance(key, str):
+                    raise TypeError("error detail keys must be strings")
+                normalized[key] = _normalize_error_json(
+                    item,
+                    depth=depth + 1,
+                    active=ancestors,
+                )
+            return normalized
+        return [
+            _normalize_error_json(
+                item,
+                depth=depth + 1,
+                active=ancestors,
+            )
+            for item in value
+        ]
+    finally:
+        ancestors.remove(identity)
+
+
+def _minimal_error_json(error: GhSlateError) -> dict[str, object]:
+    code = error.code if isinstance(error.code, str) else "runtime_error"
+    message = error.message if isinstance(error.message, str) else "operation failed"
+    payload: dict[str, object] = {
+        "code": code,
+        "message": message,
+    }
+    if isinstance(error.hints, tuple):
+        hints = [hint for hint in error.hints if isinstance(hint, str)]
+        if hints:
+            payload["hints"] = hints
+    return {"error": payload}
+
+
+def _error_json_bytes(error: GhSlateError) -> bytes:
+    try:
+        return canonical_json_bytes(_normalize_error_json(error.as_dict()))
+    except Exception:
+        try:
+            return canonical_json_bytes(_minimal_error_json(error))
+        except Exception:  # pragma: no cover - immutable literal fallback
+            return b'{"error":{"code":"runtime_error","message":"operation failed"}}'
 
 
 def _positive_integer(value: str) -> int:
@@ -526,7 +605,7 @@ def run(argv: Sequence[str], *, prog: str | None = None) -> int:
         return int(handler(args))
     except GhSlateError as error:
         if getattr(args, "json", False):
-            sys.stderr.write(canonical_json_bytes(error.as_dict()).decode("utf-8") + "\n")
+            sys.stderr.write(_error_json_bytes(error).decode("utf-8") + "\n")
             return int(error.exit_code)
         for line in format_error(error):
             print(line, file=sys.stderr)

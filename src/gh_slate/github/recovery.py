@@ -9,6 +9,7 @@ from gh_slate.codec import validate_slate_name
 from gh_slate.codec.marker import encode_marker, parse_marker
 from gh_slate.errors import ExitCode, GhSlateError
 from gh_slate.github.apply import ApplyReadClient, ApplyRequest
+from gh_slate.github.models import GitHubActor
 from gh_slate.github.store import CommentStore
 from gh_slate.github.target import ResolvedTarget, target_from_comment_url
 from gh_slate.github.write import GhWriteOutcomeUnknown
@@ -203,28 +204,36 @@ class RecoveryResult:
         return value
 
 
-def _same_login(left: str, right: str) -> bool:
-    return left.casefold() == right.casefold()
-
-
 def _controller(
     reader: ApplyReadClient,
     target: ResolvedTarget,
     requested: str | None,
-) -> str:
+) -> GitHubActor:
     actor = reader.current_actor(target.host)
-    if not isinstance(actor, str) or not actor:
+    if not isinstance(actor, GitHubActor):
         raise RecoveryError(
-            "current GitHub actor lookup returned an invalid login",
+            "current GitHub actor lookup returned an invalid identity",
             code="github_response_invalid",
         )
-    if requested is not None and not _same_login(requested, actor):
-        raise _conflict(
-            "requested controller is not the current authenticated actor",
-            code="controller_conflict",
-            requested=requested,
-            current_actor=actor,
+    if requested is not None:
+        requested_actor = reader.resolve_actor(
+            requested,
+            target.host,
         )
+        if not isinstance(requested_actor, GitHubActor):
+            raise RecoveryError(
+                "requested GitHub controller lookup returned an invalid identity",
+                code="github_response_invalid",
+            )
+        if requested_actor.id != actor.id:
+            raise _conflict(
+                "requested controller is not the current authenticated actor",
+                code="controller_conflict",
+                requested=requested_actor.login,
+                requested_id=requested_actor.id,
+                current_actor=actor.login,
+                current_actor_id=actor.id,
+            )
     return actor
 
 
@@ -233,7 +242,7 @@ def _select_candidate(
     target: ResolvedTarget,
     *,
     name: str,
-    controller: str,
+    controller: GitHubActor,
     require_state: bool,
 ) -> SlateCandidate:
     candidates = store.candidates(
@@ -291,7 +300,7 @@ def _revalidate(
     target: ResolvedTarget,
     *,
     name: str,
-    controller: str,
+    controller: GitHubActor,
     initial: SlateCandidate,
     require_state: bool,
 ) -> SlateCandidate:
@@ -398,7 +407,7 @@ def _verify_repair(
     store: CommentStore,
     request: RepairRequest,
     *,
-    controller: str,
+    controller: GitHubActor,
     initial: SlateCandidate,
     intended_body: str,
     response_id: int | None,

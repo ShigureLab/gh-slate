@@ -12,6 +12,7 @@ from gh_slate.codec import (
 )
 from gh_slate.codec.marker import encode_marker, parse_marker
 from gh_slate.errors import ExitCode
+from gh_slate.github.models import GitHubActor
 from gh_slate.github.recovery import (
     DeleteRequest,
     RecoveryError,
@@ -44,13 +45,24 @@ WriteBehavior = Literal[
     "unknown-applied",
     "unknown-unapplied",
 ]
+ACTOR_ID = 101
+OTHER_ACTOR_ID = 202
 
 
-def _body(*, revision: int = 3, drifted: bool = False) -> str:
+def _body(
+    *,
+    revision: int = 3,
+    drifted: bool = False,
+    controller_login: str = "ci-bot",
+    controller_id: int | None = ACTOR_ID,
+) -> str:
     state = StateV1(
         name="ci",
         revision=revision,
-        controller=ControllerV1(login="ci-bot"),
+        controller=ControllerV1(
+            login=controller_login,
+            id=controller_id,
+        ),
         data={"status": "ready"},
         data_schema=None,
         renderer=ListRendererV1(selector=".").to_descriptor(),
@@ -88,12 +100,18 @@ def _corrupt_body() -> str:
     )
 
 
-def _record(body: str, *, identifier: int = 7) -> dict[str, object]:
+def _record(
+    body: str,
+    *,
+    identifier: int = 7,
+    author_login: str = "ci-bot",
+    author_id: int = ACTOR_ID,
+) -> dict[str, object]:
     return {
         "id": identifier,
         "body": body,
         "html_url": f"{TARGET_URL}#issuecomment-{identifier}",
-        "user": {"login": "ci-bot"},
+        "user": {"id": author_id, "login": author_login},
         "created_at": "2026-07-31T00:00:00Z",
         "updated_at": "2026-07-31T00:01:00Z",
     }
@@ -103,16 +121,27 @@ def _record(body: str, *, identifier: int = 7) -> dict[str, object]:
 class FakeGitHub:
     comments: list[dict[str, object]]
     behavior: WriteBehavior = "normal"
-    actor: str = "ci-bot"
+    actor_login: str = "ci-bot"
+    actor_id: int = ACTOR_ID
     before_comment_read: dict[int, Callable[[FakeGitHub], None]] = field(default_factory=dict)
     fail_comment_read: int | None = None
     comment_reads: int = 0
     read_calls: list[tuple[object, ...]] = field(default_factory=list)
     write_calls: list[tuple[object, ...]] = field(default_factory=list)
 
-    def current_actor(self, hostname: str | None = None) -> str:
+    def current_actor(self, hostname: str | None = None) -> GitHubActor:
         self.read_calls.append(("ACTOR", hostname))
-        return self.actor
+        return GitHubActor(id=self.actor_id, login=self.actor_login)
+
+    def resolve_actor(
+        self,
+        login: str,
+        hostname: str | None = None,
+    ) -> GitHubActor:
+        self.read_calls.append(("RESOLVE_ACTOR", login, hostname))
+        if login.casefold() == self.actor_login.casefold():
+            return GitHubActor(id=self.actor_id, login=self.actor_login)
+        return GitHubActor(id=OTHER_ACTOR_ID, login=login)
 
     def api_get(
         self,
@@ -248,6 +277,30 @@ def test_repair_of_an_intact_projection_is_unchanged_without_a_patch() -> None:
     assert result.action == "unchanged"
     assert remote.write_calls == []
     assert remote.comment_reads == 1
+
+
+def test_repair_selects_a_renamed_controller_by_stable_id() -> None:
+    original = _body(
+        drifted=True,
+        controller_login="old-login",
+    )
+    remote = FakeGitHub(
+        comments=[
+            _record(
+                original,
+                author_login="new-login",
+            )
+        ],
+        actor_login="new-login",
+    )
+
+    result = _repair(remote)
+
+    assert result.action == "repaired"
+    assert [call[0] for call in remote.write_calls] == ["PATCH"]
+    assert decode_comment(str(remote.comments[0]["body"])).state.controller == (
+        ControllerV1(login="old-login", id=ACTOR_ID)
+    )
 
 
 def test_repair_rejects_a_second_read_change_before_patching() -> None:

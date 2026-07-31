@@ -5,7 +5,7 @@ import os
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -44,6 +44,7 @@ def initialize_state(
     *,
     target_url: str,
     actor: str = "ci-bot",
+    actor_id: int = 101,
 ) -> None:
     parsed = urlsplit(target_url)
     parts = parsed.path.strip("/").split("/")
@@ -56,6 +57,7 @@ def initialize_state(
         path,
         {
             "actor": actor,
+            "actor_id": actor_id,
             "comments": [],
             "events": [],
             "faults": [],
@@ -229,7 +231,10 @@ def _comment_record(
         "html_url": f"{state['target_url']}#issuecomment-{identifier}",
         "id": identifier,
         "updated_at": "2026-07-31T00:00:00Z",
-        "user": {"login": state["actor"]},
+        "user": {
+            "id": state["actor_id"],
+            "login": state["actor"],
+        },
     }
 
 
@@ -257,7 +262,18 @@ def _perform_api(
 
     if method == "GET":
         if endpoint == "user":
-            return {"login": state["actor"]}
+            return {
+                "id": state["actor_id"],
+                "login": state["actor"],
+            }
+        if endpoint.startswith("users/"):
+            login = unquote(endpoint.removeprefix("users/"))
+            if login.casefold() != str(state["actor"]).casefold():
+                raise AssertionError(f"unexpected actor lookup: {login}")
+            return {
+                "id": state["actor_id"],
+                "login": state["actor"],
+            }
         if endpoint == f"repos/{repository}/issues/{number}":
             return {"html_url": state["target_url"]}
         if endpoint == comments_endpoint:
