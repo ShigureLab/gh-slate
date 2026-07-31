@@ -8,6 +8,7 @@ from jsonschema import Draft202012Validator, validators
 from gh_slate.schema.keywords import (
     additional_properties,
     bounded_keyword,
+    items,
     pattern,
     pattern_properties,
     unevaluated_properties,
@@ -153,6 +154,7 @@ _BOUNDED_VALIDATORS = {name: bounded_keyword(keyword) for name, keyword in Draft
 _BOUNDED_VALIDATORS.update(
     {
         "additionalProperties": additional_properties,
+        "items": items,
         "pattern": pattern,
         "patternProperties": pattern_properties,
         "unevaluatedProperties": unevaluated_properties,

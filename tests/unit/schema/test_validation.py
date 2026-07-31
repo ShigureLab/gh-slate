@@ -119,6 +119,59 @@ def test_schema_regex_format_uses_the_runtime_regex_dialect() -> None:
         validate_schema({"pattern": "["})
     assert invalid.value.code == "schema_invalid"
 
+    with pytest.raises(SchemaError) as python_escape:
+        validate_schema({"pattern": r"\a"})
+    assert python_escape.value.code == "schema_invalid"
+
+
+@pytest.mark.parametrize(
+    ("pattern", "accepted", "rejected"),
+    [
+        (r"^\d+$", "42", "٤٢"),
+        (r"^\D+$", "٤٢", "42"),
+        (r"^\w+$", "release_42", "猫"),
+        (r"^\W+$", "é猫", "release_42"),
+        (r"^\s$", "\ufeff", "\u0085"),
+        (r"^\S$", "\u0085", "\ufeff"),
+        (r"^.$", "a", "\u2028"),
+        (r"^abc$", "abc", "abc\n"),
+        (r"^\cC$", "\x03", r"\cC"),
+    ],
+)
+def test_ecmascript_regex_semantics(pattern: str, accepted: str, rejected: str) -> None:
+    schema = {"properties": {"value": {"type": "string", "pattern": pattern}}}
+
+    validate_schema(schema)
+    validate_data({"value": accepted}, schema)
+    with pytest.raises(SchemaError) as mismatch:
+        validate_data({"value": rejected}, schema)
+    assert mismatch.value.code == "schema_validation_failed"
+
+
+@pytest.mark.parametrize("pattern", [r"^[\d]+$", r"^[^\D]+$", r"^[\w]+$"])
+def test_ecmascript_shorthands_inside_character_classes(pattern: str) -> None:
+    schema = {"properties": {"value": {"type": "string", "pattern": pattern}}}
+
+    validate_data({"value": "42"}, schema)
+    with pytest.raises(SchemaError):
+        validate_data({"value": "٤٢"}, schema)
+
+
+def test_pattern_properties_use_ecmascript_ascii_shorthands() -> None:
+    schema = {
+        "type": "object",
+        "patternProperties": {r"^\d+$": True, r"^\w+-value$": True},
+        "additionalProperties": False,
+    }
+
+    validate_data({"42": None, "ascii-value": None}, schema)
+    with pytest.raises(SchemaError) as captured:
+        validate_data({"٤٢": None, "猫-value": None}, schema, max_errors=1)
+
+    assert captured.value.details["error_count"] == 1
+    assert captured.value.truncated is False
+    assert captured.value.diagnostics[0].keyword == "additionalProperties"
+
 
 def test_pattern_properties_and_unevaluated_properties_share_safe_matching() -> None:
     schema = {
@@ -185,6 +238,34 @@ def test_false_schema_rejects_object_data() -> None:
     assert captured.value.code == "schema_validation_failed"
     assert captured.value.diagnostics[0].data_pointer == ""
     assert captured.value.diagnostics[0].schema_pointer == ""
+
+
+def test_false_additional_properties_reports_the_parent_keyword_once() -> None:
+    with pytest.raises(SchemaError) as captured:
+        validate_data({"first": 1, "second": 2}, {"additionalProperties": False}, max_errors=1)
+
+    assert captured.value.details["error_count"] == 1
+    assert captured.value.truncated is False
+    assert [
+        (diagnostic.data_pointer, diagnostic.schema_pointer, diagnostic.keyword)
+        for diagnostic in captured.value.diagnostics
+    ] == [("", "/additionalProperties", "additionalProperties")]
+
+
+def test_false_items_reports_the_parent_keyword_once() -> None:
+    with pytest.raises(SchemaError) as captured:
+        validate_data(
+            {"values": [1, 2]},
+            {"properties": {"values": {"type": "array", "items": False}}},
+            max_errors=1,
+        )
+
+    assert captured.value.details["error_count"] == 1
+    assert captured.value.truncated is False
+    assert [
+        (diagnostic.data_pointer, diagnostic.schema_pointer, diagnostic.keyword)
+        for diagnostic in captured.value.diagnostics
+    ] == [("/values", "/properties/values/items", "items")]
 
 
 @pytest.mark.parametrize(

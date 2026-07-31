@@ -30,6 +30,7 @@ from gh_slate.schema._interop import (
     to_metaschema_value,
     to_validator_value,
 )
+from gh_slate.schema._markers import FalseSchema
 from gh_slate.schema.errors import SchemaDiagnostic, SchemaError
 from gh_slate.schema.keywords import (
     SchemaEvaluationLimitExceeded,
@@ -76,10 +77,6 @@ _REFERENCE_KEYWORDS = ("$dynamicRef", "$ref")
 
 _SCHEMA_FORMAT_CHECKER = FormatChecker()
 _SCHEMA_FORMAT_CHECKER.checks("regex")(is_supported_regex)
-
-
-class _FalseSchema(dict[str, object]):
-    """A unique runtime equivalent of one source ``false`` schema."""
 
 
 def _pointer(parts: Iterable[object]) -> tuple[str, bool]:
@@ -410,7 +407,7 @@ def _project_false_schemas(schema: object) -> object:
     """Give each boolean-false schema a unique identity for diagnostics."""
 
     if schema is False:
-        return _FalseSchema({"not": {}})
+        return FalseSchema({"not": {}})
     if schema is True or not isinstance(schema, Mapping):
         return schema
 
@@ -445,7 +442,7 @@ def _validation_diagnostic(
     *,
     schema_locations: Mapping[int, tuple[object, ...]],
 ) -> SchemaDiagnostic:
-    false_schema = isinstance(error.schema, _FalseSchema)
+    false_schema = isinstance(error.schema, FalseSchema)
     keyword = None if false_schema else (error.validator if isinstance(error.validator, str) else None)
     schema_path = tuple(error.absolute_schema_path)
     if isinstance(error.schema, Mapping):
