@@ -154,6 +154,19 @@ gh slate apply release-items --target https://github.com/OWNER/REPO/issues/42 --
 For a custom layout, pass trusted Jinja source. Template source is embedded in
 the state, so a later update does not depend on the original checkout:
 
+```jinja2
+## Deployment: {{ slate.name }}
+
+Target: [{{ slate.repository }}#{{ slate.number }}]({{ slate.url }})
+
+{{ data.checks | md_table(columns=["name", "status"]) }}
+{{ data.notes | md_list }}
+
+Metadata: `{{ data.metadata | compact_json }}`
+```
+
+Save that source as `deployment.md.j2`, then preview it against the real target:
+
 ```bash
 gh slate apply deployment --target https://github.com/OWNER/REPO/pull/42 --mode create --data deployment.json --schema deployment.schema.json --template deployment.md.j2 --dry-run
 ```
@@ -163,6 +176,13 @@ Remove `--dry-run` only after reviewing the rendered Markdown. Pure
 references `slate.repository`, `slate.number`, or `slate.url`, use the
 target-aware `apply --dry-run` form above so size and branch checks use the real
 Issue or Pull Request context.
+
+Templates receive only the canonical typed `data` object and `slate.name`,
+`slate.repository`, `slate.number`, and `slate.url`. JSON scalars interpolate
+directly. Objects and arrays must use the deterministic `md_table`, `md_list`,
+or `compact_json` filters shown above; arbitrary calls, imports, includes,
+filesystem access, environment variables, and default Jinja globals are not
+available.
 
 ### Add or change a JSON Schema
 
@@ -188,12 +208,17 @@ gh slate data get ci-summary '.jobs[] | select(.status != "passed") | .name' --t
 ```
 
 First inspect the slate with `view --json`. If it reports revision `1`, choose
-one of these writes: mutate one static path, or transform the complete data
-object with jq. Both pin the observed revision and reject an already-stale read:
+one of these writes: mutate one static path, delete paths, or transform the
+complete data object with jq. Each example below is an alternative write from
+revision `1`; all pin that observation and reject an already-stale read:
 
 ```bash
 gh slate data set ci-summary '.jobs[1].status' --target https://github.com/OWNER/REPO/issues/42 --value-string passed --if-revision 1 --json
+gh slate data set ci-summary '.coverage' --target https://github.com/OWNER/REPO/issues/42 --value 91.7 --if-revision 1 --json
+gh slate data set ci-summary '.jobs[1]' --target https://github.com/OWNER/REPO/issues/42 --value-file windows-result.json --if-revision 1 --json
+gh slate data delete ci-summary '.legacy' '.jobs[2]' --target https://github.com/OWNER/REPO/issues/42 --if-revision 1 --json
 gh slate data update ci-summary '.jobs |= map(if .name == $name then .status = "passed" else . end)' --target https://github.com/OWNER/REPO/issues/42 --arg name windows --if-revision 1 --json
+gh slate data update ci-summary '.jobs[$index] = $result' --target https://github.com/OWNER/REPO/issues/42 --argjson index 1 --argjson result @windows-result.json --if-revision 1 --json
 ```
 
 `data set` and `data delete` accept static jq-compatible paths such as
@@ -201,6 +226,13 @@ gh slate data update ci-summary '.jobs |= map(if .name == $name then .status = "
 the current data, arithmetic, a pipe, or interpolation; use `data update` for
 computed transforms. This keeps path selection independent of jq's IEEE-754
 number projection while untouched JSON numbers remain exact.
+
+Value sources are explicit and mutually exclusive: `--value` parses one strict
+JSON value, `--value-string` stores exact text, and `--value-file` parses one
+JSON document, so `91`, `"91"`, `true`, and `"true"` remain distinct. For
+`data update`, `--arg` binds text while `--argjson` binds typed JSON; prefix its
+value with `@` to load a JSON file. Deleting an absent path is an error unless
+`--ignore-missing` is requested.
 
 For an interactive typed edit, set `GH_EDITOR`, `GIT_EDITOR`, `VISUAL`, or
 `EDITOR`, then run:
@@ -233,6 +265,29 @@ non-interactive confirmation:
 gh slate delete ci-summary --target https://github.com/OWNER/REPO/issues/42 --confirm ci-summary --json
 gh slate delete ci-summary --target https://github.com/OWNER/REPO/issues/42 --yes --quiet
 ```
+
+### Recover an interrupted or ambiguous write
+
+Mutating commands perform at most one remote write. If the response or
+verification handoff is interrupted, gh-slate does a read-only refetch instead
+of replaying that write. When the intended revision is found and verified, the
+JSON result reports `"recovered": true`; treat that as a successful observed
+write.
+
+If the command still fails with `write_outcome_unknown`,
+`repair_outcome_unknown`, or `delete_outcome_unknown`, do not blindly retry.
+Observe the target first, then decide from the newly reported state and
+revision:
+
+```bash
+gh slate list --target https://github.com/OWNER/REPO/issues/42 --json
+gh slate view ci-summary --target https://github.com/OWNER/REPO/issues/42 --json
+gh slate state verify ci-summary --target https://github.com/OWNER/REPO/issues/42 --json
+```
+
+If the intended state is already present, stop. Otherwise refetch, choose the
+next operation from the current revision, and use that new value with
+`--if-revision`; never replay a mutation pinned to the old observation.
 
 ## State and safety model
 
