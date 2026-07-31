@@ -828,6 +828,43 @@ def test_release_workflow_tests_before_build_and_never_rebuilds_downstream() -> 
     assert gate["permissions"] == {"contents": "read"}
 
 
+def test_release_workflow_requires_trusted_provenance_and_a_protected_environment() -> None:
+    workflow = _workflow()
+    jobs = workflow["jobs"]
+    provenance = jobs["release-provenance"]
+    gate = jobs["release-gate"]
+
+    assert provenance["permissions"] == {"contents": "read"}
+    checkout = next(step for step in provenance["steps"] if step.get("uses") == "actions/checkout@v7")
+    assert checkout["with"] == {
+        "ref": "${{ github.event.repository.default_branch }}",
+        "fetch-depth": "0",
+        "persist-credentials": "false",
+    }
+    provenance_text = _run_text(provenance)
+    assert 'git merge-base --is-ancestor "${GITHUB_SHA}" "${default_ref}"' in provenance_text
+    assert gate["needs"] == "release-provenance"
+
+    for name in (
+        "release-gate",
+        "stage-release",
+        "publish-pypi",
+        "publish-release",
+    ):
+        assert jobs[name]["environment"] == "gh-slate-release"
+
+    testing_guide = (ROOT / "docs" / "testing.md").read_text(encoding="utf-8")
+    for required in (
+        "require at least one release-maintainer reviewer",
+        "self-review",
+        "environment secrets",
+        "tag ruleset",
+        "PyPI Trusted Publisher",
+        "default-branch ancestry",
+    ):
+        assert required in testing_guide
+
+
 def test_release_workflow_consumes_one_verified_set_in_safe_order() -> None:
     workflow = _workflow()
     jobs = workflow["jobs"]

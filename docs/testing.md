@@ -69,7 +69,30 @@ compatibility.
 
 ## Tagged release gate
 
-The tagged workflow uses a dedicated `GH_SLATE_LIVE_TOKEN` repository secret,
+Before pushing any `v*` tag, an administrator must create a
+`gh-slate-release` GitHub Environment and make it the release trust boundary:
+
+- require at least one release-maintainer reviewer and enable prevention of
+  self-review;
+- restrict deployments to the repository's protected release tags, backed by
+  a tag ruleset that prevents ordinary contributors from creating, moving, or
+  deleting `v*` tags;
+- store `GH_SLATE_LIVE_TOKEN`,
+  `GH_SLATE_LIVE_DISPOSABLE_ISSUE_URL`,
+  `GH_SLATE_LIVE_DISPOSABLE_PR_URL`, and
+  `GH_SLATE_RELEASE_ADMIN_TOKEN` only as environment secrets. Do not retain
+  repository- or organization-level copies that a tag workflow could request
+  without the environment;
+- configure the PyPI Trusted Publisher to require the exact
+  `gh-slate-release` environment.
+
+The workflow's default-branch ancestry job catches accidental unmerged tags,
+but is defense in depth only: a tag can contain a modified workflow. Required
+environment review, environment-only credentials, the PyPI environment claim,
+and the external tag ruleset are the actual security boundaries. Until all of
+them are configured, do not push a release tag.
+
+The tagged workflow uses a dedicated `GH_SLATE_LIVE_TOKEN` environment secret,
 not the workflow repository's scoped `GITHUB_TOKEN`. Scope that secret only to
 the disposable test repository, give it read access plus Issue/Pull Request
 comment write access, and set
@@ -80,8 +103,8 @@ secret or either missing target fails before the live harness starts.
 The current remote extension smoke stages the verified assets as a visible
 prerelease, installs the exact platform asset with `gh extension install`, and
 promotes that same release only after the remaining gates pass. The workflow
-therefore uses a separate `GH_SLATE_RELEASE_ADMIN_TOKEN` secret with only
-Administration (read) access to query the workflow repository's
+therefore uses a separate `GH_SLATE_RELEASE_ADMIN_TOKEN` environment secret
+with only Administration (read) access to query the workflow repository's
 immutable-release setting. It fails closed when that secret is absent, the
 setting cannot be read, or immutable releases are enabled or enforced by the
 owner. Publishing an immutable stable release requires a future separate

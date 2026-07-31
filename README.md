@@ -297,6 +297,11 @@ live targets and their dedicated least-privilege token, installs the bundled
 skill, stages and remotely installs the verified extension asset, publishes
 the verified Python artifacts, and only then promotes the GitHub Release to
 stable. Direct `just publish` is disabled so it cannot bypass this ordering.
+All release credentials must be scoped only to a protected
+`gh-slate-release` Environment with required reviewers and self-review
+disabled; the PyPI Trusted Publisher and protected `v*` tag ruleset must use
+the same trust boundary. A workflow-local ancestry check is only defense in
+depth because a tag can carry a modified workflow.
 The staged-promotion workflow fails closed if repository or organization
 immutable releases are enabled; see [testing](docs/testing.md) for the release
 secret and staging constraints.
