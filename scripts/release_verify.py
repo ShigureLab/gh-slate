@@ -509,7 +509,8 @@ if [[ ! -f "${{ready_file}}" ]]; then
   exit 1
 fi
 
-exec "${{install_dir}}/gh-slate" "$@"
+resolved_install_dir="$(cd -- "${{install_dir}}" && pwd -P)"
+exec "${{resolved_install_dir}}/gh-slate" "$@"
 """
     return text.encode("ascii")
 

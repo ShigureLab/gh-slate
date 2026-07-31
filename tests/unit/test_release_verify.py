@@ -263,6 +263,7 @@ def test_extension_assets_are_exact_executable_self_extracting_bundles(
     assert b"mktemp -d" in content[:4096]
     assert b'payload_file="${stage_dir}/.payload"' in content[:4096]
     assert b'ln -sn "${stage_dir}" "${install_dir}"' in content[:4096]
+    assert b"pwd -P)" in content[:4096]
     if os.name != "nt":
         assert all(path.stat().st_mode & stat.S_IXUSR for path in assets)
 
