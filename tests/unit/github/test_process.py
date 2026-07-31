@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -18,6 +19,7 @@ from gh_slate.github.process import (
     GhProcess,
     ProcessResult,
     SubprocessRunner,
+    _kill_process_tree,
 )
 
 
@@ -296,6 +298,8 @@ def test_default_runner_never_uses_a_shell_and_inherits_environment(
     assert captured["stdout"] == subprocess.PIPE
     assert captured["stderr"] == subprocess.PIPE
     assert captured["timeout"] == 1.5
+    assert captured["start_new_session"] is (os.name != "nt")
+    assert captured["creationflags"] == (subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0)
     environment = cast("dict[str, str]", captured["env"])
     assert environment["HTTPS_PROXY"] == "http://proxy.example"
     assert environment["GH_TOKEN"] == "inherited-token"
@@ -336,6 +340,65 @@ def test_default_runner_uses_implicit_environment_without_hostname(
     assert captured["env"] is None
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups are unavailable on Windows")
+def test_process_tree_kill_uses_a_posix_process_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[int, signal.Signals]] = []
+
+    class Process:
+        pid = 123
+        killed = False
+
+        def kill(self) -> None:
+            self.killed = True
+
+    process = Process()
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: calls.append((pid, sig)))
+
+    _kill_process_tree(cast("subprocess.Popen[bytes]", process), platform="posix")
+
+    assert calls == [(123, signal.SIGKILL)]
+    assert process.killed is True
+
+
+def test_process_tree_kill_uses_absolute_windows_taskkill(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class Process:
+        pid = 456
+        killed = False
+
+        def kill(self) -> None:
+            self.killed = True
+
+    def run(command: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        captured["command"] = command
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(command, 0)
+
+    process = Process()
+    monkeypatch.setattr(subprocess, "run", run)
+
+    _kill_process_tree(
+        cast("subprocess.Popen[bytes]", process),
+        platform="nt",
+        environment={"SystemRoot": r"C:\Windows"},
+    )
+
+    assert captured["command"] == (
+        r"C:\Windows\System32\taskkill.exe",
+        "/PID",
+        "456",
+        "/T",
+        "/F",
+    )
+    assert captured["stdin"] is subprocess.DEVNULL
+    assert captured["stdout"] is subprocess.DEVNULL
+    assert captured["stderr"] is subprocess.DEVNULL
+    assert captured["timeout"] == 1.0
+    assert captured["check"] is False
+    assert process.killed is True
+
+
 @pytest.mark.parametrize(
     ("descriptor", "stream"),
     [(1, "stdout"), (2, "stderr")],
@@ -359,6 +422,40 @@ def test_default_runner_kills_process_as_soon_as_a_stream_exceeds_its_limit(
     )
 
     assert len(getattr(result, stream)) == 1025
+    assert time.monotonic() - started < 3
+
+
+def test_default_runner_timeout_terminates_children_that_inherit_output_pipes() -> None:
+    parent = (
+        "import subprocess,sys,time;subprocess.Popen([sys.executable,'-c','import time;time.sleep(10)']);time.sleep(10)"
+    )
+    started = time.monotonic()
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        SubprocessRunner().run(
+            (sys.executable, "-c", parent),
+            timeout=0.2,
+            hostname=None,
+            max_stdout_bytes=1024,
+            max_stderr_bytes=1024,
+        )
+
+    assert time.monotonic() - started < 3
+
+
+def test_default_runner_bounds_reader_joins_after_parent_exits() -> None:
+    parent = "import subprocess,sys;subprocess.Popen([sys.executable,'-c','import time;time.sleep(10)'])"
+    started = time.monotonic()
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        SubprocessRunner().run(
+            (sys.executable, "-c", parent),
+            timeout=0.2,
+            hostname=None,
+            max_stdout_bytes=1024,
+            max_stderr_bytes=1024,
+        )
+
     assert time.monotonic() - started < 3
 
 

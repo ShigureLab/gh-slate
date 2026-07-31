@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import ntpath
 import os
+import signal
 import subprocess
 import threading
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from decimal import Decimal
@@ -32,6 +35,47 @@ class GhProcessLimits:
 
 
 DEFAULT_GH_PROCESS_LIMITS = GhProcessLimits()
+_PROCESS_CLEANUP_TIMEOUT_SECONDS = 1.0
+_PROCESS_START_NEW_SESSION = os.name != "nt"
+_PROCESS_CREATIONFLAGS = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+
+
+def _kill_process_tree(
+    process: subprocess.Popen[bytes],
+    *,
+    platform: str = os.name,
+    environment: Mapping[str, str] = os.environ,
+) -> None:
+    if platform == "nt":
+        system_root = environment.get("SystemRoot")
+        try:
+            if system_root is None:
+                raise OSError("SystemRoot is unavailable")
+            subprocess.run(
+                (
+                    ntpath.join(system_root, "System32", "taskkill.exe"),
+                    "/PID",
+                    str(process.pid),
+                    "/T",
+                    "/F",
+                ),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=_PROCESS_CLEANUP_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
+    try:
+        process.kill()
+    except (OSError, ProcessLookupError):
+        pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +121,8 @@ class SubprocessRunner:
             stderr=subprocess.PIPE,
             shell=False,
             env=environment,
+            start_new_session=_PROCESS_START_NEW_SESSION,
+            creationflags=_PROCESS_CREATIONFLAGS,
         )
         if process.stdout is None or process.stderr is None:  # pragma: no cover
             process.kill()
@@ -90,10 +136,18 @@ class SubprocessRunner:
 
         def kill() -> None:
             with kill_lock:
-                try:
-                    process.kill()
-                except (OSError, ProcessLookupError):
-                    pass
+                _kill_process_tree(process)
+
+        def reap() -> None:
+            try:
+                process.wait(timeout=_PROCESS_CLEANUP_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                pass
+
+        def join_readers(deadline: float) -> bool:
+            for reader in readers:
+                reader.join(timeout=max(0.0, deadline - time.monotonic()))
+            return not any(reader.is_alive() for reader in readers)
 
         def read_bounded(
             pipe: BinaryIO,
@@ -123,27 +177,30 @@ class SubprocessRunner:
             threading.Thread(
                 target=read_bounded,
                 args=(process.stdout, stdout, max_stdout_bytes),
-                daemon=False,
+                daemon=True,
             ),
             threading.Thread(
                 target=read_bounded,
                 args=(process.stderr, stderr, max_stderr_bytes),
-                daemon=False,
+                daemon=True,
             ),
         )
         for reader in readers:
             reader.start()
 
+        deadline = time.monotonic() + timeout
         try:
             returncode = process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             kill()
-            process.wait()
-            for reader in readers:
-                reader.join()
+            reap()
+            join_readers(time.monotonic() + _PROCESS_CLEANUP_TIMEOUT_SECONDS)
             raise
-        for reader in readers:
-            reader.join()
+        if not join_readers(deadline):
+            kill()
+            reap()
+            join_readers(time.monotonic() + _PROCESS_CLEANUP_TIMEOUT_SECONDS)
+            raise subprocess.TimeoutExpired(cmd=argv, timeout=timeout)
         if reader_errors:
             raise OSError("failed while reading GitHub CLI output") from reader_errors[0]
         return ProcessResult(
