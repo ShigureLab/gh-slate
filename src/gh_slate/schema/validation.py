@@ -160,20 +160,27 @@ def _snapshot(document: bool | Mapping[str, object], *, dialect: str) -> SchemaS
         ) from None
 
 
+def _schema_size_error(error: CodecError, *, schema_bytes: int | None = None) -> SchemaError:
+    details: dict[str, object] = {
+        "cause_code": error.code,
+        "max_schema_bytes": DEFAULT_CODEC_LIMITS.max_schema_bytes,
+    }
+    if schema_bytes is not None:
+        details["schema_bytes"] = schema_bytes
+    return SchemaError(
+        "schema exceeds the local snapshot size limit",
+        code="schema_size_limit",
+        details=details,
+    )
+
+
 def _enforce_schema_size(snapshot: SchemaSnapshotV1) -> None:
-    schema_bytes = len(canonical_json_bytes(snapshot.to_json()))
+    schema_bytes: int | None = None
     try:
+        schema_bytes = len(canonical_json_bytes(snapshot.to_json()))
         enforce_size_limits(SizeReport(schema_bytes=schema_bytes))
     except CodecError as error:
-        raise SchemaError(
-            "schema exceeds the local snapshot size limit",
-            code="schema_size_limit",
-            details={
-                "cause_code": error.code,
-                "schema_bytes": schema_bytes,
-                "max_schema_bytes": DEFAULT_CODEC_LIMITS.max_schema_bytes,
-            },
-        ) from None
+        raise _schema_size_error(error, schema_bytes=schema_bytes) from None
 
 
 def _check_dialect(snapshot: SchemaSnapshotV1) -> None:

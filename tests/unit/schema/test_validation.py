@@ -6,6 +6,7 @@ from typing import cast
 
 import pytest
 
+from gh_slate.codec.json import DEFAULT_JSON_LIMITS
 from gh_slate.codec.model import JSON_SCHEMA_DIALECT_2020_12, SchemaSnapshotV1
 from gh_slate.schema.errors import SchemaError
 from gh_slate.schema.validation import (
@@ -468,6 +469,20 @@ def test_schema_and_data_sizes_are_bounded_before_evaluation() -> None:
     with pytest.raises(SchemaError) as data_error:
         validate_data({"value": "x" * (192 * 1024)}, True)
     assert data_error.value.code == "schema_data_size_limit"
+
+
+def test_schema_snapshot_envelope_node_limit_is_normalized() -> None:
+    document = {
+        "enum": [[] for _ in range(DEFAULT_JSON_LIMITS.max_nodes - 2)],
+    }
+
+    with pytest.raises(SchemaError) as captured:
+        validate_schema(document)
+
+    assert captured.value.code == "schema_size_limit"
+    assert captured.value.details["cause_code"] == "json_limit_exceeded"
+    assert captured.value.details["max_schema_bytes"] == 64 * 1024
+    assert "schema_bytes" not in captured.value.details
 
 
 @pytest.mark.parametrize("max_errors", [0, -1, True, cast("int", 1.5)])

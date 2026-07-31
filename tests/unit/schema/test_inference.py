@@ -265,3 +265,16 @@ def test_inference_rejects_a_generated_schema_above_the_component_limit() -> Non
     assert caught.value.code == "schema_size_limit"
     assert schema_bytes > max_schema_bytes
     assert max_schema_bytes == 64 * 1024
+
+
+@pytest.mark.parametrize("property_count", [33_332, 33_333])
+def test_inference_normalizes_generated_schema_node_limits(property_count: int) -> None:
+    data = {f"k{index}": {} for index in range(property_count)}
+
+    with pytest.raises(SchemaError) as caught:
+        infer_schema(data)
+
+    assert caught.value.code == "schema_size_limit"
+    assert caught.value.details["cause_code"] == "json_limit_exceeded"
+    assert caught.value.details["max_schema_bytes"] == 64 * 1024
+    assert "schema_bytes" not in caught.value.details

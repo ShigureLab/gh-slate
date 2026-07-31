@@ -12,7 +12,7 @@ from gh_slate.codec.model import (
     SchemaSnapshotV1,
 )
 from gh_slate.schema.errors import SchemaError
-from gh_slate.schema.validation import _enforce_schema_size
+from gh_slate.schema.validation import _enforce_schema_size, _schema_size_error
 
 _JsonType: TypeAlias = Literal[
     "null",
@@ -135,10 +135,13 @@ def infer_schema(data: object) -> SchemaSnapshotV1:
         "$schema": JSON_SCHEMA_DIALECT_2020_12,
         **_schema_for(root),
     }
-    snapshot = SchemaSnapshotV1(
-        dialect=JSON_SCHEMA_DIALECT_2020_12,
-        document=document,
-    )
+    try:
+        snapshot = SchemaSnapshotV1(
+            dialect=JSON_SCHEMA_DIALECT_2020_12,
+            document=document,
+        )
+    except CodecError as error:
+        raise _schema_size_error(error) from None
     _enforce_schema_size(snapshot)
     return snapshot
 
