@@ -292,7 +292,28 @@ def test_set_path_supports_root_replace_and_reuses_equal_values() -> None:
     data = freeze_json({"value": 1})
 
     assert set_path(data, (), {"replacement": True}) == {"replacement": True}
+    assert set_path(data, (), {"value": Decimal(1)}) is data
     assert set_path(data, ("value",), Decimal(1)) is data
+
+
+def test_set_path_distinguishes_json_booleans_from_numbers() -> None:
+    assert set_path(Decimal(1), (), True) is True
+
+    object_data = freeze_json({"value": Decimal(1)})
+    updated_object = set_path(object_data, ("value",), True)
+    assert updated_object is not object_data
+    assert isinstance(updated_object, Mapping)
+    updated_object_mapping = cast("Mapping[str, JsonValue]", updated_object)
+    assert updated_object_mapping["value"] is True
+
+    array_data = freeze_json({"values": [Decimal(0)]})
+    updated_array = set_path(array_data, ("values", 0), False)
+    assert updated_array is not array_data
+    assert isinstance(updated_array, Mapping)
+    updated_array_mapping = cast("Mapping[str, JsonValue]", updated_array)
+    values = updated_array_mapping["values"]
+    assert isinstance(values, tuple)
+    assert values[0] is False
 
 
 def test_delete_paths_uses_original_array_indexes_and_shares_untouched_subtrees() -> None:

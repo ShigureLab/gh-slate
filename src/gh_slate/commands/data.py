@@ -229,7 +229,7 @@ def _unsafe_jq_integer_path(
     path: tuple[str | int, ...] = (),
 ) -> tuple[str | int, ...] | None:
     if isinstance(value, Decimal):
-        if value == value.to_integral_value() and abs(value) > _JQ_SAFE_INTEGER_MAX:
+        if value == value.to_integral_value() and value.copy_abs() > _JQ_SAFE_INTEGER_MAX:
             return path
         return None
     if isinstance(value, Mapping):

@@ -598,6 +598,11 @@ def test_data_update_rejects_invalid_root_results_without_writing(
             1,
         ),
         (
+            {"exact": Decimal("1e999999999999999999")},
+            ".",
+            1,
+        ),
+        (
             {"safe": Decimal(1)},
             ".generated = 9007199254740993",
             0,

@@ -366,6 +366,31 @@ def get_path(data: JsonValue, path: Sequence[object]) -> JsonValue:
     return current
 
 
+def _json_equal(left: JsonValue, right: JsonValue) -> bool:
+    if left is None or right is None:
+        return left is right
+    if isinstance(left, bool) or isinstance(right, bool):
+        return isinstance(left, bool) and isinstance(right, bool) and left is right
+    if isinstance(left, Decimal) or isinstance(right, Decimal):
+        return isinstance(left, Decimal) and isinstance(right, Decimal) and left == right
+    if isinstance(left, str) or isinstance(right, str):
+        return isinstance(left, str) and isinstance(right, str) and left == right
+    if isinstance(left, Mapping) or isinstance(right, Mapping):
+        if not isinstance(left, Mapping) or not isinstance(right, Mapping) or left.keys() != right.keys():
+            return False
+        left_object = cast("Mapping[str, JsonValue]", left)
+        right_object = cast("Mapping[str, JsonValue]", right)
+        return all(_json_equal(left_object[key], right_object[key]) for key in left_object)
+    if isinstance(left, tuple) or isinstance(right, tuple):
+        return (
+            isinstance(left, tuple)
+            and isinstance(right, tuple)
+            and len(left) == len(right)
+            and all(_json_equal(left_item, right_item) for left_item, right_item in zip(left, right, strict=True))
+        )
+    return False
+
+
 def set_path(
     data: JsonValue,
     path: Sequence[object],
@@ -381,7 +406,7 @@ def set_path(
     normalized = _normalize_path(path)
     replacement = freeze_json(value)
     if not normalized:
-        return data if replacement == data else replacement
+        return data if _json_equal(replacement, data) else replacement
 
     def replace(current: JsonValue, position: int) -> JsonValue:
         segment = normalized[position]
@@ -394,7 +419,10 @@ def set_path(
             current_object = cast("Mapping[str, JsonValue]", current)
             if final:
                 previous: JsonValue | object = current_object[segment] if segment in current_object else _MISSING
-                if previous is not _MISSING and previous == replacement:
+                if previous is not _MISSING and _json_equal(
+                    cast("JsonValue", previous),
+                    replacement,
+                ):
                     return current
                 updated = dict(current_object)
                 updated[segment] = replacement
@@ -414,7 +442,7 @@ def set_path(
             raise _type_mismatch(position, segment, current)
         child = cast("JsonValue", current[segment]) if segment < len(current) else None
         updated_child = replacement if final else replace(child, position + 1)
-        if segment < len(current) and updated_child == child:
+        if segment < len(current) and _json_equal(updated_child, child):
             return current
         updated_array = list(current)
         updated_array.extend(None for _ in range(segment + 1 - len(updated_array)))
