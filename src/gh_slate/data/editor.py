@@ -10,7 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Protocol
 
-from gh_slate.codec.json import DEFAULT_JSON_LIMITS, JsonValue, strict_loads
+from gh_slate.codec.json import DEFAULT_JSON_LIMITS, JsonValue, canonical_json_bytes, strict_loads
 from gh_slate.data.errors import DataError
 from gh_slate.data.output import pretty_json
 from gh_slate.errors import GhSlateError
@@ -258,12 +258,18 @@ def edit_json(
     run_editor = _default_runner if runner is None else runner
     initial = f"{pretty_json(value)}\n".encode("utf-8", errors="strict")
     if len(initial) > max_bytes:
-        raise _editor_error(
-            "JSON exceeds the configured editor byte limit",
-            code="data_input_size_limit",
-            actual_bytes=len(initial),
-            max_bytes=max_bytes,
-        )
+        # Pretty indentation can expand valid, deeply nested state far beyond
+        # its canonical component size. Fall back to the same deterministic
+        # compact JSON used on the wire so every valid stored value remains
+        # editable within the input budget.
+        initial = canonical_json_bytes(value) + b"\n"
+        if len(initial) > max_bytes:
+            raise _editor_error(
+                "JSON exceeds the configured editor byte limit",
+                code="data_input_size_limit",
+                actual_bytes=len(initial),
+                max_bytes=max_bytes,
+            )
 
     with _temporary_editor_file(initial) as path:
         attempt = 0

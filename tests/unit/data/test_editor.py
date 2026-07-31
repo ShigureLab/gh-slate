@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 
+from gh_slate.codec import canonical_json_bytes, strict_loads
 from gh_slate.codec.errors import CodecError
 from gh_slate.data import DataError, edit_json, editor as editor_module, select_editor
 
@@ -111,6 +112,26 @@ def test_edit_json_passes_an_argv_array_and_validates_result() -> None:
     assert observed["initial"] == '{\n  "a": 2,\n  "z": 1\n}\n'
     assert result == {"updated": True, "count": 2}
     assert validated == [result]
+
+
+def test_edit_json_falls_back_to_compact_json_when_pretty_output_exceeds_limit() -> None:
+    value = {"items": list(range(64))}
+    compact = canonical_json_bytes(value) + b"\n"
+    observed: list[bytes] = []
+
+    def runner(argv: Sequence[str]) -> int:
+        observed.append(Path(argv[-1]).read_bytes())
+        return 0
+
+    result = edit_json(
+        value,
+        editor=("fake-editor",),
+        runner=runner,
+        max_bytes=len(compact),
+    )
+
+    assert observed == [compact]
+    assert result == strict_loads(compact)
 
 
 def test_edit_json_reopens_same_file_after_parse_error_when_callback_retries() -> None:
