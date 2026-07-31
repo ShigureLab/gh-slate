@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from types import MappingProxyType
 from typing import Protocol, TypeAlias, cast
 
-from gh_slate.codec.json import DEFAULT_JSON_LIMITS, JsonValue, freeze_json
+from gh_slate.codec.json import (
+    DEFAULT_JSON_LIMITS,
+    JsonValue,
+    freeze_json,
+    strict_loads,
+)
 from gh_slate.data.errors import DataError
 from gh_slate.errors import GhSlateError
 
@@ -13,6 +19,8 @@ PathSegment: TypeAlias = str | int
 JsonPath: TypeAlias = tuple[PathSegment, ...]
 MAX_PATH_SEGMENTS = DEFAULT_JSON_LIMITS.max_depth + 1
 MAX_ARRAY_INDEX = DEFAULT_JSON_LIMITS.max_nodes - 1
+MAX_PATH_EXPRESSION_BYTES = 16 * 1024
+_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 class JqPathEvaluator(Protocol):
@@ -118,18 +126,123 @@ def _normalize_path(path: Sequence[object]) -> JsonPath:
     return tuple(normalized)
 
 
+def _dynamic_path(position: int) -> DataError:
+    return _path_error(
+        "data set/delete requires a static jq path",
+        code="data_path_dynamic",
+        position=position,
+    )
+
+
+def _skip_path_trivia(expression: str, position: int) -> int:
+    while position < len(expression):
+        while position < len(expression) and expression[position] in " \t\r\n":
+            position += 1
+        if position >= len(expression) or expression[position] != "#":
+            return position
+        newline = expression.find("\n", position + 1)
+        if newline < 0:
+            return len(expression)
+        position = newline + 1
+    return position
+
+
+def _parse_static_path(expression: str) -> JsonPath:
+    position = _skip_path_trivia(expression, 0)
+    if position >= len(expression):
+        raise _path_error(
+            "jq path expression must not be empty",
+            code="data_path_invalid",
+        )
+    if expression[position] != ".":
+        raise _dynamic_path(position)
+    position += 1
+    segments: list[PathSegment] = []
+
+    initial = _IDENTIFIER.match(expression, position)
+    if initial is not None:
+        segments.append(initial.group())
+        position = initial.end()
+
+    while True:
+        position = _skip_path_trivia(expression, position)
+        if position >= len(expression):
+            return _normalize_path(segments)
+
+        character = expression[position]
+        if character == ".":
+            if not segments:
+                raise _dynamic_path(position)
+            position += 1
+            identifier = _IDENTIFIER.match(expression, position)
+            if identifier is None:
+                raise _dynamic_path(position)
+            segments.append(identifier.group())
+            position = identifier.end()
+            continue
+
+        if character != "[":
+            raise _dynamic_path(position)
+        position = _skip_path_trivia(expression, position + 1)
+        if position >= len(expression):
+            raise _dynamic_path(position)
+
+        if expression[position] == '"':
+            start = position
+            position += 1
+            escaped = False
+            while position < len(expression):
+                current = expression[position]
+                if escaped:
+                    escaped = False
+                elif current == "\\":
+                    escaped = True
+                elif current == '"':
+                    break
+                position += 1
+            if position >= len(expression):
+                raise _dynamic_path(start)
+            token = expression[start : position + 1]
+            try:
+                key = strict_loads(token)
+            except GhSlateError:
+                raise _dynamic_path(start) from None
+            if not isinstance(key, str):  # pragma: no cover - strict JSON string
+                raise _dynamic_path(start)
+            segment: PathSegment = key
+            position += 1
+        elif expression[position].isascii() and expression[position].isdigit():
+            start = position
+            while position < len(expression) and expression[position].isascii() and expression[position].isdigit():
+                position += 1
+            digits = expression[start:position]
+            significant = digits.lstrip("0") or "0"
+            maximum = str(MAX_ARRAY_INDEX)
+            if len(significant) > len(maximum) or (len(significant) == len(maximum) and significant > maximum):
+                raise _path_error(
+                    "JSON path array index exceeds the configured limit",
+                    code="data_path_index_limit",
+                    position=len(segments),
+                    max_index=MAX_ARRAY_INDEX,
+                )
+            segment = int(significant)
+        else:
+            raise _dynamic_path(position)
+
+        position = _skip_path_trivia(expression, position)
+        if position >= len(expression) or expression[position] != "]":
+            raise _dynamic_path(position)
+        segments.append(segment)
+        position += 1
+
+
 def resolve_exact_path(
-    data: object,
+    _data: object,
     expression: str,
     *,
     evaluator: JqPathEvaluator,
 ) -> JsonPath:
-    """Resolve one exact jq path expression without transforming ``data``.
-
-    jq evaluates only ``path(EXPR)`` and returns path segments. The actual
-    read or mutation is subsequently performed in Python, so libjq's numeric
-    representation can never round numbers in an untouched data subtree.
-    """
+    """Resolve one static jq path without projecting the stored data to jq."""
 
     if not isinstance(expression, str):
         raise _path_error(
@@ -147,19 +260,20 @@ def resolve_exact_path(
         ) from None
     if not encoded.strip():
         raise _path_error("jq path expression must not be empty", code="data_path_invalid")
+    if len(encoded) > MAX_PATH_EXPRESSION_BYTES:
+        raise _path_error(
+            "jq path expression exceeds the configured byte limit",
+            code="data_path_limit",
+            max_bytes=MAX_PATH_EXPRESSION_BYTES,
+        )
 
-    # First require the expression to execute as a standalone jq program. A
-    # fragment that closes delimiters belonging to the structural path wrapper
-    # cannot be syntactically valid on its own.
-    _evaluate_path_expression(
-        data,
-        expression,
-        evaluator=evaluator,
-    )
-    # Leading and trailing newlines prevent a trailing jq comment from
-    # swallowing the structural closing parentheses.
+    parsed = _parse_static_path(expression)
+
+    # Let jq validate its own quoted-key syntax, but only against JSON null.
+    # The path is command text, never a projection of precision-sensitive
+    # stored data.
     results = _evaluate_path_expression(
-        data,
+        None,
         f"path((\n{expression}\n))",
         evaluator=evaluator,
     )
@@ -175,7 +289,13 @@ def resolve_exact_path(
             code="data_path_invalid",
             value_type=type(result).__name__,
         )
-    return _normalize_path(cast("tuple[object, ...]", result))
+    normalized = _normalize_path(cast("tuple[object, ...]", result))
+    if normalized != parsed:
+        raise _path_error(
+            "jq path validation disagreed with the static path parser",
+            code="data_path_invalid",
+        )
+    return parsed
 
 
 def _missing(position: int, segment: PathSegment) -> DataError:
@@ -413,6 +533,7 @@ __all__ = [
     "JqPathEvaluator",
     "JsonPath",
     "MAX_ARRAY_INDEX",
+    "MAX_PATH_EXPRESSION_BYTES",
     "MAX_PATH_SEGMENTS",
     "PathSegment",
     "delete_path",

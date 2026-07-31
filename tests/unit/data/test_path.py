@@ -9,6 +9,7 @@ import pytest
 from gh_slate.codec.json import JsonValue, freeze_json
 from gh_slate.data import (
     MAX_ARRAY_INDEX,
+    MAX_PATH_EXPRESSION_BYTES,
     MAX_PATH_SEGMENTS,
     DataError,
     delete_path,
@@ -58,19 +59,14 @@ def frozen_object(value: object) -> Mapping[str, JsonValue]:
 
 def test_resolve_exact_path_wraps_expression_and_normalizes_indexes() -> None:
     data = freeze_json({"rows": [{"value": 1}]})
-    evaluator = FakeEvaluator((("rows", Decimal(0), "value"),))
+    evaluator = FakeEvaluator((("rows", Decimal(0)),))
 
     path = resolve_exact_path(data, ".rows[0] # trailing comment", evaluator=evaluator)
 
-    assert path == ("rows", 0, "value")
+    assert path == ("rows", 0)
     assert evaluator.calls == [
         (
-            data,
-            ".rows[0] # trailing comment",
-            1,
-        ),
-        (
-            data,
+            None,
             "path((\n.rows[0] # trailing comment\n))",
             1,
         ),
@@ -78,27 +74,26 @@ def test_resolve_exact_path_wraps_expression_and_normalizes_indexes() -> None:
 
 
 def test_exact_path_rejects_a_fragment_that_escapes_its_wrapper() -> None:
-    from gh_slate.rendering import RenderingError, evaluate
+    evaluator = FakeEvaluator(())
 
-    with pytest.raises(RenderingError) as captured:
+    with pytest.raises(DataError) as captured:
         resolve_exact_path(
             {"a": 1, "b": 2},
             '.a)) | ["b"] | ((.',
-            evaluator=evaluate,
+            evaluator=evaluator,
         )
 
-    assert captured.value.code == "jq_compile_error"
+    assert captured.value.code == "data_path_dynamic"
+    assert evaluator.calls == []
 
 
 def test_exact_path_maps_three_or_more_paths_to_the_stable_path_error() -> None:
-    from gh_slate.rendering import evaluate
-
     error = assert_data_error(
         "data_path_multiple_results",
         resolve_exact_path,
-        {"a": 1, "b": 2, "c": 3},
-        ".a, .b, .c",
-        evaluator=evaluate,
+        {"a": 1},
+        ".a",
+        evaluator=FakeEvaluator((("a",), ("b",), ("c",))),
     )
 
     assert error.details["count_at_least"] == 2
@@ -138,6 +133,73 @@ def test_resolve_exact_path_rejects_empty_expression_without_jq(expression: str)
         resolve_exact_path,
         {},
         expression,
+        evaluator=evaluator,
+    )
+    assert evaluator.calls == []
+
+
+def test_resolve_exact_path_accepts_static_quoted_keys_indexes_and_comments() -> None:
+    from gh_slate.rendering import evaluate
+
+    assert resolve_exact_path(
+        {"not": "consulted"},
+        ' # leading\n .["a.b"] [ 0 ] ["line\\n"] # trailing',
+        evaluator=evaluate,
+    ) == ("a.b", 0, "line\n")
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        ".by_id[((.id + 0) | tostring)]",
+        ".rows[]",
+        ".rows[-1]",
+        ".rows[0:1]",
+        ".field?",
+        "..foo",
+        "$path",
+        '.["\\(.id)"]',
+    ],
+)
+def test_resolve_exact_path_rejects_dynamic_or_nonstatic_jq(
+    expression: str,
+) -> None:
+    evaluator = FakeEvaluator(())
+
+    assert_data_error(
+        "data_path_dynamic",
+        resolve_exact_path,
+        {},
+        expression,
+        evaluator=evaluator,
+    )
+    assert evaluator.calls == []
+
+
+def test_static_path_expression_has_byte_segment_and_index_limits() -> None:
+    evaluator = FakeEvaluator(())
+
+    oversized = "." + (" " * MAX_PATH_EXPRESSION_BYTES)
+    assert_data_error(
+        "data_path_limit",
+        resolve_exact_path,
+        {},
+        oversized,
+        evaluator=evaluator,
+    )
+    too_deep = ".a" + (".a" * MAX_PATH_SEGMENTS)
+    assert_data_error(
+        "data_path_limit",
+        resolve_exact_path,
+        {},
+        too_deep,
+        evaluator=evaluator,
+    )
+    assert_data_error(
+        "data_path_index_limit",
+        resolve_exact_path,
+        {},
+        f".rows[{MAX_ARRAY_INDEX + 1}]",
         evaluator=evaluator,
     )
     assert evaluator.calls == []

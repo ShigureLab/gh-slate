@@ -342,6 +342,93 @@ def test_data_set_uses_an_exact_path_for_a_dotted_object_key(
     assert capsys.readouterr().err == ""
 
 
+def test_data_set_uses_the_exact_static_key_for_a_large_numeric_id(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exact_id = Decimal(9007199254740993)
+    session = _install_session(
+        monkeypatch,
+        data={
+            "id": exact_id,
+            "by_id": {
+                "9007199254740992": "wrong",
+                "9007199254740993": "right",
+            },
+        },
+    )
+
+    assert (
+        run(
+            [
+                "data",
+                "set",
+                "ci",
+                '.by_id["9007199254740993"]',
+                "--target",
+                TARGET_URL,
+                "--value-string",
+                "updated",
+            ]
+        )
+        == 0
+    )
+
+    assert session.drafts[0].data == {
+        "id": exact_id,
+        "by_id": {
+            "9007199254740992": "wrong",
+            "9007199254740993": "updated",
+        },
+    }
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize(
+    ("command", "value_arguments"),
+    [
+        ("set", ["--value-string", "updated"]),
+        ("delete", []),
+    ],
+)
+def test_data_mutation_rejects_a_precision_dependent_dynamic_path(
+    command: str,
+    value_arguments: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    session = _install_session(
+        monkeypatch,
+        data={
+            "id": Decimal(9007199254740993),
+            "by_id": {
+                "9007199254740992": "wrong",
+                "9007199254740993": "right",
+            },
+        },
+    )
+
+    assert (
+        run(
+            [
+                "data",
+                command,
+                "ci",
+                ".by_id[((.id + 0) | tostring)]",
+                "--target",
+                TARGET_URL,
+                *value_arguments,
+            ]
+        )
+        == 2
+    )
+
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "error[data_path_dynamic]" in output.err
+    assert session.drafts == []
+
+
 def test_data_set_preserves_an_untouched_number_beyond_float_range(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -762,7 +849,7 @@ def test_data_edit_validates_the_candidate_against_the_stored_schema(
         ),
         (
             ["set", "ci", "empty", "--value-string", "new"],
-            "data_path_no_result",
+            "data_path_dynamic",
         ),
         (
             ["delete", "ci", ".missing"],

@@ -27,6 +27,7 @@ from gh_slate.data.output import (
 )
 from gh_slate.data.path import (
     MAX_ARRAY_INDEX,
+    MAX_PATH_EXPRESSION_BYTES,
     MAX_PATH_SEGMENTS,
     JqPathEvaluator,
     JsonPath,
@@ -48,6 +49,7 @@ __all__ = [
     "JsonOutputMode",
     "JsonPath",
     "MAX_ARRAY_INDEX",
+    "MAX_PATH_EXPRESSION_BYTES",
     "MAX_PATH_SEGMENTS",
     "PathSegment",
     "RetryCallback",

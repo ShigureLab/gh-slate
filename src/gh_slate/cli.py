@@ -278,10 +278,10 @@ def build_parser(*, prog: str | None = None) -> argparse.ArgumentParser:
 
     data_set_parser = data_commands.add_parser(
         "set",
-        help="set one value using an exact jq path",
+        help="set one value using a static jq path",
     )
     data_set_parser.add_argument("name", help="stable lowercase slate name")
-    data_set_parser.add_argument("path", help="exact jq path expression")
+    data_set_parser.add_argument("path", help="static jq path expression")
     _add_target_options(data_set_parser)
     _add_mutation_options(data_set_parser)
     value_source = data_set_parser.add_mutually_exclusive_group(required=True)
@@ -304,14 +304,14 @@ def build_parser(*, prog: str | None = None) -> argparse.ArgumentParser:
 
     data_delete_parser = data_commands.add_parser(
         "delete",
-        help="delete one or more exact jq paths",
+        help="delete one or more static jq paths",
     )
     data_delete_parser.add_argument("name", help="stable lowercase slate name")
     data_delete_parser.add_argument(
         "paths",
         nargs="+",
         metavar="PATH",
-        help="exact jq path expression",
+        help="static jq path expression",
     )
     _add_target_options(data_delete_parser)
     _add_mutation_options(data_delete_parser)
