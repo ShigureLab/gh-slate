@@ -481,6 +481,38 @@ def test_worker_result_count_is_bounded_by_the_requested_limit(monkeypatch: pyte
     assert caught.value.code == "jq_result_limit"
 
 
+def test_worker_protocol_reserves_nodes_for_the_response_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = b'{"ok":true,"results":[' + b",".join([b"0"] * MAX_RESULTS) + b"]}"
+
+    def complete(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(command, 0, response, b"")
+
+    monkeypatch.setattr(subprocess, "run", complete)
+
+    results = evaluate(None, ".", max_results=MAX_RESULTS)
+
+    assert len(results) == MAX_RESULTS
+    assert results[0] == results[-1] == Decimal(0)
+
+
+def test_worker_protocol_reserves_one_node_for_the_result_limit_sentinel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = b'{"ok":true,"results":[' + b",".join([b"0"] * (MAX_RESULTS + 1)) + b"]}"
+
+    def complete(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(command, 0, response, b"")
+
+    monkeypatch.setattr(subprocess, "run", complete)
+
+    with pytest.raises(RenderingError) as caught:
+        evaluate(None, ".", max_results=MAX_RESULTS)
+
+    assert caught.value.code == "jq_result_limit"
+
+
 def test_worker_protocol_preserves_the_full_user_json_depth_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

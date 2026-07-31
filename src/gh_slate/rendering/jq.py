@@ -161,6 +161,9 @@ _FORBIDDEN_VARIABLES = frozenset({"ENV", "JQ_BUILD_CONFIGURATION"})
 _ARGUMENT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _EMPTY_ARGS: Mapping[str, JsonValue] = MappingProxyType({})
 _PROTOCOL_MAX_DEPTH = DEFAULT_JSON_LIMITS.max_depth + 2
+_PROTOCOL_NODE_OVERHEAD = 3
+_PROTOCOL_OVERFLOW_SENTINEL_NODES = 1
+_PROTOCOL_MAX_NODES = DEFAULT_JSON_LIMITS.max_nodes + _PROTOCOL_NODE_OVERHEAD + _PROTOCOL_OVERFLOW_SENTINEL_NODES
 _WORKER_ERROR_CODES = {
     "compile": "jq_compile_error",
     "runtime": "jq_runtime_error",
@@ -307,6 +310,18 @@ def _protocol_error(reason: str, **details: object) -> RenderingError:
     )
 
 
+def _user_node_count(values: tuple[JsonValue, ...]) -> int:
+    def count(value: JsonValue) -> int:
+        if isinstance(value, Mapping):
+            typed = cast("Mapping[str, JsonValue]", value)
+            return 1 + sum(count(item) for item in typed.values())
+        if isinstance(value, tuple):
+            return 1 + sum(count(item) for item in value)
+        return 1
+
+    return sum(count(value) for value in values)
+
+
 def _decode_worker_response(
     stdout: bytes,
     limits: JqLimits,
@@ -329,7 +344,10 @@ def _decode_worker_response(
                 # The worker wraps one user value in a results array and a
                 # response object. Keep the user's full JSON depth budget.
                 max_depth=_PROTOCOL_MAX_DEPTH,
-                max_nodes=100_000,
+                # Reserve the root/status/results nodes plus one result-limit
+                # sentinel. Successful user data is checked independently
+                # below against its unchanged node budget.
+                max_nodes=_PROTOCOL_MAX_NODES,
                 max_string_bytes=max(limits.max_output_bytes, 64),
                 max_number_chars=1024,
                 max_key_bytes=64,
@@ -347,16 +365,22 @@ def _decode_worker_response(
         results = response.get("results")
         if not isinstance(results, tuple):
             raise _protocol_error("results_not_array")
-        if len(results) > max_results + 1:
-            raise _protocol_error("too_many_results", count=len(results))
-        if len(results) > max_results:
+        typed_results = cast("tuple[JsonValue, ...]", results)
+        if len(typed_results) > max_results + 1:
+            raise _protocol_error("too_many_results", count=len(typed_results))
+        if len(typed_results) > max_results:
             raise _rendering_error(
                 "jq produced more values than the configured result limit",
                 code="jq_result_limit",
                 count_at_least=max_results + 1,
                 max_results=max_results,
             )
-        return cast("tuple[JsonValue, ...]", results)
+        if _user_node_count(typed_results) > DEFAULT_JSON_LIMITS.max_nodes:
+            raise _protocol_error(
+                "result_node_limit",
+                max_nodes=DEFAULT_JSON_LIMITS.max_nodes,
+            )
+        return typed_results
 
     if ok is False:
         if set(response) != {"ok", "kind"}:

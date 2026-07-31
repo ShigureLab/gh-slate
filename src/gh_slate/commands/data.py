@@ -6,7 +6,7 @@ import re
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, DecimalException
 from typing import TYPE_CHECKING, Protocol, cast
 
 from gh_slate.codec import validate_slate_name
@@ -360,7 +360,21 @@ def _jq_number_literals(filter_text: str) -> tuple[tuple[str, int], ...]:
 
 def _require_jq_filter_number_roundtrips(filter_text: str) -> None:
     for literal, position in _jq_number_literals(filter_text):
-        exact = Decimal(literal)
+        try:
+            exact = Decimal(literal)
+        except (DecimalException, ValueError):
+            raise DataError(
+                (
+                    "jq update filter contains a numeric literal that cannot be "
+                    "represented exactly by the embedded jq runtime"
+                ),
+                code="data_update_precision_loss",
+                details={
+                    "phase": "filter",
+                    "position": position,
+                    "literal": literal,
+                },
+            ) from None
         if exact == exact.to_integral_value() and abs(exact) > _JQ_SAFE_INTEGER_MAX:
             raise DataError(
                 ("jq update filter contains an integer outside the IEEE-754 exact range"),

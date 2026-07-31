@@ -574,6 +574,33 @@ def test_data_update_rejects_precision_losing_arguments_and_literals_before_read
     assert session.drafts == []
 
 
+def test_data_update_rejects_out_of_range_filter_exponent_before_read(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    session = _install_session(monkeypatch, data={"answer": 0})
+
+    assert (
+        run(
+            [
+                "data",
+                "update",
+                "ci",
+                ".answer = 1e9999999999999999999999999999999999999999999",
+                "--target",
+                TARGET_URL,
+            ]
+        )
+        == 2
+    )
+
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "error[data_update_precision_loss]" in output.err
+    assert session.requests == []
+    assert session.drafts == []
+
+
 def test_data_update_numeric_text_is_not_mistaken_for_a_filter_literal(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
