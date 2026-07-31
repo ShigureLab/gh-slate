@@ -467,7 +467,10 @@ def test_windows_handoff_interruption_is_an_unknown_write_outcome(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def interrupt(*args: object, **kwargs: object) -> None:
-        raise write_module._ProcessHandoffInterrupted("KeyboardInterrupt")
+        raise write_module._ProcessHandoffInterrupted(
+            "KeyboardInterrupt",
+            cleanup_error_type="SystemExit",
+        )
 
     monkeypatch.setattr(write_module, "_spawn_process", interrupt)
 
@@ -478,7 +481,10 @@ def test_windows_handoff_interruption_is_an_unknown_write_outcome(
         )
 
     assert caught.value.code == "gh_write_process_error"
-    assert caught.value.details == {"error_type": "KeyboardInterrupt"}
+    assert caught.value.details == {
+        "error_type": "KeyboardInterrupt",
+        "cleanup_error_type": "SystemExit",
+    }
 
 
 def test_process_tree_close_failure_is_an_unknown_write_outcome(

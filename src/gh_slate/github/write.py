@@ -110,9 +110,10 @@ class WriteProcessRunner(Protocol):
 class _WriteProcessStartedError(Exception):
     """An internal pipe/process failure after a write process was started."""
 
-    def __init__(self, error_type: str) -> None:
+    def __init__(self, error_type: str, *, cleanup_error_type: str | None = None) -> None:
         super().__init__("GitHub CLI write process failed after starting")
         self.error_type = error_type
+        self.cleanup_error_type = cleanup_error_type
 
 
 def _run_started_write_process(
@@ -296,7 +297,10 @@ class SubprocessWriteRunner:
                 stdin=subprocess.PIPE,
             )
         except _ProcessHandoffInterrupted as error:
-            raise _WriteProcessStartedError(error.error_type) from error
+            raise _WriteProcessStartedError(
+                error.error_type,
+                cleanup_error_type=error.cleanup_error_type,
+            ) from error
 
         try:
             result = _run_started_write_process(
@@ -469,10 +473,13 @@ class GhWriteProcess:
                 timeout_seconds=self.limits.timeout_seconds,
             ) from None
         except _WriteProcessStartedError as error:
+            details: dict[str, object] = {"error_type": error.error_type}
+            if error.cleanup_error_type is not None:
+                details["cleanup_error_type"] = error.cleanup_error_type
             raise _unknown(
                 "GitHub CLI write process failed after starting; the remote outcome is unknown",
                 code="gh_write_process_error",
-                error_type=error.error_type,
+                **details,
             ) from None
         except FileNotFoundError:
             raise _error(
