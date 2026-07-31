@@ -13,7 +13,13 @@ from types import MappingProxyType
 from typing import cast
 
 from gh_slate.codec.errors import CodecError
-from gh_slate.codec.json import JsonLimits, JsonValue, canonical_json_bytes, strict_loads
+from gh_slate.codec.json import (
+    DEFAULT_JSON_LIMITS,
+    JsonLimits,
+    JsonValue,
+    canonical_json_bytes,
+    strict_loads,
+)
 from gh_slate.rendering.errors import RenderingError
 
 
@@ -154,6 +160,7 @@ _NONDETERMINISTIC_IDENTIFIERS = (
 _FORBIDDEN_VARIABLES = frozenset({"ENV", "JQ_BUILD_CONFIGURATION"})
 _ARGUMENT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _EMPTY_ARGS: Mapping[str, JsonValue] = MappingProxyType({})
+_PROTOCOL_MAX_DEPTH = DEFAULT_JSON_LIMITS.max_depth + 2
 _WORKER_ERROR_CODES = {
     "compile": "jq_compile_error",
     "runtime": "jq_runtime_error",
@@ -319,7 +326,9 @@ def _decode_worker_response(
             stdout,
             limits=JsonLimits(
                 max_input_bytes=protocol_limit,
-                max_depth=64,
+                # The worker wraps one user value in a results array and a
+                # response object. Keep the user's full JSON depth budget.
+                max_depth=_PROTOCOL_MAX_DEPTH,
                 max_nodes=100_000,
                 max_string_bytes=max(limits.max_output_bytes, 64),
                 max_number_chars=1024,

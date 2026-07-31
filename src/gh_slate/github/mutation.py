@@ -19,6 +19,7 @@ from gh_slate.github.apply import (
     ApplyTransaction,
     ApplyWriteClient,
 )
+from gh_slate.github.models import GitHubActor
 from gh_slate.github.store import CommentStore
 from gh_slate.schema import validate_data, validate_schema
 
@@ -46,7 +47,7 @@ class MutationSnapshot:
 
     target: ResolvedTarget
     name: str
-    controller: str
+    controller: GitHubActor
     comment: GitHubComment
     state: StateV1
     state_sha256: str
@@ -127,31 +128,39 @@ class MutationError(ApplyError):
     """A mutation orchestration error raised before the B6 apply boundary."""
 
 
-def _same_login(left: str, right: str) -> bool:
-    return left.casefold() == right.casefold()
-
-
 def _current_controller(
     reader: ApplyReadClient,
     target: ResolvedTarget,
     requested: str | None,
-) -> str:
+) -> GitHubActor:
     actor = reader.current_actor(target.host)
-    if not isinstance(actor, str) or not actor:
+    if not isinstance(actor, GitHubActor):
         raise MutationError(
-            "current GitHub actor lookup returned an invalid login",
+            "current GitHub actor lookup returned an invalid identity",
             code="github_response_invalid",
         )
-    if requested is not None and not _same_login(requested, actor):
-        raise MutationError(
-            "requested controller is not the current authenticated actor",
-            code="controller_conflict",
-            exit_code=ExitCode.CONFLICT,
-            details={
-                "requested": requested,
-                "current_actor": actor,
-            },
+    if requested is not None:
+        requested_actor = reader.resolve_actor(
+            requested,
+            target.host,
         )
+        if not isinstance(requested_actor, GitHubActor):
+            raise MutationError(
+                "requested GitHub controller lookup returned an invalid identity",
+                code="github_response_invalid",
+            )
+        if requested_actor.id != actor.id:
+            raise MutationError(
+                "requested controller is not the current authenticated actor",
+                code="controller_conflict",
+                exit_code=ExitCode.CONFLICT,
+                details={
+                    "requested": requested_actor.login,
+                    "requested_id": requested_actor.id,
+                    "current_actor": actor.login,
+                    "current_actor_id": actor.id,
+                },
+            )
     return actor
 
 
@@ -171,7 +180,7 @@ def _read_snapshot(
     actor = _current_controller(
         reader,
         validation.target,
-        validation.controller,
+        controller,
     )
     managed = CommentStore(reader).find(
         validation.target,

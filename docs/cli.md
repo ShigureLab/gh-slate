@@ -1458,6 +1458,11 @@ Acceptance gates:
 - paths work for keys containing dots and other special characters;
 - missing deletes, `--ignore-missing`, jq zero/multiple results, and
   scalar/array update results have explicit tested behavior;
+- the jq worker protocol reserves two depth levels for its object/array
+  envelope, so a value at the full JSON depth limit still round-trips while one
+  level beyond it fails closed;
+- mutations carry the resolved controller ID through the apply transaction
+  instead of reverting to login-based ownership;
 - a failed jq transform, schema validation, editor parse, render, revision
   check, or size check performs zero writes;
 - unchanged transforms perform zero writes and successful transforms perform

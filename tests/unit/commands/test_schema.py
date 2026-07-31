@@ -21,6 +21,7 @@ from gh_slate.codec.model import (
 )
 from gh_slate.commands import schema as schema_commands
 from gh_slate.github.apply import ApplyResult
+from gh_slate.github.models import GitHubActor
 from gh_slate.rendering import ListRendererV1, SlateContext, materialize_comment
 from gh_slate.schema import validate_schema
 
@@ -41,6 +42,7 @@ NUMBER = 42
 TARGET_URL = f"https://{HOST}/{REPOSITORY}/pull/42"
 COMMENT_URL = f"{TARGET_URL}#issuecomment-7"
 STATE_HASH = "b" * 64
+ACTOR_ID = 101
 
 
 def _schema() -> SchemaSnapshotV1:
@@ -65,7 +67,7 @@ def _comment_body(
     state = StateV1(
         name="ci",
         revision=revision,
-        controller=ControllerV1(login="ci-bot"),
+        controller=ControllerV1(login="ci-bot", id=ACTOR_ID),
         data=cast("dict[str, JsonValue]", data),
         data_schema=schema,
         renderer=ListRendererV1(selector=".").to_descriptor(),
@@ -89,9 +91,17 @@ class FakeReadProcess:
     revision: int = 3
     calls: list[tuple[object, ...]] = field(default_factory=list)
 
-    def current_actor(self, hostname: str | None = None) -> str:
+    def current_actor(self, hostname: str | None = None) -> GitHubActor:
         self.calls.append(("ACTOR", hostname))
-        return "ci-bot"
+        return GitHubActor(id=ACTOR_ID, login="ci-bot")
+
+    def resolve_actor(
+        self,
+        login: str,
+        hostname: str | None = None,
+    ) -> GitHubActor:
+        self.calls.append(("RESOLVE_ACTOR", login, hostname))
+        return GitHubActor(id=ACTOR_ID, login="ci-bot")
 
     def api_get(
         self,
@@ -111,7 +121,7 @@ class FakeReadProcess:
                     revision=self.revision,
                 ),
                 "html_url": COMMENT_URL,
-                "user": {"login": "ci-bot"},
+                "user": {"id": ACTOR_ID, "login": "ci-bot"},
                 "created_at": "2026-07-31T00:00:00Z",
                 "updated_at": "2026-07-31T00:01:00Z",
             }

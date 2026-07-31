@@ -17,6 +17,7 @@ from gh_slate.github import (
     ApplyError,
     ApplyRequest,
     ApplyResult,
+    GitHubActor,
     MutationDraft,
     MutationError,
     MutationRequest,
@@ -47,6 +48,8 @@ TARGET = ResolvedTarget(
     url=ISSUE_URL,
 )
 EMPTY_HASH = "0" * 64
+ACTOR_ID = 101
+OTHER_ACTOR_ID = 202
 
 
 def _schema() -> SchemaSnapshotV1:
@@ -71,7 +74,7 @@ def _body(
     state = StateV1(
         name="ci",
         revision=revision,
-        controller=ControllerV1(login="ci-bot"),
+        controller=ControllerV1(login="ci-bot", id=ACTOR_ID),
         data={"status": status},
         data_schema=schema,
         renderer=ListRendererV1(selector=".status").to_descriptor(),
@@ -96,7 +99,7 @@ def _record(
         "id": identifier,
         "body": body,
         "html_url": f"{ISSUE_URL}#issuecomment-{identifier}",
-        "user": {"login": "ci-bot"},
+        "user": {"id": ACTOR_ID, "login": "ci-bot"},
         "created_at": "2026-07-31T00:00:00Z",
         "updated_at": "2026-07-31T00:01:00Z",
     }
@@ -105,12 +108,23 @@ def _record(
 @dataclass(slots=True)
 class FakeReader:
     comments: list[dict[str, object]]
-    actor: str = "ci-bot"
+    actor_login: str = "ci-bot"
+    actor_id: int = ACTOR_ID
     calls: list[tuple[object, ...]] = field(default_factory=list)
 
-    def current_actor(self, hostname: str | None = None) -> str:
+    def current_actor(self, hostname: str | None = None) -> GitHubActor:
         self.calls.append(("ACTOR", hostname))
-        return self.actor
+        return GitHubActor(id=self.actor_id, login=self.actor_login)
+
+    def resolve_actor(
+        self,
+        login: str,
+        hostname: str | None = None,
+    ) -> GitHubActor:
+        self.calls.append(("RESOLVE_ACTOR", login, hostname))
+        if login.casefold() == self.actor_login.casefold():
+            return GitHubActor(id=self.actor_id, login=self.actor_login)
+        return GitHubActor(id=OTHER_ACTOR_ID, login=login)
 
     def api_get(
         self,
@@ -188,7 +202,10 @@ def test_read_returns_one_valid_immutable_snapshot() -> None:
 
     assert snapshot.target is TARGET
     assert snapshot.name == "ci"
-    assert snapshot.controller == "ci-bot"
+    assert snapshot.controller == GitHubActor(
+        id=ACTOR_ID,
+        login="ci-bot",
+    )
     assert snapshot.comment_id == 7
     assert snapshot.url == f"{ISSUE_URL}#issuecomment-7"
     assert snapshot.revision == 3
@@ -247,7 +264,10 @@ def test_mutate_transforms_once_and_pins_the_initial_revision(
     assert request.data_schema == expected_schema
     assert request.replace_schema is replace_schema
     assert request.renderer is None
-    assert request.controller == "ci-bot"
+    assert request.controller == GitHubActor(
+        id=ACTOR_ID,
+        login="ci-bot",
+    )
     assert request.if_revision == 3
     assert request.dry_run is True
 
@@ -511,4 +531,7 @@ def test_controller_must_remain_the_current_actor() -> None:
     assert raised.value.code == "controller_conflict"
     assert transform_calls == 0
     assert applier.calls == []
-    assert reader.calls == [("ACTOR", HOST)]
+    assert reader.calls == [
+        ("ACTOR", HOST),
+        ("RESOLVE_ACTOR", "other-bot", HOST),
+    ]

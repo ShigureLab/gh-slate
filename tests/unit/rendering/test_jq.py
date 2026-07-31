@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import subprocess
 import sys
 from dataclasses import replace
@@ -11,6 +12,7 @@ from typing import cast
 
 import pytest
 
+from gh_slate.codec.json import DEFAULT_JSON_LIMITS
 from gh_slate.rendering import _jq_worker as worker_module, jq as jq_module
 from gh_slate.rendering.errors import RenderingError
 from gh_slate.rendering.jq import (
@@ -477,6 +479,47 @@ def test_worker_result_count_is_bounded_by_the_requested_limit(monkeypatch: pyte
         evaluate(None, ".", max_results=2)
 
     assert caught.value.code == "jq_result_limit"
+
+
+def test_worker_protocol_preserves_the_full_user_json_depth_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def nested(depth: int) -> object:
+        value: object = 0
+        for _ in range(depth):
+            value = [value]
+        return value
+
+    allowed = nested(DEFAULT_JSON_LIMITS.max_depth + 1)
+    rejected = nested(DEFAULT_JSON_LIMITS.max_depth + 2)
+    responses = [
+        json.dumps(
+            {"ok": True, "results": [allowed]},
+            separators=(",", ":"),
+        ).encode(),
+        json.dumps(
+            {"ok": True, "results": [rejected]},
+            separators=(",", ":"),
+        ).encode(),
+    ]
+
+    def complete(
+        command: list[str],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(command, 0, responses.pop(0), b"")
+
+    monkeypatch.setattr(subprocess, "run", complete)
+
+    value = select_one(None, ".")
+    for _ in range(DEFAULT_JSON_LIMITS.max_depth + 1):
+        assert isinstance(value, tuple) and len(value) == 1
+        value = value[0]
+    assert value == Decimal(0)
+
+    with pytest.raises(RenderingError) as caught:
+        select_one(None, ".")
+    assert caught.value.code == "jq_worker_protocol"
 
 
 def test_libjq_large_integer_rounding_is_projection_only_and_strings_stay_exact() -> None:
