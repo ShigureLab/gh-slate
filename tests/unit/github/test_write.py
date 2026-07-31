@@ -4,6 +4,7 @@ import io
 import os
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -345,7 +346,14 @@ def test_default_runner_kills_output_overflow_and_keeps_one_sentinel_byte(
         (
             sys.executable,
             "-c",
-            (f"import os,time;os.write({file_descriptor},b'x'*(10*1024*1024));time.sleep(10)"),
+            (
+                "import os,time\n"
+                "try:\n"
+                f" os.write({file_descriptor},b'x'*(10*1024*1024))\n"
+                "except OSError:\n"
+                " pass\n"
+                "time.sleep(10)"
+            ),
         ),
         stdin=b"{}",
         timeout=5,
@@ -395,6 +403,22 @@ class _InterruptedProcess:
         return 0
 
 
+class _CompletedProcess:
+    def __init__(self) -> None:
+        self.stdin = io.BytesIO()
+        self.stdout = io.BytesIO()
+        self.stderr = io.BytesIO()
+        self.killed = False
+        self.wait_calls = 0
+
+    def kill(self) -> None:
+        self.killed = True
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.wait_calls += 1
+        return 0
+
+
 @pytest.mark.parametrize("interruption", [KeyboardInterrupt(), SystemExit(130)])
 def test_post_start_interrupt_is_an_unknown_write_outcome(
     interruption: BaseException,
@@ -406,6 +430,47 @@ def test_post_start_interrupt_is_an_unknown_write_outcome(
         "Popen",
         lambda *_args, **_kwargs: process,
     )
+
+    with pytest.raises(GhWriteOutcomeUnknown) as caught:
+        GhWriteProcess(runner=SubprocessWriteRunner()).post(
+            "repos/owner/repo/issues/42/comments",
+            {"body": "safe"},
+        )
+
+    assert caught.value.code == "gh_write_process_error"
+    assert caught.value.details == {"error_type": type(interruption).__name__}
+    assert process.killed
+    assert process.wait_calls == 2
+    assert process.stdin.closed
+    assert process.stdout.closed
+    assert process.stderr.closed
+
+
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt(), SystemExit(130)])
+def test_post_wait_join_interrupt_is_an_unknown_write_outcome(
+    interruption: BaseException,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = _CompletedProcess()
+    real_join = threading.Thread.join
+    join_calls = 0
+
+    def interrupt_once(
+        worker: threading.Thread,
+        timeout: float | None = None,
+    ) -> None:
+        nonlocal join_calls
+        join_calls += 1
+        if join_calls == 1:
+            raise interruption
+        real_join(worker, timeout)
+
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: process,
+    )
+    monkeypatch.setattr(threading.Thread, "join", interrupt_once)
 
     with pytest.raises(GhWriteOutcomeUnknown) as caught:
         GhWriteProcess(runner=SubprocessWriteRunner()).post(

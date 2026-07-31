@@ -216,6 +216,8 @@ class SubprocessWriteRunner:
             for worker in workers:
                 worker.start()
             returncode = process.wait(timeout=timeout)
+            for worker in workers:
+                worker.join()
         except subprocess.TimeoutExpired:
             kill()
             process.wait()
@@ -234,8 +236,6 @@ class SubprocessWriteRunner:
                     worker.join()
             raise _WriteProcessStartedError(type(error).__name__) from error
 
-        for worker in workers:
-            worker.join()
         if thread_errors and not output_limit_reached.is_set():
             raise _WriteProcessStartedError(type(thread_errors[0]).__name__) from thread_errors[0]
         return ProcessResult(
