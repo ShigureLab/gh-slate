@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from importlib import import_module
 from typing import TYPE_CHECKING, cast
 
 import pytest
@@ -29,6 +30,8 @@ from gh_slate.rendering import (
     materialize_comment,
 )
 from gh_slate.schema import validate_schema
+
+apply_module = import_module("gh_slate.github.apply")
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -789,7 +792,6 @@ def test_post_write_refetch_failure_is_unknown_and_never_retries() -> None:
 @pytest.mark.parametrize(
     ("write_behavior", "expected_code"),
     [
-        ("normal", "post_write_verification_unknown"),
         ("timeout-applied", "write_timeout_unknown"),
         ("ambiguous-applied", "write_outcome_unknown"),
     ],
@@ -815,6 +817,82 @@ def test_post_write_verification_interrupt_is_unknown_and_never_retries(
     assert caught.value.code == expected_code
     assert caught.value.details["reason"] == f"refetch_failed:{type(interruption).__name__}"
     assert [call[0] for call in remote.write_calls] == ["POST"]
+    assert remote.comment_reads == 3
+
+
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt(), SystemExit(130)])
+def test_post_write_refetch_interrupt_recovers_without_replaying_the_post(
+    interruption: BaseException,
+) -> None:
+    remote = FakeGitHub()
+
+    def interrupt_after_write(_github: FakeGitHub) -> None:
+        raise interruption
+
+    remote.before_comment_read[3] = interrupt_after_write
+
+    result = _apply(remote, renderer=_renderer())
+
+    assert result.action == "created"
+    assert result.recovered is True
+    assert result.comment_id == 100
+    assert [call[0] for call in remote.write_calls] == ["POST"]
+    assert remote.comment_reads == 4
+
+
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt(), SystemExit(130)])
+@pytest.mark.parametrize("existing", [False, True])
+def test_post_write_response_handoff_interrupt_is_unknown_and_never_retries(
+    monkeypatch: pytest.MonkeyPatch,
+    existing: bool,
+    interruption: BaseException,
+) -> None:
+    remote = FakeGitHub(comments=[_record(7, _body())] if existing else [])
+
+    def interrupt_response_identifier(_response: object) -> int | None:
+        raise interruption
+
+    monkeypatch.setattr(apply_module, "_response_identifier", interrupt_response_identifier)
+
+    result = _apply(
+        remote,
+        data={"status": "new"} if existing else None,
+        renderer=None if existing else _renderer(),
+    )
+
+    assert result.action == ("updated" if existing else "created")
+    assert result.recovered is True
+    assert result.comment_id == (7 if existing else 100)
+    assert [call[0] for call in remote.write_calls] == (["PATCH"] if existing else ["POST"])
+    assert remote.comment_reads == 3
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_post_write_handoff_recovery_reports_an_unapplied_write_as_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+    existing: bool,
+) -> None:
+    remote = FakeGitHub(
+        comments=[_record(7, _body())] if existing else [],
+        write_behavior="no-apply",
+    )
+
+    def interrupt_response_identifier(_response: object) -> int | None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(apply_module, "_response_identifier", interrupt_response_identifier)
+
+    with pytest.raises(ApplyError) as caught:
+        _apply(
+            remote,
+            data={"status": "new"} if existing else None,
+            renderer=None if existing else _renderer(),
+        )
+
+    assert caught.value.code == "write_outcome_unknown"
+    assert caught.value.details["reason"] == ("previous_state_still_visible" if existing else "slate_missing")
+    assert caught.value.hints == ("inspect the slate before attempting another mutation",)
+    assert [call[0] for call in remote.write_calls] == (["PATCH"] if existing else ["POST"])
     assert remote.comment_reads == 3
 
 

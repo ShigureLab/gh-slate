@@ -612,22 +612,13 @@ def _verify_remote(
         ) from None
     except (KeyboardInterrupt, SystemExit) as error:
         if recovery_kind is None:
-            raise ApplyError(
-                "the write was sent, but its remote state verification was interrupted",
-                code="post_write_verification_unknown",
-                details={
-                    "name": request.name,
-                    "reason": f"refetch_failed:{type(error).__name__}",
-                },
-                hints=("inspect the slate before attempting another mutation",),
-            ) from None
+            raise
         raise _verification_error(
             request,
             recovery_kind=recovery_kind,
             unknown=True,
             reason=f"refetch_failed:{type(error).__name__}",
         ) from None
-
     if not candidates:
         raise _verification_error(
             request,
@@ -687,6 +678,58 @@ def _verify_remote(
             ),
         )
     return _Existing(candidate)
+
+
+def _verify_post_write(
+    store: CommentStore,
+    request: ApplyRequest,
+    *,
+    controller: GitHubActor,
+    intended_state_sha256: str,
+    expected_comment_id: int | None,
+    response: object,
+    previous_state_sha256: str | None = None,
+) -> tuple[_Existing, bool]:
+    """Verify a returned write response, recovering any interrupted handoff."""
+
+    response_id: int | None = None
+    try:
+        response_id = _response_identifier(response)
+        return (
+            _verify_remote(
+                store,
+                request,
+                controller=controller,
+                intended_state_sha256=intended_state_sha256,
+                expected_comment_id=expected_comment_id,
+                response_id=response_id,
+                recovery_kind=None,
+                previous_state_sha256=previous_state_sha256,
+            ),
+            False,
+        )
+    except (KeyboardInterrupt, SystemExit):
+        try:
+            return (
+                _verify_remote(
+                    store,
+                    request,
+                    controller=controller,
+                    intended_state_sha256=intended_state_sha256,
+                    expected_comment_id=expected_comment_id,
+                    response_id=response_id,
+                    recovery_kind="ambiguous",
+                    previous_state_sha256=previous_state_sha256,
+                ),
+                True,
+            )
+        except (KeyboardInterrupt, SystemExit) as error:
+            raise _verification_error(
+                request,
+                recovery_kind="ambiguous",
+                unknown=True,
+                reason=f"verification_interrupted:{type(error).__name__}",
+            ) from None
 
 
 def _result(
@@ -814,14 +857,14 @@ class ApplyTransaction:
                 recovered=True,
             )
 
-        verified = _verify_remote(
+        verified, recovered = _verify_post_write(
             store,
             request,
             controller=controller,
             intended_state_sha256=intended_hash,
             expected_comment_id=expected_comment_id,
-            response_id=_response_identifier(response),
-            recovery_kind=None,
+            response=response,
+            previous_state_sha256=(None if existing is None else existing.state_sha256),
         )
         return _result(
             action=action,
@@ -830,6 +873,7 @@ class ApplyTransaction:
             state=state,
             state_sha256=intended_hash,
             existing=verified,
+            recovered=recovered,
         )
 
 
