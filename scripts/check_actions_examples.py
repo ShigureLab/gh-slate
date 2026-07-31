@@ -162,7 +162,8 @@ def _assert_writer_steps(
     name: str,
     schema: str,
     template: str,
-    event_kind: str | None,
+    target_kind: str,
+    direct: bool,
 ) -> None:
     _assert_trusted_checkout(steps, path)
     runs = _runs(steps)
@@ -174,8 +175,27 @@ def _assert_writer_steps(
         (index for index, source in enumerate(runs) if f"gh-slate apply {name}" in source),
         None,
     )
-    if install is None or apply is None or install >= apply:
-        _fail(path, "writer must install the exact release before applying")
+    fetch = next(
+        (
+            index
+            for index, source in enumerate(runs)
+            if "trusted/examples/actions/scripts/current_target_to_slate.py" in source
+        ),
+        None,
+    )
+    if install is None or fetch is None or apply is None or not install < fetch < apply:
+        _fail(path, "writer must install, fetch the current target, then apply")
+    fetch_source = runs[fetch]
+    if re.search(rf"current_target_to_slate\.py\s+{re.escape(target_kind)}(?:\s|$)", fetch_source) is None:
+        _fail(path, f"writer must fetch the current {target_kind} resource")
+    for fragment in (
+        '--repository "$',
+        '--number "$',
+        '--output "$SLATE_DATA"',
+        '--github-env "$GITHUB_ENV"',
+    ):
+        if fragment not in fetch_source:
+            _fail(path, f"current target fetch is missing {fragment!r}")
     source = runs[apply]
     required = (
         "--mode upsert",
@@ -187,15 +207,13 @@ def _assert_writer_steps(
     for fragment in required:
         if fragment not in source:
             _fail(path, f"apply step is missing {fragment!r}")
-    if event_kind is not None:
-        if "--target @event" not in source:
-            _fail(path, "direct event writer must resolve --target @event")
-        reducer = next(
-            (command for command in runs if "trusted/examples/actions/scripts/event_to_slate.py" in command),
-            None,
-        )
-        if reducer is None or f"event_to_slate.py {event_kind} " not in reducer:
-            _fail(path, f"writer must reduce the {event_kind} event contract")
+    if direct:
+        for fragment in (
+            '--target "$GH_SLATE_CURRENT_TARGET"',
+            '--repo "$SLATE_REPOSITORY"',
+        ):
+            if fragment not in source:
+                _fail(path, f"direct writer is missing {fragment!r}")
 
 
 def _check_issue(root: Path) -> None:
@@ -216,7 +234,8 @@ def _check_issue(root: Path) -> None:
         name="issue-dashboard",
         schema="issue-dashboard.schema.json",
         template="issue-dashboard.md.j2",
-        event_kind="issue",
+        target_kind="issue",
+        direct=True,
     )
 
 
@@ -241,7 +260,8 @@ def _check_pull_request(root: Path) -> None:
         name="pr-dashboard",
         schema="pull-request-dashboard.schema.json",
         template="pull-request-dashboard.md.j2",
-        event_kind="pull_request",
+        target_kind="pull_request",
+        direct=True,
     )
 
 
@@ -269,6 +289,9 @@ def _check_reducer(root: Path) -> None:
         "MAX_EVENT_BYTES = 1024 * 1024",
         "MAX_ARTIFACT_BYTES = 16 * 1024",
         "object_pairs_hook=unique_object",
+        '"repository": repository_name',
+        '"schema_version": 1',
+        '"target_number": number',
     ):
         if required not in source:
             _fail(path, f"reducer is missing {required!r}")
@@ -280,6 +303,10 @@ def _check_reducer(root: Path) -> None:
         "git clone",
         "curl ",
         "wget ",
+        'event.get("action")',
+        'pull_request.get("head")',
+        'pull_request.get("draft")',
+        'pull_request.get("user")',
     ):
         if forbidden in source.lower():
             _fail(path, f"reducer script contains forbidden input or command: {forbidden}")
@@ -358,8 +385,16 @@ def _check_consumer(root: Path) -> None:
         None,
     )
     apply = next((index for index, source in enumerate(runs) if "gh-slate apply ci-dashboard" in source), None)
-    if install is None or validate is None or apply is None or not install < validate < apply:
-        _fail(path, "consumer must install, validate, then apply in that order")
+    fetch = next(
+        (
+            index
+            for index, source in enumerate(runs)
+            if "trusted/examples/actions/scripts/current_target_to_slate.py" in source
+        ),
+        None,
+    )
+    if install is None or validate is None or fetch is None or apply is None or not install < validate < fetch < apply:
+        _fail(path, "consumer must install, validate identity, fetch current state, then apply")
     validator = runs[validate]
     for fragment in (
         "--schema trusted/examples/actions/schemas/reduced-pull-request.schema.json",
@@ -373,11 +408,12 @@ def _check_consumer(root: Path) -> None:
         name="ci-dashboard",
         schema="pull-request-dashboard.schema.json",
         template="pull-request-dashboard.md.j2",
-        event_kind=None,
+        target_kind="pull_request",
+        direct=False,
     )
     apply_source = runs[apply]
     for fragment in (
-        '--target "$GH_SLATE_TARGET"',
+        '--target "$GH_SLATE_CURRENT_TARGET"',
         '--repo "$GH_SLATE_REPOSITORY"',
     ):
         if fragment not in apply_source:
@@ -392,7 +428,7 @@ def _check_assets(root: Path) -> None:
         "schemas/reduced-pull-request.schema.json",
         "templates/issue-dashboard.md.j2",
         "templates/pull-request-dashboard.md.j2",
-        "scripts/event_to_slate.py",
+        "scripts/current_target_to_slate.py",
         "scripts/validate_reduced_pull_request.py",
     }
     for relative in expected:

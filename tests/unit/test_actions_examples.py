@@ -1,45 +1,84 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 ROOT = Path(__file__).resolve().parents[2]
 ACTIONS = ROOT / "examples" / "actions"
 CHECKER = ROOT / "scripts" / "check_actions_examples.py"
 
 
-def _run(*arguments: str) -> subprocess.CompletedProcess[str]:
+def _run(
+    *arguments: str,
+    env: Mapping[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, *arguments],
         check=False,
         capture_output=True,
         text=True,
+        env=env,
     )
 
 
-def _event_payload(kind: str) -> dict[str, object]:
-    item = {
+def _target_response(kind: str, *, number: int = 17) -> dict[str, object]:
+    response: dict[str, object] = {
         "draft": False,
         "head": {"sha": "a" * 40},
-        "html_url": f"https://github.com/octo/example/{'pull' if kind == 'pull_request' else 'issues'}/17",
-        "number": 17,
+        "html_url": f"https://github.com/octo/example/{'pull' if kind == 'pull_request' else 'issues'}/{number}",
+        "number": number,
         "state": "open",
         "title": "Unsafe | title `is` escaped",
+        "updated_at": "2026-07-31T00:00:00Z",
         "user": {"login": "octocat"},
     }
-    return {
-        "action": "opened",
-        kind: item,
-        "repository": {
-            "default_branch": "main",
-            "full_name": "octo/example",
-        },
-    }
+    if kind == "issue":
+        response.pop("draft")
+        response.pop("head")
+    return response
+
+
+def _fake_gh_environment(
+    tmp_path: Path,
+    response: Mapping[str, object],
+) -> tuple[dict[str, str], Path]:
+    binary = tmp_path / "bin" / "gh"
+    binary.parent.mkdir()
+    binary.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+Path(os.environ["FAKE_GH_ARGS"]).write_text(json.dumps(sys.argv[1:]), encoding="utf-8")
+print(os.environ["FAKE_GH_RESPONSE"])
+""",
+        encoding="utf-8",
+    )
+    binary.chmod(0o755)
+    arguments = tmp_path / "gh-args.json"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "FAKE_GH_ARGS": str(arguments),
+            "FAKE_GH_RESPONSE": json.dumps(response),
+            "GITHUB_SERVER_URL": "https://github.com",
+            "GH_TOKEN": "test-token",
+            "PATH": f"{binary.parent}{os.pathsep}{environment['PATH']}",
+        }
+    )
+    return environment, arguments
 
 
 def test_actions_examples_pass_static_contract() -> None:
@@ -86,36 +125,69 @@ def test_static_contract_rejects_artifact_execution(tmp_path: Path) -> None:
     assert "must never execute or source the downloaded artifact" in result.stderr
 
 
+def test_static_contract_rejects_event_snapshot_as_dashboard_state(
+    tmp_path: Path,
+) -> None:
+    shutil.copytree(ACTIONS, tmp_path / "examples" / "actions")
+    workflow = tmp_path / "examples" / "actions" / "issue-dashboard.yml"
+    workflow.write_text(
+        workflow.read_text(encoding="utf-8").replace(
+            "current_target_to_slate.py",
+            "event_to_slate.py",
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run(str(CHECKER), str(tmp_path))
+
+    assert result.returncode == 1
+    assert "fetch the current target" in result.stderr
+
+
 @pytest.mark.parametrize(
-    ("kind", "schema", "template"),
+    ("kind", "resource", "schema", "template"),
     [
         (
             "issue",
+            "issues",
             "issue-dashboard.schema.json",
             "issue-dashboard.md.j2",
         ),
         (
             "pull_request",
+            "pulls",
             "pull-request-dashboard.schema.json",
             "pull-request-dashboard.md.j2",
         ),
     ],
 )
-def test_event_payload_contract_reduces_and_renders(
+def test_current_target_contract_fetches_and_renders(
     tmp_path: Path,
     kind: str,
+    resource: str,
     schema: str,
     template: str,
 ) -> None:
-    event = tmp_path / "event.json"
-    event.write_text(json.dumps(_event_payload(kind)), encoding="utf-8")
+    environment, gh_arguments = _fake_gh_environment(
+        tmp_path,
+        {**_target_response(kind), "action": "stale-event-action"},
+    )
     data = tmp_path / "data.json"
+    github_env = tmp_path / "github-env"
+    github_env.write_text("", encoding="utf-8")
 
-    reduced = _run(
-        str(ACTIONS / "scripts" / "event_to_slate.py"),
+    fetched = _run(
+        str(ACTIONS / "scripts" / "current_target_to_slate.py"),
         kind,
-        str(event),
+        "--repository",
+        "octo/example",
+        "--number",
+        "17",
+        "--output",
         str(data),
+        "--github-env",
+        str(github_env),
+        env=environment,
     )
     rendered = _run(
         "-m",
@@ -130,25 +202,54 @@ def test_event_payload_contract_reduces_and_renders(
         str(ACTIONS / "templates" / template),
     )
 
-    assert reduced.returncode == 0, reduced.stderr
+    assert fetched.returncode == 0, fetched.stderr
     assert rendered.returncode == 0, rendered.stderr
     assert "Unsafe &#124; title &#96;is&#96; escaped" in rendered.stdout
-    assert json.loads(data.read_text(encoding="utf-8"))["kind"] == kind
+    parsed = json.loads(data.read_text(encoding="utf-8"))
+    assert parsed["kind"] == kind
+    assert {row["field"] for row in parsed["rows"]}.isdisjoint({"Action"})
+    assert {row["field"]: row["value"] for row in parsed["rows"]}["Updated at"] == ("2026-07-31T00:00:00Z")
+    expected_path = "pull" if kind == "pull_request" else "issues"
+    assert github_env.read_text(encoding="utf-8") == (
+        f"GH_SLATE_CURRENT_TARGET=https://github.com/octo/example/{expected_path}/17\n"
+    )
+    assert json.loads(gh_arguments.read_text(encoding="utf-8")) == [
+        "api",
+        "--hostname",
+        "github.com",
+        "--method",
+        "GET",
+        f"repos/octo/example/{resource}/17",
+    ]
 
 
-def test_event_reducer_rejects_oversized_payload(tmp_path: Path) -> None:
-    event = tmp_path / "event.json"
-    event.write_bytes(b" " * (1024 * 1024 + 1))
+def test_current_target_rejects_mismatched_api_identity(tmp_path: Path) -> None:
+    environment, _arguments = _fake_gh_environment(
+        tmp_path,
+        _target_response("issue", number=18),
+    )
+    data = tmp_path / "data.json"
+    github_env = tmp_path / "github-env"
+    github_env.write_text("", encoding="utf-8")
 
     result = _run(
-        str(ACTIONS / "scripts" / "event_to_slate.py"),
+        str(ACTIONS / "scripts" / "current_target_to_slate.py"),
         "issue",
-        str(event),
-        str(tmp_path / "data.json"),
+        "--repository",
+        "octo/example",
+        "--number",
+        "17",
+        "--output",
+        str(data),
+        "--github-env",
+        str(github_env),
+        env=environment,
     )
 
     assert result.returncode != 0
-    assert "event payload exceeds 1048576 bytes" in result.stderr
+    assert "number does not match" in result.stderr
+    assert not data.exists()
+    assert github_env.read_text(encoding="utf-8") == ""
 
 
 def test_trusted_consumer_validates_artifact_before_exporting_target(
@@ -158,10 +259,6 @@ def test_trusted_consumer_validates_artifact_before_exporting_target(
     artifact.write_text(
         json.dumps(
             {
-                "action": "synchronize",
-                "author": "octocat",
-                "draft": False,
-                "head_sha": "b" * 40,
                 "repository": "octo/example",
                 "schema_version": 1,
                 "target_number": 42,
@@ -169,7 +266,6 @@ def test_trusted_consumer_validates_artifact_before_exporting_target(
         ),
         encoding="utf-8",
     )
-    data = tmp_path / "data.json"
     github_env = tmp_path / "github-env"
     github_env.write_text("", encoding="utf-8")
 
@@ -177,8 +273,6 @@ def test_trusted_consumer_validates_artifact_before_exporting_target(
         str(ACTIONS / "scripts" / "validate_reduced_pull_request.py"),
         "--input",
         str(artifact),
-        "--data",
-        str(data),
         "--github-env",
         str(github_env),
         "--schema",
@@ -189,17 +283,6 @@ def test_trusted_consumer_validates_artifact_before_exporting_target(
 
     assert result.returncode == 0, result.stderr
     assert github_env.read_text(encoding="utf-8") == ("GH_SLATE_REPOSITORY=octo/example\nGH_SLATE_TARGET=42\n")
-    assert json.loads(data.read_text(encoding="utf-8")) == {
-        "kind": "pull_request",
-        "rows": [
-            {"field": "Repository", "value": "octo/example"},
-            {"field": "Number", "value": 42},
-            {"field": "Action", "value": "synchronize"},
-            {"field": "Author", "value": "octocat"},
-            {"field": "Draft", "value": False},
-            {"field": "Head SHA", "value": "b" * 40},
-        ],
-    }
 
 
 def test_trusted_consumer_rejects_schema_mismatch_without_export(
@@ -209,10 +292,6 @@ def test_trusted_consumer_rejects_schema_mismatch_without_export(
     artifact.write_text(
         json.dumps(
             {
-                "action": "opened",
-                "author": "octocat",
-                "draft": False,
-                "head_sha": "c" * 40,
                 "repository": "other/repository",
                 "schema_version": 1,
                 "target_number": 42,
@@ -228,8 +307,6 @@ def test_trusted_consumer_rejects_schema_mismatch_without_export(
         str(ACTIONS / "scripts" / "validate_reduced_pull_request.py"),
         "--input",
         str(artifact),
-        "--data",
-        str(tmp_path / "data.json"),
         "--github-env",
         str(github_env),
         "--schema",
@@ -241,7 +318,6 @@ def test_trusted_consumer_rejects_schema_mismatch_without_export(
     assert result.returncode != 0
     assert "fixed schema" in result.stderr
     assert github_env.read_text(encoding="utf-8") == ""
-    assert not (tmp_path / "data.json").exists()
 
 
 def test_trusted_consumer_rejects_oversized_artifact(
@@ -256,8 +332,6 @@ def test_trusted_consumer_rejects_oversized_artifact(
         str(ACTIONS / "scripts" / "validate_reduced_pull_request.py"),
         "--input",
         str(artifact),
-        "--data",
-        str(tmp_path / "data.json"),
         "--github-env",
         str(github_env),
         "--schema",
@@ -269,4 +343,3 @@ def test_trusted_consumer_rejects_oversized_artifact(
     assert result.returncode != 0
     assert "artifact exceeds 16384 bytes" in result.stderr
     assert github_env.read_text(encoding="utf-8") == ""
-    assert not (tmp_path / "data.json").exists()

@@ -33,17 +33,6 @@ jobs:
           MAX_EVENT_BYTES = 1024 * 1024
           MAX_ARTIFACT_BYTES = 16 * 1024
           MAX_TARGET_NUMBER = 2**63 - 1
-          ALLOWED_ACTIONS = {
-              "closed",
-              "converted_to_draft",
-              "edited",
-              "opened",
-              "ready_for_review",
-              "reopened",
-              "synchronize",
-          }
-
-
           def fail(message: str) -> None:
               raise SystemExit(f"unsafe pull_request_target payload: {message}")
 
@@ -84,8 +73,6 @@ jobs:
           event = object_at(event, "event")
           pull_request = object_at(event.get("pull_request"), "pull_request")
           repository = object_at(event.get("repository"), "repository")
-          user = object_at(pull_request.get("user"), "pull_request.user")
-          head = object_at(pull_request.get("head"), "pull_request.head")
 
           repository_name = text_at(repository.get("full_name"), "repository.full_name", 201)
           if re.fullmatch(r"[^/\s]{1,100}/[^/\s]{1,100}", repository_name) is None:
@@ -97,22 +84,8 @@ jobs:
               or not 1 <= number <= MAX_TARGET_NUMBER
           ):
               fail("pull_request.number must be a positive integer")
-          action = text_at(event.get("action"), "action", 64)
-          if action not in ALLOWED_ACTIONS:
-              fail("action is not allowed")
-          head_sha = text_at(head.get("sha"), "pull_request.head.sha", 64)
-          if re.fullmatch(r"[0-9a-f]{40,64}", head_sha) is None:
-              fail("pull_request.head.sha must be a hexadecimal commit id")
-          author = text_at(user.get("login"), "pull_request.user.login", 100)
-          draft = pull_request.get("draft")
-          if not isinstance(draft, bool):
-              fail("pull_request.draft must be a boolean")
 
           reduced = {
-              "action": action,
-              "author": author,
-              "draft": draft,
-              "head_sha": head_sha,
               "repository": repository_name,
               "schema_version": 1,
               "target_number": number,
