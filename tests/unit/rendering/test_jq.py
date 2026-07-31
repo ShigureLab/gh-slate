@@ -154,6 +154,29 @@ def test_selector_rejects_every_platform_dependent_c_math_builtin() -> None:
         assert caught.value.details["token"] == identifier
 
 
+def test_selector_rejects_every_time_dependent_builtin() -> None:
+    expected = {
+        "fromdate",
+        "fromdateiso8601",
+        "gmtime",
+        "localtime",
+        "mktime",
+        "now",
+        "strftime",
+        "strflocaltime",
+        "strptime",
+        "todate",
+        "todateiso8601",
+    }
+    assert jq_module._NONDETERMINISTIC_IDENTIFIERS - jq_module._PLATFORM_DEPENDENT_MATH_IDENTIFIERS == expected
+
+    for identifier in sorted(expected):
+        with pytest.raises(RenderingError) as caught:
+            select_one(None, identifier)
+        assert caught.value.code == "jq_filter_forbidden"
+        assert caught.value.details["token"] == identifier
+
+
 def test_selector_scan_is_token_aware_for_data_strings_fields_and_comments() -> None:
     source = {
         "env": "data",
