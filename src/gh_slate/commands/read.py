@@ -292,7 +292,8 @@ def run_doctor(args: Namespace) -> int:
         "ok": True,
         "gh": version,
         "host": host,
-        "actor": actor,
+        "actor": actor.login,
+        "actor_id": actor.id,
         "jq": "ok",
         "jinja": "ok",
         "json_schema": "draft-2020-12",
@@ -301,7 +302,7 @@ def run_doctor(args: Namespace) -> int:
         _write_json(record)
     else:
         print(f"ok gh: {version}")
-        print(f"ok auth: {actor}")
+        print(f"ok auth: {actor.login} ({actor.id})")
         print("ok jq, Jinja, JSON Schema draft 2020-12")
     return 0
 

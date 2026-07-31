@@ -11,6 +11,7 @@ from gh_slate.codec import CodecError, decode_comment
 from gh_slate.errors import ExitCode
 from gh_slate.github.errors import GitHubReadError
 from gh_slate.github.models import (
+    GitHubActor,
     GitHubComment,
     ManagedSlate,
     SlateCandidate,
@@ -43,7 +44,13 @@ class ReadClient(Protocol):
         paginate: bool = False,
     ) -> object: ...
 
-    def current_actor(self, hostname: str | None = None) -> str: ...
+    def current_actor(self, hostname: str | None = None) -> GitHubActor: ...
+
+    def resolve_actor(
+        self,
+        login: str,
+        hostname: str | None = None,
+    ) -> GitHubActor: ...
 
 
 def _integer(value: object, *, field: str) -> int:
@@ -119,24 +126,41 @@ def _comment(
         ) from None
     user = record.get("user")
     author: str | None = None
+    author_id: int | None = None
     if user is not None:
         if not isinstance(user, Mapping):
             raise GitHubReadError(
                 "GitHub returned an invalid comment author",
                 code="github_response_invalid",
             )
-        login = cast("Mapping[str, object]", user).get("login")
+        user_record = cast("Mapping[str, object]", user)
+        login = user_record.get("login")
         if not isinstance(login, str) or not login:
             raise GitHubReadError(
                 "GitHub returned an invalid comment author",
                 code="github_response_invalid",
             )
-        author = login
+        try:
+            actor = GitHubActor(
+                id=_integer(
+                    user_record.get("id"),
+                    field="comments[].user.id",
+                ),
+                login=login,
+            )
+        except ValueError:
+            raise GitHubReadError(
+                "GitHub returned an invalid comment author",
+                code="github_response_invalid",
+            ) from None
+        author = actor.login
+        author_id = actor.id
     return GitHubComment(
         id=_integer(record.get("id"), field="comments[].id"),
         body=body,
         author=author,
         url=url,
+        author_id=author_id,
         created_at=_optional_text(
             record.get("created_at"),
             field="comments[].created_at",
@@ -170,10 +194,6 @@ def _marker_name(body: str) -> str | None:
     return None if match is None else match.group("name")
 
 
-def _controller_matches(left: str | None, right: str) -> bool:
-    return left is not None and left.casefold() == right.casefold()
-
-
 class CommentStore:
     """Read and classify managed comments without exposing a mutation method."""
 
@@ -183,16 +203,18 @@ class CommentStore:
     def controller(
         self,
         target: TargetLike,
-        requested: str | None = None,
-    ) -> str:
+        requested: str | GitHubActor | None = None,
+    ) -> GitHubActor:
+        if isinstance(requested, GitHubActor):
+            return requested
         if requested is not None:
-            if not requested:
+            if not isinstance(requested, str) or not requested:
                 raise GitHubReadError(
                     "controller login must not be empty",
                     code="controller_invalid",
                     exit_code=ExitCode.VALIDATION,
                 )
-            return requested
+            return self._client.resolve_actor(requested, target.host)
         return self._client.current_actor(target.host)
 
     def comments(self, target: TargetLike) -> tuple[GitHubComment, ...]:
@@ -208,23 +230,21 @@ class CommentStore:
         self,
         target: TargetLike,
         *,
-        controller: str | None = None,
+        controller: str | GitHubActor | None = None,
         name: str | None = None,
     ) -> tuple[SlateCandidate, ...]:
         selected_controller = self.controller(target, controller)
         candidates: list[SlateCandidate] = []
         for comment in self.comments(target):
-            if not _controller_matches(comment.author, selected_controller):
+            if comment.author_id != selected_controller.id:
                 continue
             marker_name = _marker_name(comment.body)
             if marker_name is None or (name is not None and marker_name != name):
                 continue
             try:
                 decoded = decode_comment(comment.body)
-                if not _controller_matches(
-                    decoded.state.controller.login,
-                    selected_controller,
-                ):
+                stored_controller_id = decoded.state.controller.id
+                if stored_controller_id is not None and stored_controller_id != selected_controller.id:
                     raise GitHubReadError(
                         "stored controller does not match the comment author",
                         code="controller_mismatch",
@@ -259,7 +279,7 @@ class CommentStore:
         target: TargetLike,
         name: str,
         *,
-        controller: str | None = None,
+        controller: str | GitHubActor | None = None,
     ) -> ManagedSlate:
         candidates = self.candidates(
             target,

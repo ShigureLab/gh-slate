@@ -30,9 +30,11 @@ REPOSITORY = "owner/repo"
 NUMBER = 42
 TARGET_URL = f"https://{HOST}/{REPOSITORY}/issues/{NUMBER}"
 ACTOR = "ci-bot"
+ACTOR_ID = 101
+OTHER_ACTOR_ID = 202
 EMPTY_HASH = "0" * 64
 
-ProcessCall = tuple[tuple[str, ...], float, str | None]
+ProcessCall = tuple[tuple[str, ...], float, str | None, int, int]
 
 
 @dataclass(slots=True)
@@ -47,8 +49,18 @@ class RecordingRunner:
         *,
         timeout: float,
         hostname: str | None,
+        max_stdout_bytes: int,
+        max_stderr_bytes: int,
     ) -> ProcessResult:
-        self.calls.append((argv, timeout, hostname))
+        self.calls.append(
+            (
+                argv,
+                timeout,
+                hostname,
+                max_stdout_bytes,
+                max_stderr_bytes,
+            )
+        )
         if argv == ("gh", "version"):
             return _success("gh version 2.96.0\n")
         if argv[1:3] == ("auth", "status"):
@@ -79,7 +91,7 @@ class RecordingRunner:
         if len(argv) > 1 and argv[1] == "api":
             endpoint = argv[-1]
             if endpoint == "user":
-                return _json_success({"login": self.actor})
+                return _json_success({"id": ACTOR_ID, "login": self.actor})
             if endpoint.casefold() == (f"repos/{REPOSITORY}/issues/{NUMBER}/comments?per_page=100".casefold()):
                 return _json_success(self.pages)
         raise AssertionError(f"unexpected gh invocation: {argv!r}")
@@ -116,7 +128,7 @@ def _materialized(
     state = StateV1(
         name=name,
         revision=7,
-        controller=ControllerV1(login=ACTOR),
+        controller=ControllerV1(login=ACTOR, id=ACTOR_ID),
         data={"status": status},
         renderer=jinja_descriptor(
             "# {{ slate.name }}\n\n"
@@ -142,13 +154,14 @@ def _comment(
     body: str,
     *,
     author: str = ACTOR,
+    author_id: int = ACTOR_ID,
     target_url: str = TARGET_URL,
 ) -> dict[str, object]:
     return {
         "id": identifier,
         "body": body,
         "html_url": f"{target_url}#issuecomment-{identifier}",
-        "user": {"login": author},
+        "user": {"id": author_id, "login": author},
         "created_at": "2026-07-31T00:00:00Z",
         "updated_at": "2026-07-31T00:01:00Z",
     }
@@ -172,9 +185,11 @@ def _corrupt(materialized: MaterializedComment) -> str:
 
 def _assert_only_read_calls(runner: RecordingRunner) -> None:
     assert runner.calls
-    for argv, timeout, hostname in runner.calls:
+    for argv, timeout, hostname, max_stdout_bytes, max_stderr_bytes in runner.calls:
         assert argv[0] == "gh"
         assert timeout > 0
+        assert max_stdout_bytes > 0
+        assert max_stderr_bytes > 0
         if len(argv) > 1 and argv[1] == "api":
             method_index = argv.index("--method")
             assert argv[method_index + 1] == "GET"
@@ -259,7 +274,12 @@ def test_list_classifies_valid_drift_corrupt_and_duplicate_comments(
                 _comment(101, valid.encoded.body),
                 _comment(102, _drifted(drifted)),
                 _comment(104, duplicate.encoded.body),
-                _comment(106, forged.encoded.body, author="attacker"),
+                _comment(
+                    106,
+                    forged.encoded.body,
+                    author="attacker",
+                    author_id=OTHER_ACTOR_ID,
+                ),
             ],
             [
                 _comment(103, _corrupt(corrupt)),
@@ -393,13 +413,16 @@ def test_doctor_checks_host_auth_actor_and_local_runtime_without_writes(
 
     assert run(["doctor", "--host", HOST], prog="gh slate") == 0
     output = capsys.readouterr()
-    assert output.out == (f"ok gh: gh version 2.96.0\nok auth: {ACTOR}\nok jq, Jinja, JSON Schema draft 2020-12\n")
+    assert output.out == (
+        f"ok gh: gh version 2.96.0\nok auth: {ACTOR} ({ACTOR_ID})\nok jq, Jinja, JSON Schema draft 2020-12\n"
+    )
     assert output.err == ""
 
     assert run(["doctor", "--host", HOST, "--json"], prog="gh slate") == 0
     output = capsys.readouterr()
     assert json.loads(output.out) == {
         "actor": ACTOR,
+        "actor_id": ACTOR_ID,
         "gh": "gh version 2.96.0",
         "host": HOST,
         "jinja": "ok",
@@ -437,7 +460,7 @@ def test_unknown_renderer_remains_exportable_but_cannot_rerender(
     state = StateV1(
         name="future",
         revision=1,
-        controller=ControllerV1(login=ACTOR),
+        controller=ControllerV1(login=ACTOR, id=ACTOR_ID),
         data={"status": "ready"},
         renderer=RendererDescriptorV1(
             kind="future-dashboard",

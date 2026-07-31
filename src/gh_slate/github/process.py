@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
-from typing import Protocol, cast
+from decimal import Decimal
+from typing import BinaryIO, Protocol, cast
+from urllib.parse import quote
 
 from gh_slate.codec.errors import CodecError
 from gh_slate.codec.json import JsonLimits, JsonValue, strict_loads
 from gh_slate.errors import GhSlateError
+from gh_slate.github.models import GitHubActor
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +48,8 @@ class ProcessRunner(Protocol):
         *,
         timeout: float,
         hostname: str | None,
+        max_stdout_bytes: int,
+        max_stderr_bytes: int,
     ) -> ProcessResult: ...
 
 
@@ -57,24 +63,93 @@ class SubprocessRunner:
         *,
         timeout: float,
         hostname: str | None,
+        max_stdout_bytes: int,
+        max_stderr_bytes: int,
     ) -> ProcessResult:
         environment: dict[str, str] | None = None
         if hostname is not None:
             environment = os.environ.copy()
             environment["GH_HOST"] = hostname
-        completed = subprocess.run(
+        process = subprocess.Popen(
             argv,
             stdin=subprocess.DEVNULL,
-            capture_output=True,
-            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             shell=False,
-            timeout=timeout,
             env=environment,
         )
+        if process.stdout is None or process.stderr is None:  # pragma: no cover
+            process.kill()
+            process.wait()
+            raise OSError("GitHub CLI process pipes were not created")
+
+        stdout = bytearray()
+        stderr = bytearray()
+        reader_errors: list[BaseException] = []
+        kill_lock = threading.Lock()
+
+        def kill() -> None:
+            with kill_lock:
+                try:
+                    process.kill()
+                except (OSError, ProcessLookupError):
+                    pass
+
+        def read_bounded(
+            pipe: BinaryIO,
+            buffer: bytearray,
+            limit: int,
+        ) -> None:
+            try:
+                while True:
+                    remaining = limit + 1 - len(buffer)
+                    if remaining <= 0:
+                        kill()
+                        return
+                    chunk = pipe.read(min(64 * 1024, remaining))
+                    if not chunk:
+                        return
+                    buffer.extend(chunk)
+                    if len(buffer) > limit:
+                        kill()
+                        return
+            except BaseException as error:
+                reader_errors.append(error)
+                kill()
+            finally:
+                pipe.close()
+
+        readers = (
+            threading.Thread(
+                target=read_bounded,
+                args=(process.stdout, stdout, max_stdout_bytes),
+                daemon=False,
+            ),
+            threading.Thread(
+                target=read_bounded,
+                args=(process.stderr, stderr, max_stderr_bytes),
+                daemon=False,
+            ),
+        )
+        for reader in readers:
+            reader.start()
+
+        try:
+            returncode = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            kill()
+            process.wait()
+            for reader in readers:
+                reader.join()
+            raise
+        for reader in readers:
+            reader.join()
+        if reader_errors:
+            raise OSError("failed while reading GitHub CLI output") from reader_errors[0]
         return ProcessResult(
-            returncode=completed.returncode,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
+            returncode=returncode,
+            stdout=bytes(stdout),
+            stderr=bytes(stderr),
         )
 
 
@@ -252,6 +327,39 @@ def _qualify_repository(repository: str, hostname: str | None) -> str:
     )
 
 
+def _actor(value: object) -> GitHubActor:
+    if not isinstance(value, Mapping):
+        raise _error(
+            "GitHub user response must be an object",
+            code="gh_response_invalid",
+        )
+    record = cast("Mapping[str, object]", value)
+    login = record.get("login")
+    if not isinstance(login, str) or not login:
+        raise _error(
+            "GitHub user response is missing login",
+            code="gh_response_invalid",
+        )
+    identifier = record.get("id")
+    if isinstance(identifier, Decimal):
+        if not identifier.is_finite() or identifier != identifier.to_integral_value():
+            identifier = None
+        else:
+            identifier = int(identifier)
+    if isinstance(identifier, bool) or not isinstance(identifier, int):
+        raise _error(
+            "GitHub user response has an invalid id",
+            code="gh_response_invalid",
+        )
+    try:
+        return GitHubActor(id=identifier, login=login)
+    except ValueError:
+        raise _error(
+            "GitHub user response has an invalid id",
+            code="gh_response_invalid",
+        ) from None
+
+
 @dataclass(frozen=True, slots=True)
 class GhProcess:
     runner: ProcessRunner = field(default_factory=SubprocessRunner)
@@ -273,6 +381,8 @@ class GhProcess:
                 argv,
                 timeout=self.limits.timeout_seconds,
                 hostname=hostname,
+                max_stdout_bytes=self.limits.max_stdout_bytes,
+                max_stderr_bytes=self.limits.max_stderr_bytes,
             )
         except subprocess.TimeoutExpired:
             raise _error(
@@ -396,20 +506,21 @@ class GhProcess:
             hostname=hostname,
         )
 
-    def current_actor(self, hostname: str | None = None) -> str:
-        value = self.api_get("user", hostname=hostname)
-        if not isinstance(value, Mapping):
-            raise _error(
-                "GitHub user response must be an object",
-                code="gh_response_invalid",
+    def current_actor(self, hostname: str | None = None) -> GitHubActor:
+        return _actor(self.api_get("user", hostname=hostname))
+
+    def resolve_actor(
+        self,
+        login: str,
+        hostname: str | None = None,
+    ) -> GitHubActor:
+        value = _validate_argument(login, subject="controller login")
+        return _actor(
+            self.api_get(
+                f"users/{quote(value, safe='')}",
+                hostname=hostname,
             )
-        login = cast("Mapping[str, object]", value).get("login")
-        if not isinstance(login, str) or not login:
-            raise _error(
-                "GitHub user response is missing login",
-                code="gh_response_invalid",
-            )
-        return login
+        )
 
     def repo_view(self, hostname: str | None = None) -> JsonValue:
         return self.run_json(

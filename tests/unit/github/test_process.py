@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import io
 import os
 import subprocess
+import sys
+import time
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import cast
@@ -9,6 +12,7 @@ from typing import cast
 import pytest
 
 from gh_slate.errors import GhSlateError
+from gh_slate.github.models import GitHubActor
 from gh_slate.github.process import (
     DEFAULT_GH_PROCESS_LIMITS,
     GhProcess,
@@ -20,7 +24,7 @@ from gh_slate.github.process import (
 @dataclass(slots=True)
 class FakeRunner:
     results: list[ProcessResult] = field(default_factory=list)
-    calls: list[tuple[tuple[str, ...], float, str | None]] = field(default_factory=list)
+    calls: list[tuple[tuple[str, ...], float, str | None, int, int]] = field(default_factory=list)
     error: BaseException | None = None
 
     def run(
@@ -29,8 +33,18 @@ class FakeRunner:
         *,
         timeout: float,
         hostname: str | None,
+        max_stdout_bytes: int,
+        max_stderr_bytes: int,
     ) -> ProcessResult:
-        self.calls.append((argv, timeout, hostname))
+        self.calls.append(
+            (
+                argv,
+                timeout,
+                hostname,
+                max_stdout_bytes,
+                max_stderr_bytes,
+            )
+        )
         if self.error is not None:
             raise self.error
         if not self.results:
@@ -81,6 +95,8 @@ def test_api_get_uses_explicit_get_hostname_and_paginated_slurp() -> None:
             ),
             30.0,
             "github.example.com",
+            32 * 1024 * 1024,
+            64 * 1024,
         )
     ]
 
@@ -123,9 +139,12 @@ def test_run_json_rejects_payload_secret_and_side_effect_options(
 
 
 def test_current_actor_validates_the_user_response() -> None:
-    runner = FakeRunner(results=[success(b'{"login":"octocat"}')])
+    runner = FakeRunner(results=[success(b'{"id":583231,"login":"octocat"}')])
 
-    assert process(runner).current_actor("github.example.com") == "octocat"
+    assert process(runner).current_actor("github.example.com") == GitHubActor(
+        id=583231,
+        login="octocat",
+    )
     assert runner.calls[0][0] == (
         "gh",
         "api",
@@ -137,14 +156,36 @@ def test_current_actor_validates_the_user_response() -> None:
     )
 
 
-@pytest.mark.parametrize("response", [b"[]", b"{}", b'{"login":null}'])
-def test_current_actor_rejects_missing_login(response: bytes) -> None:
+@pytest.mark.parametrize(
+    "response",
+    [
+        b"[]",
+        b"{}",
+        b'{"id":1,"login":null}',
+        b'{"login":"octocat"}',
+        b'{"id":0,"login":"octocat"}',
+        b'{"id":1.5,"login":"octocat"}',
+    ],
+)
+def test_current_actor_rejects_invalid_identity(response: bytes) -> None:
     runner = FakeRunner(results=[success(response)])
 
     with pytest.raises(GhSlateError) as caught:
         process(runner).current_actor()
 
     assert caught.value.code == "gh_response_invalid"
+
+
+def test_resolve_actor_quotes_login_and_returns_stable_identity() -> None:
+    runner = FakeRunner(results=[success(b'{"id":583231,"login":"new-octocat"}')])
+
+    actor = process(runner).resolve_actor(
+        "old/name",
+        hostname="github.example.com",
+    )
+
+    assert actor == GitHubActor(id=583231, login="new-octocat")
+    assert runner.calls[0][0][-1] == "users/old%2Fname"
 
 
 def test_repo_view_propagates_hostname_without_an_unsupported_flag() -> None:
@@ -165,6 +206,8 @@ def test_repo_view_propagates_hostname_without_an_unsupported_flag() -> None:
         ),
         30.0,
         "github.example.com",
+        32 * 1024 * 1024,
+        64 * 1024,
     )
 
 
@@ -219,24 +262,40 @@ def test_default_runner_never_uses_a_shell_and_inherits_environment(
     monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example")
     monkeypatch.setenv("GH_TOKEN", "inherited-token")
 
-    def complete(argv: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+    class CompletedProcess:
+        def __init__(self) -> None:
+            self.stdout = io.BytesIO(b"{}")
+            self.stderr = io.BytesIO(b"")
+
+        def wait(self, timeout: float | None = None) -> int:
+            captured["timeout"] = timeout
+            return 0
+
+        def kill(self) -> None:
+            captured["killed"] = True
+
+    def complete(argv: tuple[str, ...], **kwargs: object) -> CompletedProcess:
         captured["argv"] = argv
         captured.update(kwargs)
-        return subprocess.CompletedProcess(argv, 0, b"{}", b"")
+        return CompletedProcess()
 
-    monkeypatch.setattr(subprocess, "run", complete)
+    monkeypatch.setattr(subprocess, "Popen", complete)
 
     result = SubprocessRunner().run(
         ("gh", "api", "--method", "GET", "user"),
         timeout=1.5,
         hostname="github.example.com",
+        max_stdout_bytes=1024,
+        max_stderr_bytes=512,
     )
 
     assert result == ProcessResult(0, b"{}", b"")
     assert captured["argv"] == ("gh", "api", "--method", "GET", "user")
     assert captured["shell"] is False
     assert captured["stdin"] == subprocess.DEVNULL
-    assert captured["capture_output"] is True
+    assert captured["stdout"] == subprocess.PIPE
+    assert captured["stderr"] == subprocess.PIPE
+    assert captured["timeout"] == 1.5
     environment = cast("dict[str, str]", captured["env"])
     assert environment["HTTPS_PROXY"] == "http://proxy.example"
     assert environment["GH_TOKEN"] == "inherited-token"
@@ -249,15 +308,58 @@ def test_default_runner_uses_implicit_environment_without_hostname(
 ) -> None:
     captured: dict[str, object] = {}
 
-    def complete(argv: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+    class CompletedProcess:
+        def __init__(self) -> None:
+            self.stdout = io.BytesIO(b"{}")
+            self.stderr = io.BytesIO(b"")
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+        def kill(self) -> None:
+            pass
+
+    def complete(argv: tuple[str, ...], **kwargs: object) -> CompletedProcess:
         captured.update(kwargs)
-        return subprocess.CompletedProcess(argv, 0, b"{}", b"")
+        return CompletedProcess()
 
-    monkeypatch.setattr(subprocess, "run", complete)
+    monkeypatch.setattr(subprocess, "Popen", complete)
 
-    SubprocessRunner().run(("gh", "version"), timeout=1, hostname=None)
+    SubprocessRunner().run(
+        ("gh", "version"),
+        timeout=1,
+        hostname=None,
+        max_stdout_bytes=1024,
+        max_stderr_bytes=512,
+    )
 
     assert captured["env"] is None
+
+
+@pytest.mark.parametrize(
+    ("descriptor", "stream"),
+    [(1, "stdout"), (2, "stderr")],
+)
+def test_default_runner_kills_process_as_soon_as_a_stream_exceeds_its_limit(
+    descriptor: int,
+    stream: str,
+) -> None:
+    started = time.monotonic()
+
+    result = SubprocessRunner().run(
+        (
+            sys.executable,
+            "-c",
+            (f"import os,time;os.write({descriptor},b'x'*10485760);time.sleep(10)"),
+        ),
+        timeout=5,
+        hostname=None,
+        max_stdout_bytes=1024,
+        max_stderr_bytes=1024,
+    )
+
+    assert len(getattr(result, stream)) == 1025
+    assert time.monotonic() - started < 3
 
 
 @pytest.mark.parametrize(

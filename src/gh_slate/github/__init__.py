@@ -3,6 +3,7 @@ from __future__ import annotations
 from gh_slate.github.errors import GitHubReadError
 from gh_slate.github.lookup import ProcessTargetLookup
 from gh_slate.github.models import (
+    GitHubActor,
     GitHubComment,
     ManagedSlate,
     SlateCandidate,
@@ -37,6 +38,7 @@ __all__ = [
     "CommentStore",
     "GhProcess",
     "GhProcessLimits",
+    "GitHubActor",
     "GitHubComment",
     "GitHubReadError",
     "ManagedSlate",
