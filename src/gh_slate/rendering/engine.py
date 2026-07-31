@@ -30,7 +30,7 @@ from gh_slate.codec.model import (
 )
 from gh_slate.codec.text import utf8_size
 from gh_slate.rendering.errors import RenderingError
-from gh_slate.rendering.jinja import SlateContext, render_jinja
+from gh_slate.rendering.jinja import SlateContext, jinja_target_fields, render_jinja
 from gh_slate.rendering.jq import select_one
 from gh_slate.rendering.limits import DEFAULT_RENDER_LIMITS, RenderLimits
 from gh_slate.rendering.list import render_list
@@ -50,12 +50,6 @@ if TYPE_CHECKING:
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _MAX_SCHEMA_PROJECTION_PARTS = 2048
 _PREFLIGHT_CONTROLLER_LOGIN = "0123456789abcdefghijklmnopqrstuvwxyz-a0"
-_PREFLIGHT_TARGET_REPOSITORY = f"{'o' * 39}/{'r' * 100}"
-_PREFLIGHT_TARGET_HOST = ".".join(("h" * 63, "h" * 63, "h" * 63, "h" * 61))
-_PREFLIGHT_TARGET_NUMBER = 2**63 - 1
-_PREFLIGHT_TARGET_URL = (
-    f"https://{_PREFLIGHT_TARGET_HOST}/{_PREFLIGHT_TARGET_REPOSITORY}/issues/{_PREFLIGHT_TARGET_NUMBER}"
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,10 +226,18 @@ def _condition_matches(
         condition_resolver = resolver.in_subresource(
             DRAFT202012.create_resource(condition),
         )
-        return SlateDraft202012Validator(
-            condition,
-            _resolver=condition_resolver,
-        ).is_valid(instance)
+        validator = SlateDraft202012Validator(condition)
+        return (
+            next(
+                validator.descend(
+                    instance,
+                    condition,
+                    resolver=condition_resolver,
+                ),
+                None,
+            )
+            is None
+        )
     except Exception:
         # Projection is advisory. If a condition cannot be evaluated locally,
         # retaining both outcomes is safer than silently dropping columns.
@@ -350,6 +352,8 @@ def _project_table_item_schema(
     snapshot: SchemaSnapshotV1 | None,
     selector: str,
     data: Mapping[str, JsonValue],
+    *,
+    max_rows: int,
 ) -> object:
     if snapshot is None or not isinstance(snapshot.document, Mapping):
         return None
@@ -408,7 +412,7 @@ def _project_table_item_schema(
                 rows: list[object] = []
                 for instance in candidate_instances.values:
                     if isinstance(instance, tuple):
-                        rows.extend(instance[: DEFAULT_RENDER_LIMITS.max_table_rows])
+                        rows.extend(instance[:max_rows])
                 item_candidates.append(
                     (
                         items,
@@ -438,9 +442,16 @@ def _table_item_schema(
     snapshot: SchemaSnapshotV1 | None,
     selector: str,
     data: Mapping[str, JsonValue],
+    *,
+    max_rows: int,
 ) -> object:
     with evaluation_budget():
-        return _project_table_item_schema(snapshot, selector, data)
+        return _project_table_item_schema(
+            snapshot,
+            selector,
+            data,
+            max_rows=max_rows,
+        )
 
 
 def _enforce_output(markdown: str, limits: RenderLimits) -> None:
@@ -459,8 +470,7 @@ def _enforce_output(markdown: str, limits: RenderLimits) -> None:
 def _preflight_materialization(
     result: RenderResult,
     *,
-    slate: SlateContext,
-    limits: RenderLimits,
+    name: str,
 ) -> None:
     """Apply the complete comment-envelope limits to a local render.
 
@@ -473,56 +483,38 @@ def _preflight_materialization(
     if len(_PREFLIGHT_CONTROLLER_LOGIN.encode("ascii")) != MAX_GITHUB_LOGIN_BYTES:  # pragma: no cover
         raise AssertionError("preflight controller login must use the full GitHub login budget")
 
-    preflight = result
-    if result.renderer.kind == "jinja" and (
-        not isinstance(slate.repository, str)
-        or not slate.repository
-        or isinstance(slate.number, bool)
-        or not isinstance(slate.number, int)
-        or slate.number <= 0
-        or not isinstance(slate.url, str)
-        or not slate.url
-    ):
-        # Pure local rendering exposes unknown target fields as null. Rerender
-        # once with maximum-width GitHub target sentinels so a successful
-        # preview cannot rely on those much shorter values for its size checks.
-        preflight = _render(
-            result.data,
-            result.renderer,
-            schema=result.data_schema,
-            slate=SlateContext(
-                name=slate.name,
-                repository=(
-                    slate.repository
-                    if isinstance(slate.repository, str) and slate.repository
-                    else _PREFLIGHT_TARGET_REPOSITORY
-                ),
-                number=(
-                    slate.number
-                    if isinstance(slate.number, int) and not isinstance(slate.number, bool) and slate.number > 0
-                    else _PREFLIGHT_TARGET_NUMBER
-                ),
-                url=(slate.url if isinstance(slate.url, str) and slate.url else _PREFLIGHT_TARGET_URL),
-            ),
-            limits=limits,
-            preflight=False,
-        )
-
     encode_comment(
         StateV1(
-            name=slate.name,
+            name=name,
             revision=MAX_REVISION,
             controller=ControllerV1(
                 login=_PREFLIGHT_CONTROLLER_LOGIN,
                 id=MAX_GITHUB_USER_ID,
             ),
-            data=preflight.data,
-            data_schema=preflight.data_schema,
-            renderer=preflight.renderer,
-            render_sha256=preflight.render_sha256,
+            data=result.data,
+            data_schema=result.data_schema,
+            renderer=result.renderer,
+            render_sha256=result.render_sha256,
         ),
-        preflight.markdown,
+        result.markdown,
     )
+
+
+def _missing_jinja_target_fields(
+    source: str,
+    slate: SlateContext,
+) -> tuple[str, ...]:
+    referenced = jinja_target_fields(source)
+    missing: list[str] = []
+    if "repository" in referenced and (not isinstance(slate.repository, str) or not slate.repository):
+        missing.append("repository")
+    if "number" in referenced and (
+        isinstance(slate.number, bool) or not isinstance(slate.number, int) or slate.number <= 0
+    ):
+        missing.append("number")
+    if "url" in referenced and (not isinstance(slate.url, str) or not slate.url):
+        missing.append("url")
+    return tuple(missing)
 
 
 def _render(
@@ -539,8 +531,17 @@ def _render(
     _enforce_components(canonical, snapshot, renderer)
 
     if renderer.kind == "jinja":
+        source = _parse_jinja_source(renderer)
+        missing_target_fields = _missing_jinja_target_fields(source, slate) if preflight else ()
+        if missing_target_fields:
+            raise RenderingError(
+                "target-dependent Jinja previews require their real GitHub target context",
+                code="render_context_required",
+                details={"missing_fields": list(missing_target_fields)},
+                hints=("use apply --dry-run with the intended --target and --repo",),
+            )
         visible = render_jinja(
-            _parse_jinja_source(renderer),
+            source,
             data=canonical,
             slate=slate,
             render_limits=limits,
@@ -556,6 +557,7 @@ def _render(
                     snapshot,
                     parsed.selector,
                     canonical,
+                    max_rows=min(parsed.max_rows, limits.max_table_rows),
                 )
             )
             resolved = resolve_table_renderer(
@@ -589,7 +591,7 @@ def _render(
         render_sha256=render_sha256(markdown),
     )
     if preflight:
-        _preflight_materialization(result, slate=slate, limits=limits)
+        _preflight_materialization(result, name=slate.name)
     return result
 
 

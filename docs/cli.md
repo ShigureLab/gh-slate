@@ -439,6 +439,10 @@ at the strict parser's 8 MiB source limit and then at the smaller canonical
 data/schema component limits; Jinja input is capped at 64 KiB before decoding.
 Local render also enforces the canonical renderer-component and visible-output
 limits, so a successful preview is eligible for later state materialization.
+Because a target-sensitive Jinja branch cannot be bounded using placeholder
+values, pure local render rejects templates that reference
+`slate.repository`, `slate.number`, or `slate.url`. Use `apply --dry-run` with
+the intended target to preview and validate those templates without writing.
 
 `view` prints the visible Markdown by default. `--json` returns identity,
 controller, renderer, schema presence, revision, hashes, drift status, and

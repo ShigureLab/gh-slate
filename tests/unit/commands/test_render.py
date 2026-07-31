@@ -120,14 +120,15 @@ def test_local_render_rejects_an_unmaterializable_envelope_without_stdout(
     assert "codec_size_limit" in captured.err
 
 
-def test_local_jinja_render_preflights_unknown_target_field_widths(
+def test_local_jinja_render_requires_context_for_target_dependent_templates(
     tmp_path: Path,
     capsys,
 ) -> None:
     template = tmp_path / "slate.md.j2"
-    template.write_text("{{ slate.url }}" * 400, encoding="utf-8")
+    template.write_text("{{ slate.url }}", encoding="utf-8")
 
     assert run(["render", "ci", "--template", str(template)]) == 2
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "jinja_output_limit" in captured.err
+    assert "render_context_required" in captured.err
+    assert "apply --dry-run" in captured.err

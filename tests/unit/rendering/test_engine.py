@@ -367,6 +367,42 @@ def test_table_schema_projection_evaluates_item_conditions_against_rows(
     ]
 
 
+def test_table_schema_projection_checks_every_row_that_can_be_rendered() -> None:
+    rows = [{"kind": "ci", "status": "passing"} for _index in range(500)]
+    rows.append({"kind": "deploy", "environment": "production"})
+    schema = validate_schema(
+        {
+            "properties": {
+                "jobs": {
+                    "type": "array",
+                    "items": {
+                        "if": {
+                            "properties": {"kind": {"const": "ci"}},
+                            "required": ["kind"],
+                        },
+                        "then": {"properties": {"status": {"type": "string"}}},
+                        "else": {"properties": {"environment": {"type": "string"}}},
+                    },
+                }
+            }
+        }
+    )
+
+    result = render(
+        {"jobs": rows},
+        TableRendererV1(selector=".jobs", max_rows=501).to_descriptor(),
+        schema=schema,
+        slate=SlateContext(name="ci"),
+        limits=RenderLimits(max_table_rows=501),
+    )
+
+    assert result.renderer.to_json()["columns"] == [
+        {"path": ["status"], "header": "status"},
+        {"path": ["environment"], "header": "environment"},
+    ]
+    assert result.markdown.endswith("| — | production |\n")
+
+
 def test_table_schema_projection_activates_dependent_schemas_from_data() -> None:
     schema = validate_schema(
         {
@@ -726,6 +762,18 @@ def test_jinja_descriptor_is_exact_and_context_name_must_match_state() -> None:
         ),
     )
     assert complete.markdown == "true\n"
+
+    target_preview = render(
+        {},
+        jinja_descriptor("{{ slate.url }}"),
+        slate=SlateContext(
+            name="ci",
+            repository="owner/repo",
+            number=42,
+            url="https://github.com/owner/repo/issues/42",
+        ),
+    )
+    assert target_preview.markdown == "https://github.com/owner/repo/issues/42\n"
 
 
 @pytest.mark.parametrize("selector", [".missing | empty", ".[]"])

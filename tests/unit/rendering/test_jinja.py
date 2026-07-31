@@ -10,6 +10,7 @@ from gh_slate.rendering.jinja import (
     DEFAULT_JINJA_LIMITS,
     JinjaLimits,
     SlateContext,
+    jinja_target_fields,
     render_jinja,
 )
 
@@ -58,6 +59,29 @@ def test_optional_slate_context_fields_are_explicit_nulls() -> None:
     )
 
     assert rendered == "null/null/null"
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("{{ slate.name }}", frozenset()),
+        ("{{ slate.url }}", frozenset({"url"})),
+        ('{{ slate["repository"] }}', frozenset({"repository"})),
+        (
+            "{% if slate[data.field] %}yes{% endif %}",
+            frozenset({"repository", "number", "url"}),
+        ),
+        (
+            "{{ slate | compact_json }}",
+            frozenset({"repository", "number", "url"}),
+        ),
+    ],
+)
+def test_detects_target_dependent_slate_context_access(
+    source: str,
+    expected: frozenset[str],
+) -> None:
+    assert jinja_target_fields(source) == expected
 
 
 def test_rendering_is_deterministic() -> None:

@@ -119,6 +119,7 @@ class _SlateSandbox(ImmutableSandboxedEnvironment):
 _PUBLIC_FILTERS = frozenset({"compact_json", "md_list", "md_table"})
 _LOOP_GUARD_FILTER = "__gh_slate_loop_guard"
 _MAX_AST_DEPTH = 64
+_TARGET_CONTEXT_FIELDS = frozenset({"repository", "number", "url"})
 
 _FORBIDDEN_NODES = (
     nodes.Add,
@@ -320,14 +321,12 @@ def _environment(
     return environment
 
 
-def render_jinja(
+def _validated_syntax_tree(
     source: str,
     *,
-    data: object,
-    slate: SlateContext,
-    limits: JinjaLimits = DEFAULT_JINJA_LIMITS,
-    render_limits: RenderLimits = DEFAULT_RENDER_LIMITS,
-) -> str:
+    environment: _SlateSandbox,
+    limits: JinjaLimits,
+) -> tuple[nodes.Template, list[nodes.Node]]:
     if not isinstance(source, str):
         raise RenderingError(
             "Jinja source must be text",
@@ -349,11 +348,6 @@ def render_jinja(
                 "max_bytes": limits.max_source_bytes,
             },
         )
-
-    canonical_data = _canonical_mapping(data, subject="data")
-    canonical_slate = _canonical_mapping(slate.to_mapping(), subject="slate context")
-    loop_budget = _LoopBudget(limits.max_loop_iterations)
-    environment = _environment(limits, loop_budget, render_limits)
     try:
         syntax_tree = environment.parse(source)
     except TemplateError as error:
@@ -397,6 +391,69 @@ def render_jinja(
             code="jinja_construct_forbidden",
             details={"filter": unknown_filter},
         )
+    return syntax_tree, all_nodes
+
+
+def jinja_target_fields(
+    source: str,
+    *,
+    limits: JinjaLimits = DEFAULT_JINJA_LIMITS,
+) -> frozenset[str]:
+    """Return target-dependent ``slate`` fields referenced by a template."""
+
+    environment = _environment(
+        limits,
+        _LoopBudget(limits.max_loop_iterations),
+        DEFAULT_RENDER_LIMITS,
+    )
+    _syntax_tree, all_nodes = _validated_syntax_tree(
+        source,
+        environment=environment,
+        limits=limits,
+    )
+    fields: set[str] = set()
+    direct_bases: set[int] = set()
+    for node in all_nodes:
+        field: object = None
+        base: nodes.Node | None = None
+        if isinstance(node, nodes.Getattr):
+            base = node.node
+            field = node.attr
+        elif isinstance(node, nodes.Getitem):
+            base = node.node
+            field = node.arg.value if isinstance(node.arg, nodes.Const) else None
+        if not isinstance(base, nodes.Name) or base.name != "slate":
+            continue
+        direct_bases.add(id(base))
+        if field in _TARGET_CONTEXT_FIELDS:
+            fields.add(cast("str", field))
+        elif field != "name":
+            fields.update(_TARGET_CONTEXT_FIELDS)
+
+    if any(
+        isinstance(node, nodes.Name) and node.name == "slate" and id(node) not in direct_bases for node in all_nodes
+    ):
+        fields.update(_TARGET_CONTEXT_FIELDS)
+    return frozenset(fields)
+
+
+def render_jinja(
+    source: str,
+    *,
+    data: object,
+    slate: SlateContext,
+    limits: JinjaLimits = DEFAULT_JINJA_LIMITS,
+    render_limits: RenderLimits = DEFAULT_RENDER_LIMITS,
+) -> str:
+    loop_budget = _LoopBudget(limits.max_loop_iterations)
+    environment = _environment(limits, loop_budget, render_limits)
+    syntax_tree, _all_nodes = _validated_syntax_tree(
+        source,
+        environment=environment,
+        limits=limits,
+    )
+    canonical_data = _canonical_mapping(data, subject="data")
+    canonical_slate = _canonical_mapping(slate.to_mapping(), subject="slate context")
 
     try:
         with localcontext(_JINJA_DECIMAL_CONTEXT):
@@ -464,5 +521,6 @@ __all__ = [
     "DEFAULT_JINJA_LIMITS",
     "JinjaLimits",
     "SlateContext",
+    "jinja_target_fields",
     "render_jinja",
 ]
