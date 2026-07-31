@@ -38,6 +38,7 @@ _ECMASCRIPT_ATOM_ESCAPES = {
     "S": f"[^{_ECMASCRIPT_CLASS_ESCAPES['s']}]",
 }
 _ECMASCRIPT_PASSTHROUGH_ESCAPES = frozenset("fnrtvpuPx")
+_HEXADECIMAL_DIGITS = frozenset("0123456789abcdefABCDEF")
 _ECMASCRIPT_IDENTIFIER_START = regex.compile(
     r"\A(?:[$_]|\p{ID_Start})\Z",
     flags=regex.VERSION0,
@@ -136,19 +137,40 @@ def _ecmascript_group_name(source: str) -> str:
             if closing_brace < 0:
                 raise ValueError("invalid ECMA-262 group name escape")
             hexadecimal = source[index + 3 : closing_brace]
-            index = closing_brace + 1
+            next_index = closing_brace + 1
+            if not 1 <= len(hexadecimal) <= 6:
+                raise ValueError("invalid ECMA-262 group name escape")
         else:
             hexadecimal = source[index + 2 : index + 6]
             if len(hexadecimal) != 4:
                 raise ValueError("invalid ECMA-262 group name escape")
-            index += 6
-        try:
-            codepoint = int(hexadecimal, 16)
-        except ValueError:
-            raise ValueError("invalid ECMA-262 group name escape") from None
-        if not hexadecimal or codepoint > 0x10FFFF:
+            next_index = index + 6
+        if any(character not in _HEXADECIMAL_DIGITS for character in hexadecimal):
             raise ValueError("invalid ECMA-262 group name escape")
+        codepoint = int(hexadecimal, 16)
+        if codepoint > 0x10FFFF:
+            raise ValueError("invalid ECMA-262 group name escape")
+
+        if 0xD800 <= codepoint <= 0xDBFF:
+            if (
+                next_index + 6 > len(source)
+                or source[next_index : next_index + 2] != r"\u"
+                or source[next_index + 2] == "{"
+            ):
+                raise ValueError("invalid ECMA-262 group name surrogate pair")
+            low_hexadecimal = source[next_index + 2 : next_index + 6]
+            if any(character not in _HEXADECIMAL_DIGITS for character in low_hexadecimal):
+                raise ValueError("invalid ECMA-262 group name surrogate pair")
+            low_surrogate = int(low_hexadecimal, 16)
+            if not 0xDC00 <= low_surrogate <= 0xDFFF:
+                raise ValueError("invalid ECMA-262 group name surrogate pair")
+            codepoint = 0x10000 + ((codepoint - 0xD800) << 10) + (low_surrogate - 0xDC00)
+            next_index += 6
+        elif 0xDC00 <= codepoint <= 0xDFFF:
+            raise ValueError("invalid ECMA-262 group name surrogate pair")
+
         decoded.append(chr(codepoint))
+        index = next_index
 
     name = "".join(decoded)
     if not name or _ECMASCRIPT_IDENTIFIER_START.fullmatch(name[0]) is None:
@@ -158,34 +180,148 @@ def _ecmascript_group_name(source: str) -> str:
     return name
 
 
+def _is_ecmascript_modifier_group(source: str, index: int) -> bool:
+    cursor = index + 2
+    enabled_start = cursor
+    while cursor < len(source) and source[cursor] in "ims":
+        cursor += 1
+    enabled = source[enabled_start:cursor]
+
+    disabled = ""
+    if cursor < len(source) and source[cursor] == "-":
+        cursor += 1
+        disabled_start = cursor
+        while cursor < len(source) and source[cursor] in "ims":
+            cursor += 1
+        disabled = source[disabled_start:cursor]
+        if not disabled:
+            return False
+
+    return (
+        bool(enabled or disabled)
+        and cursor < len(source)
+        and source[cursor] == ":"
+        and len(set(enabled)) == len(enabled)
+        and len(set(disabled)) == len(disabled)
+        and set(enabled).isdisjoint(disabled)
+    )
+
+
+def _is_group_quantified(source: str, closing_index: int) -> bool:
+    quantifier_index = closing_index + 1
+    if quantifier_index >= len(source):
+        return False
+    if source[quantifier_index] in "*+?":
+        return True
+    if source[quantifier_index] != "{":
+        return False
+
+    closing_brace = source.find("}", quantifier_index + 1)
+    if closing_brace < 0:
+        return False
+    bounds = source[quantifier_index + 1 : closing_brace]
+    minimum, separator, maximum = bounds.partition(",")
+    digits = frozenset("0123456789")
+    return (
+        bool(minimum)
+        and all(character in digits for character in minimum)
+        and (not separator or not maximum or all(character in digits for character in maximum))
+    )
+
+
+def _is_braced_quantifier(source: str, closing_index: int) -> bool:
+    opening_brace = source.rfind("{", 0, closing_index)
+    if opening_brace < 0 or _is_escaped(source, opening_brace):
+        return False
+    bounds = source[opening_brace + 1 : closing_index]
+    minimum, separator, maximum = bounds.partition(",")
+    digits = frozenset("0123456789")
+    return (
+        bool(minimum)
+        and all(character in digits for character in minimum)
+        and (not separator or not maximum or all(character in digits for character in maximum))
+    )
+
+
 def _ecmascript_pattern(source: str) -> str:
     """Translate the supported ECMA-262 regex surface to ``regex`` syntax."""
 
     result: list[str] = []
     group_names: dict[str, str] = {}
+    capture_contexts: dict[str, list[tuple[tuple[int, int], ...]]] = {}
+    branch_stack: list[list[int]] = [[0, 0]]
+    quantified_group_stack: list[tuple[int, set[str]]] = []
+    next_branch_scope = 1
 
-    def safe_group_name(raw_name: str) -> str:
-        name = _ecmascript_group_name(raw_name)
+    def safe_group_name(name: str) -> str:
         if name not in group_names:
             group_names[name] = f"g{len(group_names)}"
         return group_names[name]
+
+    def captures_are_disjoint(
+        left: tuple[tuple[int, int], ...],
+        right: tuple[tuple[int, int], ...],
+    ) -> bool:
+        left_alternatives = dict(left)
+        return any(
+            scope in left_alternatives and left_alternatives[scope] != alternative for scope, alternative in right
+        )
+
+    def push_group_scope(result_index: int) -> None:
+        nonlocal next_branch_scope
+        branch_stack.append([next_branch_scope, 0])
+        quantified_group_stack.append((result_index, set()))
+        next_branch_scope += 1
 
     in_class = False
     class_content_start = -1
     index = 0
     while index < len(source):
         character = source[index]
-        if not in_class and character == "(" and source.startswith("(?", index):
-            if source.startswith(("(?P", "(?'", "(?("), index):
-                raise ValueError("unsupported Python regex group syntax")
-            if source.startswith("(?<", index) and index + 3 < len(source) and source[index + 3] not in "=!":
+        if (
+            not in_class
+            and character == "+"
+            and index > 0
+            and (source[index - 1] in "*+?" or (source[index - 1] == "}" and _is_braced_quantifier(source, index - 1)))
+            and not _is_escaped(source, index - 1)
+        ):
+            raise ValueError("unsupported possessive quantifier")
+        if not in_class and character == "(":
+            if source.startswith("(*", index):
+                raise ValueError("unsupported regex group syntax")
+            group_result_index = len(result)
+            if source.startswith("(?", index):
+                is_named_capture = (
+                    source.startswith("(?<", index) and index + 3 < len(source) and source[index + 3] not in "=!"
+                )
+                if not is_named_capture and not (
+                    source.startswith(("(?:", "(?=", "(?!", "(?<=", "(?<!"), index)
+                    or _is_ecmascript_modifier_group(source, index)
+                ):
+                    raise ValueError("unsupported regex group syntax")
+            else:
+                is_named_capture = False
+
+            if is_named_capture:
                 closing_bracket = source.find(">", index + 3)
                 if closing_bracket < 0:
                     raise ValueError("invalid ECMA-262 named capture")
-                safe_name = safe_group_name(source[index + 3 : closing_bracket])
+                name = _ecmascript_group_name(source[index + 3 : closing_bracket])
+                context = tuple((scope, alternative) for scope, alternative in branch_stack)
+                if any(not captures_are_disjoint(previous, context) for previous in capture_contexts.get(name, [])):
+                    raise ValueError("duplicate named captures must be in disjoint alternatives")
+                capture_contexts.setdefault(name, []).append(context)
+                safe_name = safe_group_name(name)
                 result.append(f"(?P<{safe_name}>")
+                push_group_scope(group_result_index)
+                for _, captured_names in quantified_group_stack:
+                    captured_names.add(safe_name)
                 index = closing_bracket + 1
                 continue
+            result.append(character)
+            push_group_scope(group_result_index)
+            index += 1
+            continue
         if character == "\\":
             if index + 1 >= len(source):
                 raise ValueError("trailing regex escape")
@@ -225,7 +361,8 @@ def _ecmascript_pattern(source: str) -> str:
                 closing_bracket = source.find(">", index + 3)
                 if closing_bracket < 0 or closing_bracket == index + 3:
                     raise ValueError("invalid ECMA-262 named backreference")
-                safe_name = safe_group_name(source[index + 3 : closing_bracket])
+                name = _ecmascript_group_name(source[index + 3 : closing_bracket])
+                safe_name = safe_group_name(name)
                 # In ECMA-262, a backreference to a capture that has not
                 # participated (including a forward reference) matches the
                 # empty string. Python's regex engine needs an explicit
@@ -248,6 +385,20 @@ def _ecmascript_pattern(source: str) -> str:
         elif in_class and character == "]":
             in_class = False
             result.append(character)
+        elif not in_class and character == "|":
+            branch_stack[-1][1] += 1
+            result.append(character)
+        elif not in_class and character == ")":
+            if len(branch_stack) > 1 and quantified_group_stack:
+                branch_stack.pop()
+                group_result_index, captured_names = quantified_group_stack.pop()
+                result.append(character)
+                if captured_names and _is_group_quantified(source, index):
+                    resets = "".join(f"(?P<{name}>)" for name in sorted(captured_names))
+                    result.insert(group_result_index, f"(?:{resets}")
+                    result.append(")")
+            else:
+                result.append(character)
         elif not in_class and character == ".":
             result.append(r"[^\n\r\u2028\u2029]")
         elif not in_class and character == "$":

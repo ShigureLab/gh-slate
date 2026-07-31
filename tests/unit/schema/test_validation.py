@@ -132,6 +132,18 @@ def test_schema_regex_format_uses_the_runtime_regex_dialect() -> None:
         r"(?P<x>a)",
         r"(?<x>a)(?P=x)",
         r"(?'x'a)",
+        r"(?<x>a)(?<x>b)",
+        r"(?<\u{+61}>a)",
+        r"(?<\u+061>a)",
+        r"(?<\u{0_61}>a)",
+        r"(?<\u0_61>a)",
+        r"(?#comment)a",
+        r"(?>a)",
+        r"(?|a)",
+        r"(?R)",
+        r"(?i)a",
+        r"(*PRUNE)",
+        r"a++",
     ):
         with pytest.raises(SchemaError) as unsupported_escape:
             validate_schema({"pattern": pattern})
@@ -156,6 +168,10 @@ def test_schema_regex_format_uses_the_runtime_regex_dialect() -> None:
         (r"^(?<x>a)?\k<x>$", "", "a"),
         (r"^(?<$>a)\k<$>$", "aa", "ab"),
         (r"^(?<\u0061>a)\k<a>$", "aa", "ab"),
+        (r"^(?<\uD835\uDC9C>a)\k<𝒜>$", "aa", "ab"),
+        (r"^(?:(?<x>a)|(?<x>b))\k<x>$", "bb", "ab"),
+        (r"^(?:(?<x>a)|b)+\k<x>$", "ab", "aba"),
+        (r"^(?i:a)$", "A", "b"),
     ],
 )
 def test_ecmascript_regex_semantics(pattern: str, accepted: str, rejected: str) -> None:
