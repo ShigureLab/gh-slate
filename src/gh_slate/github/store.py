@@ -110,10 +110,15 @@ def _comment(
             code="github_response_invalid",
             details={"required_fields": ["body", "html_url"]},
         )
+    identifier = _integer(
+        record.get("id"),
+        field="comments[].id",
+    )
     try:
         target_from_comment_url(
             url,
             expected=target,
+            expected_comment_id=identifier,
         )
     except GitHubReadError as error:
         raise GitHubReadError(
@@ -156,7 +161,7 @@ def _comment(
         author = actor.login
         author_id = actor.id
     return GitHubComment(
-        id=_integer(record.get("id"), field="comments[].id"),
+        id=identifier,
         body=body,
         author=author,
         url=url,

@@ -330,6 +330,28 @@ def test_invalid_github_comment_shapes_fail_closed(response: object) -> None:
     assert caught.value.code == "github_response_invalid"
 
 
+def test_comment_id_must_match_its_html_url_fragment() -> None:
+    record = _record(999, _body())
+    record["html_url"] = "https://github.example/owner/repo/issues/42#issuecomment-7"
+
+    with pytest.raises(GitHubReadError) as caught:
+        CommentStore(FakeClient([record])).comments(Target())
+
+    assert caught.value.code == "github_response_invalid"
+    assert caught.value.details["cause_code"] == "target_conflict"
+
+
+def test_comment_url_fragment_digit_limit_is_normalized() -> None:
+    record = _record(1, _body())
+    record["html_url"] = "https://github.example/owner/repo/issues/42#issuecomment-" + ("9" * 5000)
+
+    with pytest.raises(GitHubReadError) as caught:
+        CommentStore(FakeClient([record])).comments(Target())
+
+    assert caught.value.code == "github_response_invalid"
+    assert caught.value.details["cause_code"] == "comment_url_invalid"
+
+
 def test_ghost_comments_do_not_match_a_controller() -> None:
     client = FakeClient([_record(1, _body(), author=None)])
 
