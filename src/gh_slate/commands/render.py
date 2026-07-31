@@ -22,6 +22,23 @@ if TYPE_CHECKING:
     from argparse import Namespace
 
 
+_LOCAL_OPTIONS = (
+    "data",
+    "schema",
+    "template",
+    "table",
+    "list",
+    "columns",
+    "title",
+)
+_REMOTE_OPTIONS = (
+    "target",
+    "repo",
+    "controller",
+    "host",
+)
+
+
 def _input_size_error(
     *,
     subject: str,
@@ -136,9 +153,18 @@ def _ensure_single_stdin(args: Namespace) -> None:
         )
 
 
-def run_render(args: Namespace) -> int:
+def _has_value(args: Namespace, names: tuple[str, ...]) -> bool:
+    return any(getattr(args, name, None) is not None for name in names)
+
+
+def _run_local_render(args: Namespace) -> int:
     _ensure_single_stdin(args)
     name = validate_slate_name(args.name)
+    if args.template is None and args.table is None and args.list is None:
+        raise RenderingError(
+            "local render requires --template, --table, or --list",
+            code="renderer_required",
+        )
     if args.columns is not None and args.table is None:
         raise RenderingError(
             "--columns requires --table",
@@ -194,6 +220,22 @@ def run_render(args: Namespace) -> int:
     )
     sys.stdout.write(result.markdown)
     return 0
+
+
+def run_render(args: Namespace) -> int:
+    local = _has_value(args, _LOCAL_OPTIONS)
+    remote = _has_value(args, _REMOTE_OPTIONS)
+    if local and remote:
+        raise RenderingError(
+            "local renderer inputs cannot be combined with remote target options",
+            code="renderer_option_conflict",
+        )
+    if local:
+        return _run_local_render(args)
+
+    from gh_slate.commands.read import run_remote_render
+
+    return run_remote_render(args)
 
 
 __all__ = ["run_render"]

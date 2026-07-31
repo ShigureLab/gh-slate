@@ -40,3 +40,38 @@ def test_unknown_command_is_usage_error() -> None:
         parser.parse_args(["apply"])
 
     assert exit_info.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["render", "ci", "--target", "42", "--repo", "owner/repo"],
+        ["view", "ci", "--target", "42", "--repo", "owner/repo", "--json"],
+        ["list", "--target", "@pr", "--host", "ghe.example", "--json"],
+        ["state", "export", "ci", "--target", "42", "-R", "owner/repo"],
+        ["state", "verify", "ci", "--target", "@event", "--json"],
+        ["doctor", "--host", "ghe.example", "--json"],
+    ],
+)
+def test_read_only_command_surface_is_registered(argv: list[str]) -> None:
+    parsed = build_parser(prog="gh slate").parse_args(argv)
+
+    assert callable(parsed.handler)
+
+
+def test_view_json_and_web_are_mutually_exclusive() -> None:
+    parser = build_parser(prog="gh slate")
+
+    with pytest.raises(SystemExit) as exit_info:
+        parser.parse_args(
+            [
+                "view",
+                "ci",
+                "--target",
+                "42",
+                "--json",
+                "--web",
+            ]
+        )
+
+    assert exit_info.value.code == 2

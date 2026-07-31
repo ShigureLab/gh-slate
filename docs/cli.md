@@ -1,7 +1,7 @@
 # gh-slate CLI design
 
-Status: implementation-backed through batch 4; the local rendering foundation
-is complete and batch 5 is the next implementation layer.
+Status: implementation-backed through batch 5; the read-only GitHub foundation
+is complete and batch 6 is the next implementation layer.
 
 `gh-slate` manages named, data-backed dashboard comments on GitHub Issues and
 Pull Requests.
@@ -795,8 +795,10 @@ Matching rules:
 1. match the exact versioned marker and name;
 2. resolve the requested login, or current token actor by default, to a
    host-local immutable GitHub user ID;
-3. require both the comment author's ID and embedded controller ID to equal that
-   resolved ID; logins are display metadata and never ownership keys;
+3. require the comment author's ID and, when present, the embedded controller ID
+   to equal that resolved ID; a legacy login-only envelope is accepted only
+   through the authoritative comment-author ID and is upgraded on its next
+   write; logins are display metadata and never ownership keys;
 4. verify the envelope, state hash, and name;
 5. require exactly one match.
 
@@ -1309,13 +1311,18 @@ implementation-backed, but no remote command is allowed to write yet.
 
 Branch: `codex/github-read-store`
 
+Status: complete. Target/controller resolution, the GET-only `gh` adapter,
+paginated comment classification, canonical-context rerendering, read-only CLI
+commands, and fake-`gh` contract tests are implemented.
+
 Goal: prove target resolution, pagination, ownership, and decoding against the
 GitHub interface without carrying mutation risk.
 
 Deliverables:
 
 - an injectable `gh api` process adapter that reuses `gh` authentication,
-  host, proxy, and credential behavior;
+  host, proxy, and credential behavior, while bounding stdout and stderr during
+  concurrent pipe reads and terminating the child immediately on overflow;
 - resolution of URLs, numbers, `-R`, `@event`, `@pr`, and the documented
   omitted-target rules;
 - GitHub.com and GHES host propagation without hard-coded GitHub.com URLs;
@@ -1333,6 +1340,10 @@ Acceptance gates:
 - an old matching comment on an earlier page is still found;
 - URL/repository conflicts, wrong controllers, forged markers, corrupt state,
   and duplicate matches are never silently selected;
+- a renamed login with the same user ID remains owned, while the same login with
+  a different user ID is never adopted;
+- oversized stdout or stderr terminates and reaps `gh` without first buffering
+  the unbounded stream;
 - read-only commands can return canonical state during visible drift, while
   clearly warning about the mismatch;
 - `--host`, `GITHUB_SERVER_URL`, and event payloads route every call to the
