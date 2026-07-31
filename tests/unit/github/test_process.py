@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+import ctypes
 import io
 import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
-from typing import cast
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 import pytest
 
+import gh_slate.github.process as process_module
 from gh_slate.errors import GhSlateError
 from gh_slate.github.models import GitHubActor
 from gh_slate.github.process import (
@@ -275,6 +281,7 @@ def test_version_is_strict_nonempty_utf8_text() -> None:
     assert runner.calls[0][0] == ("gh", "version")
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows uses the gated Job Object launcher")
 def test_default_runner_never_uses_a_shell_and_inherits_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -325,6 +332,7 @@ def test_default_runner_never_uses_a_shell_and_inherits_environment(
     assert os.environ["GH_TOKEN"] == "inherited-token"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows uses the gated Job Object launcher")
 def test_default_runner_uses_implicit_environment_without_hostname(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -378,75 +386,147 @@ def test_process_tree_kill_uses_a_posix_process_group(monkeypatch: pytest.Monkey
     assert process.killed is True
 
 
-def test_process_tree_kill_uses_absolute_windows_taskkill(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict[str, object] = {}
-
+def test_process_tree_kill_uses_retained_windows_job_after_leader_exit() -> None:
     class Process:
         pid = 456
         killed = False
 
-        def poll(self) -> None:
-            return None
-
         def kill(self) -> None:
             self.killed = True
 
-    def run(command: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        captured["command"] = command
-        captured.update(kwargs)
-        return subprocess.CompletedProcess(command, 0)
+    class ProcessTree:
+        terminated = False
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def close(self) -> None:
+            pass
+
+        def launch_error(self, stderr: bytes) -> OSError | None:
+            return None
 
     process = Process()
-    monkeypatch.setattr(subprocess, "run", run)
+    process_tree = ProcessTree()
 
     _kill_process_tree(
         cast("subprocess.Popen[bytes]", process),
+        process_tree=cast("process_module._ProcessTree", process_tree),
         platform="nt",
-        environment={"SystemRoot": r"C:\Windows"},
     )
 
-    assert captured["command"] == (
-        r"C:\Windows\System32\taskkill.exe",
-        "/PID",
-        "456",
-        "/T",
-        "/F",
-    )
-    assert captured["stdin"] is subprocess.DEVNULL
-    assert captured["stdout"] is subprocess.DEVNULL
-    assert captured["stderr"] is subprocess.DEVNULL
-    assert captured["timeout"] == 1.0
-    assert captured["check"] is False
+    assert process_tree.terminated is True
     assert process.killed is True
 
 
-def test_process_tree_kill_skips_windows_taskkill_after_leader_exit(
+def test_default_runner_closes_retained_process_tree_on_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class Process:
-        pid = 456
-        killed = False
+        stdout = io.BytesIO(b"{}")
+        stderr = io.BytesIO(b"")
 
-        def poll(self) -> int:
+        def wait(self, timeout: float | None = None) -> int:
             return 0
 
         def kill(self) -> None:
-            self.killed = True
+            raise AssertionError("successful process must not be killed directly")
 
-    process = Process()
+    class ProcessTree:
+        terminated = 0
+        closed = 0
 
-    def unexpected_run(*args: object, **kwargs: object) -> None:
-        raise AssertionError((args, kwargs))
+        def terminate(self) -> None:
+            self.terminated += 1
 
-    monkeypatch.setattr(subprocess, "run", unexpected_run)
+        def close(self) -> None:
+            self.closed += 1
 
-    _kill_process_tree(
-        cast("subprocess.Popen[bytes]", process),
-        platform="nt",
-        environment={"SystemRoot": r"C:\Windows"},
+        def launch_error(self, stderr: bytes) -> OSError | None:
+            assert stderr == b""
+            return None
+
+    process_tree = ProcessTree()
+    monkeypatch.setattr(
+        process_module,
+        "_spawn_process",
+        lambda argv, *, environment: (
+            cast("subprocess.Popen[bytes]", Process()),
+            cast("process_module._ProcessTree", process_tree),
+        ),
     )
 
-    assert process.killed is True
+    result = SubprocessRunner().run(
+        ("gh", "version"),
+        timeout=1,
+        hostname=None,
+        max_stdout_bytes=1024,
+        max_stderr_bytes=1024,
+    )
+
+    assert result == ProcessResult(0, b"{}", b"")
+    assert process_tree.terminated == 0
+    assert process_tree.closed == 1
+
+
+def test_default_runner_terminates_retained_tree_when_a_reader_outlives_leader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    released = threading.Event()
+
+    class BlockingPipe(io.BytesIO):
+        def read(self, size: int | None = -1) -> bytes:
+            released.wait(timeout=2)
+            return b""
+
+    class Process:
+        stdout = BlockingPipe()
+        stderr = io.BytesIO(b"")
+        killed = 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+        def kill(self) -> None:
+            self.killed += 1
+
+    class ProcessTree:
+        terminated = 0
+        closed = 0
+
+        def terminate(self) -> None:
+            self.terminated += 1
+            released.set()
+
+        def close(self) -> None:
+            self.closed += 1
+
+        def launch_error(self, stderr: bytes) -> OSError | None:
+            return None
+
+    process = Process()
+    process_tree = ProcessTree()
+    monkeypatch.setattr(
+        process_module,
+        "_spawn_process",
+        lambda argv, *, environment: (
+            cast("subprocess.Popen[bytes]", process),
+            cast("process_module._ProcessTree", process_tree),
+        ),
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        SubprocessRunner().run(
+            ("gh", "version"),
+            timeout=0.05,
+            hostname=None,
+            max_stdout_bytes=1024,
+            max_stderr_bytes=1024,
+        )
+
+    assert process_tree.terminated == 1
+    assert process_tree.closed == 1
+    assert process.killed == 1
 
 
 @pytest.mark.parametrize(
@@ -507,6 +587,54 @@ def test_default_runner_bounds_reader_joins_after_parent_exits() -> None:
         )
 
     assert time.monotonic() - started < 3
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Objects are unavailable")
+def test_windows_runner_kills_descendant_after_leader_exit(tmp_path: Path) -> None:
+    kernel32 = ctypes.__dict__["WinDLL"]("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32)
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
+    kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+    kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+    kernel32.CloseHandle.restype = ctypes.c_int
+    child_pid = tmp_path / "child.pid"
+    retained: list[int] = []
+
+    def retain_child_handle() -> None:
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and not child_pid.exists():
+            time.sleep(0.01)
+        if not child_pid.exists():
+            return
+        pid = int(child_pid.read_text())
+        handle = kernel32.OpenProcess(0x00100000 | 0x1000, False, pid)
+        if handle:
+            retained.append(cast("int", handle))
+
+    monitor = threading.Thread(target=retain_child_handle)
+    monitor.start()
+    parent = (
+        "import pathlib,subprocess,sys;"
+        "child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)']);"
+        "pathlib.Path(sys.argv[1]).write_text(str(child.pid))"
+    )
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            SubprocessRunner().run(
+                (sys.executable, "-c", parent, str(child_pid)),
+                timeout=1,
+                hostname=None,
+                max_stdout_bytes=1024,
+                max_stderr_bytes=1024,
+            )
+        monitor.join(timeout=2)
+        assert retained
+        assert kernel32.WaitForSingleObject(retained[0], 1_000) == 0
+    finally:
+        monitor.join(timeout=2)
+        if retained:
+            kernel32.CloseHandle(retained[0])
 
 
 @pytest.mark.parametrize(

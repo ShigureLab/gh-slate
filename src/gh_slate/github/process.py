@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ntpath
 import os
 import signal
 import subprocess
@@ -36,43 +35,49 @@ class GhProcessLimits:
 
 DEFAULT_GH_PROCESS_LIMITS = GhProcessLimits()
 _PROCESS_CLEANUP_TIMEOUT_SECONDS = 1.0
-_PROCESS_START_NEW_SESSION = os.name != "nt"
-_PROCESS_CREATIONFLAGS = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+
+
+class _ProcessTree(Protocol):
+    def terminate(self) -> None: ...
+
+    def close(self) -> None: ...
+
+    def launch_error(self, stderr: bytes) -> OSError | None: ...
+
+
+def _spawn_process(
+    argv: tuple[str, ...],
+    *,
+    environment: Mapping[str, str] | None,
+) -> tuple[subprocess.Popen[bytes], _ProcessTree | None]:
+    if os.name == "nt":
+        from gh_slate.github._windows_process import spawn_windows_process
+
+        return spawn_windows_process(argv, environment=environment)
+    return (
+        subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=False,
+            env=environment,
+            start_new_session=True,
+            creationflags=0,
+        ),
+        None,
+    )
 
 
 def _kill_process_tree(
     process: subprocess.Popen[bytes],
     *,
+    process_tree: _ProcessTree | None = None,
     platform: str = os.name,
-    environment: Mapping[str, str] = os.environ,
 ) -> None:
-    if platform == "nt":
-        # taskkill resolves a tree by its numeric leader PID. Once the leader
-        # has exited that PID may be reused, so never target it after poll()
-        # has observed a terminal status. Popen.kill() below uses the retained
-        # process handle and remains safe for the direct process.
-        if process.poll() is None:
-            system_root = environment.get("SystemRoot")
-            try:
-                if system_root is None:
-                    raise OSError("SystemRoot is unavailable")
-                subprocess.run(
-                    (
-                        ntpath.join(system_root, "System32", "taskkill.exe"),
-                        "/PID",
-                        str(process.pid),
-                        "/T",
-                        "/F",
-                    ),
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=_PROCESS_CLEANUP_TIMEOUT_SECONDS,
-                    check=False,
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                pass
-    else:
+    if process_tree is not None:
+        process_tree.terminate()
+    elif platform != "nt":
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except (OSError, ProcessLookupError):
@@ -119,100 +124,100 @@ class SubprocessRunner:
         if hostname is not None:
             environment = os.environ.copy()
             environment["GH_HOST"] = hostname
-        process = subprocess.Popen(
-            argv,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            shell=False,
-            env=environment,
-            start_new_session=_PROCESS_START_NEW_SESSION,
-            creationflags=_PROCESS_CREATIONFLAGS,
-        )
+        process, process_tree = _spawn_process(argv, environment=environment)
         deadline = time.monotonic() + timeout
-        if process.stdout is None or process.stderr is None:  # pragma: no cover
-            process.kill()
-            process.wait()
-            raise OSError("GitHub CLI process pipes were not created")
-
-        stdout = bytearray()
-        stderr = bytearray()
-        reader_errors: list[BaseException] = []
-        kill_lock = threading.Lock()
-
-        def kill() -> None:
-            with kill_lock:
-                _kill_process_tree(process)
-
-        def reap() -> None:
-            try:
-                process.wait(timeout=_PROCESS_CLEANUP_TIMEOUT_SECONDS)
-            except subprocess.TimeoutExpired:
-                pass
-
-        def join_readers(deadline: float) -> bool:
-            for reader in readers:
-                reader.join(timeout=max(0.0, deadline - time.monotonic()))
-            return not any(reader.is_alive() for reader in readers)
-
-        def read_bounded(
-            pipe: BinaryIO,
-            buffer: bytearray,
-            limit: int,
-        ) -> None:
-            try:
-                while True:
-                    remaining = limit + 1 - len(buffer)
-                    if remaining <= 0:
-                        kill()
-                        return
-                    chunk = pipe.read(min(64 * 1024, remaining))
-                    if not chunk:
-                        return
-                    buffer.extend(chunk)
-                    if len(buffer) > limit:
-                        kill()
-                        return
-            except BaseException as error:
-                reader_errors.append(error)
-                kill()
-            finally:
-                pipe.close()
-
-        readers = (
-            threading.Thread(
-                target=read_bounded,
-                args=(process.stdout, stdout, max_stdout_bytes),
-                daemon=True,
-            ),
-            threading.Thread(
-                target=read_bounded,
-                args=(process.stderr, stderr, max_stderr_bytes),
-                daemon=True,
-            ),
-        )
-        for reader in readers:
-            reader.start()
-
         try:
-            returncode = process.wait(timeout=max(0.0, deadline - time.monotonic()))
-        except subprocess.TimeoutExpired:
-            kill()
-            reap()
-            join_readers(time.monotonic() + _PROCESS_CLEANUP_TIMEOUT_SECONDS)
-            raise
-        if not join_readers(deadline):
-            kill()
-            reap()
-            join_readers(time.monotonic() + _PROCESS_CLEANUP_TIMEOUT_SECONDS)
-            raise subprocess.TimeoutExpired(cmd=argv, timeout=timeout)
-        if reader_errors:
-            raise OSError("failed while reading GitHub CLI output") from reader_errors[0]
-        return ProcessResult(
-            returncode=returncode,
-            stdout=bytes(stdout),
-            stderr=bytes(stderr),
-        )
+            if process.stdout is None or process.stderr is None:  # pragma: no cover
+                _kill_process_tree(process, process_tree=process_tree)
+                process.wait()
+                raise OSError("GitHub CLI process pipes were not created")
+
+            stdout = bytearray()
+            stderr = bytearray()
+            reader_errors: list[BaseException] = []
+            kill_lock = threading.Lock()
+
+            def kill() -> None:
+                with kill_lock:
+                    _kill_process_tree(process, process_tree=process_tree)
+
+            def reap() -> None:
+                try:
+                    process.wait(timeout=_PROCESS_CLEANUP_TIMEOUT_SECONDS)
+                except subprocess.TimeoutExpired:
+                    pass
+
+            def join_readers(deadline: float) -> bool:
+                for reader in readers:
+                    reader.join(timeout=max(0.0, deadline - time.monotonic()))
+                return not any(reader.is_alive() for reader in readers)
+
+            def read_bounded(
+                pipe: BinaryIO,
+                buffer: bytearray,
+                limit: int,
+            ) -> None:
+                try:
+                    while True:
+                        remaining = limit + 1 - len(buffer)
+                        if remaining <= 0:
+                            kill()
+                            return
+                        chunk = pipe.read(min(64 * 1024, remaining))
+                        if not chunk:
+                            return
+                        buffer.extend(chunk)
+                        if len(buffer) > limit:
+                            kill()
+                            return
+                except BaseException as error:
+                    reader_errors.append(error)
+                    kill()
+                finally:
+                    pipe.close()
+
+            readers = (
+                threading.Thread(
+                    target=read_bounded,
+                    args=(process.stdout, stdout, max_stdout_bytes),
+                    daemon=True,
+                ),
+                threading.Thread(
+                    target=read_bounded,
+                    args=(process.stderr, stderr, max_stderr_bytes),
+                    daemon=True,
+                ),
+            )
+            for reader in readers:
+                reader.start()
+
+            try:
+                returncode = process.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                kill()
+                reap()
+                join_readers(time.monotonic() + _PROCESS_CLEANUP_TIMEOUT_SECONDS)
+                raise
+            if not join_readers(deadline):
+                kill()
+                reap()
+                join_readers(time.monotonic() + _PROCESS_CLEANUP_TIMEOUT_SECONDS)
+                raise subprocess.TimeoutExpired(cmd=argv, timeout=timeout)
+            if reader_errors:
+                raise OSError("failed while reading GitHub CLI output") from reader_errors[0]
+            stderr_bytes = bytes(stderr)
+            if process_tree is not None:
+                launch_error = process_tree.launch_error(stderr_bytes)
+                if launch_error is not None:
+                    raise launch_error
+            return ProcessResult(
+                returncode=returncode,
+                stdout=bytes(stdout),
+                stderr=stderr_bytes,
+            )
+        finally:
+            if process_tree is not None:
+                process_tree.close()
 
 
 def _error(message: str, *, code: str, **details: object) -> GhSlateError:
