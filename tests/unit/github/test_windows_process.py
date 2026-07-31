@@ -1,12 +1,18 @@
 from __future__ import annotations
 
-from typing import Any, cast
+import os
+import subprocess
+import sys
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
 import gh_slate.github._windows_launcher as windows_launcher
 import gh_slate.github._windows_process as windows_process
 from gh_slate.github._windows_process import WindowsJob
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class FakeKernel32:
@@ -154,6 +160,50 @@ def test_windows_launcher_refuses_to_start_after_gate_eof(
     assert reported[0].errno == 109
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows inherited HANDLEs are unavailable")
+def test_windows_launcher_exits_without_running_command_after_real_pipe_eof(
+    tmp_path: Path,
+) -> None:
+    kernel32 = windows_process._kernel32()
+    gate_read, gate_write = windows_process._create_gate(kernel32)
+    marker = tmp_path / "command-ran"
+    os.set_handle_inheritable(gate_read, True)
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.lpAttributeList = {"handle_list": [gate_read]}
+    try:
+        process = subprocess.Popen(
+            (
+                sys.executable,
+                "-m",
+                "gh_slate.github._windows_launcher",
+                str(gate_read),
+                "abc",
+                sys.executable,
+                "-c",
+                "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ran')",
+                str(marker),
+            ),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=False,
+            close_fds=True,
+            startupinfo=startupinfo,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+    finally:
+        os.set_handle_inheritable(gate_read, False)
+        windows_process._close_handle(kernel32, gate_write)
+        windows_process._close_handle(kernel32, gate_read)
+
+    stdout, stderr = process.communicate(timeout=5)
+
+    assert process.returncode == 125
+    assert stdout == b""
+    assert stderr.startswith(b"\0gh-slate-windows-launch-error:abc:OSError:")
+    assert not marker.exists()
+
+
 def test_windows_job_retains_tree_handle_after_leader_exit_and_closes_once() -> None:
     kernel32 = FakeKernel32()
     job = WindowsJob(11, nonce="abc", kernel32=kernel32)
@@ -166,13 +216,13 @@ def test_windows_job_retains_tree_handle_after_leader_exit_and_closes_once() -> 
     assert kernel32.closed == [11]
 
 
-def test_windows_job_retains_handle_after_cleanup_failures(
+def test_windows_job_does_not_reuse_a_handle_after_close_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class Kernel32:
         def __init__(self) -> None:
             self.terminate_results = iter((False, False, True))
-            self.close_results = iter((False, False, True))
+            self.close_results = iter((False,))
             self.terminated = 0
             self.closed = 0
 
@@ -195,10 +245,28 @@ def test_windows_job_retains_handle_after_cleanup_failures(
     with pytest.raises(OSError, match="cleanup failed"):
         job.close()
     job.close()
-    job.close()
 
     assert kernel32.terminated == 3
-    assert kernel32.closed == 3
+    assert kernel32.closed == 1
+
+
+def test_windows_job_drops_handle_ownership_when_close_is_interrupted() -> None:
+    class Kernel32:
+        def __init__(self) -> None:
+            self.closed = 0
+
+        def CloseHandle(self, handle: int) -> bool:
+            self.closed += 1
+            raise KeyboardInterrupt
+
+    kernel32 = Kernel32()
+    job = WindowsJob(11, nonce="abc", kernel32=kernel32)
+
+    with pytest.raises(KeyboardInterrupt):
+        job.close()
+    job.close()
+
+    assert kernel32.closed == 1
 
 
 @pytest.mark.parametrize(
@@ -302,8 +370,45 @@ def test_windows_release_interruption_is_a_handoff_error(
         windows_process.spawn_windows_process(("gh", "version"), environment=None)
 
     assert captured.value.error_type == "KeyboardInterrupt"
+    assert captured.value.cleanup_error_type is None
     assert kernel32.writes == [23]
     assert kernel32.terminated == [(11, 1)]
+    assert kernel32.closed == [33, 23, 22, 11]
+
+
+def test_windows_cleanup_interruption_preserves_the_handoff_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kernel32 = FakeKernel32(write_error=KeyboardInterrupt())
+    process = type(
+        "Process",
+        (),
+        {
+            "pid": 44,
+            "kill": lambda self: None,
+            "wait": lambda self, timeout=None: (_ for _ in ()).throw(SystemExit(130)),
+        },
+    )()
+
+    class StartupInfo:
+        lpAttributeList: dict[str, list[int]]
+
+    monkeypatch.setattr(windows_process, "_kernel32", lambda: kernel32)
+    monkeypatch.setattr(windows_process, "_last_error", lambda: OSError("unused"))
+    monkeypatch.setitem(
+        windows_process.os.__dict__,
+        "set_handle_inheritable",
+        lambda handle, value: None,
+    )
+    monkeypatch.setitem(windows_process.subprocess.__dict__, "STARTUPINFO", StartupInfo)
+    monkeypatch.setitem(windows_process.subprocess.__dict__, "CREATE_NEW_PROCESS_GROUP", 512)
+    monkeypatch.setattr(windows_process.subprocess, "Popen", lambda argv, **kwargs: process)
+
+    with pytest.raises(windows_process._ProcessHandoffInterrupted) as captured:
+        windows_process.spawn_windows_process(("gh", "version"), environment=None)
+
+    assert captured.value.error_type == "KeyboardInterrupt"
+    assert captured.value.cleanup_error_type == "SystemExit"
     assert kernel32.closed == [33, 23, 22, 11]
 
 

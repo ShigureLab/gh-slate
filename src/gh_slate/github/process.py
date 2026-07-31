@@ -48,9 +48,10 @@ class _ProcessTree(Protocol):
 class _ProcessHandoffInterrupted(OSError):
     """The gated command may have started before its runner took ownership."""
 
-    def __init__(self, error_type: str) -> None:
+    def __init__(self, error_type: str, *, cleanup_error_type: str | None = None) -> None:
         super().__init__("managed process handoff was interrupted")
         self.error_type = error_type
+        self.cleanup_error_type = cleanup_error_type
 
 
 def _spawn_process(

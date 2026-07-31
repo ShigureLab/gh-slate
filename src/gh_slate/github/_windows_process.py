@@ -133,11 +133,13 @@ class WindowsJob:
             handle = self._handle
             if handle is None:
                 return
-            if not self._kernel32.CloseHandle(handle):
-                error = _last_error()
-                if not self._kernel32.CloseHandle(handle):
-                    raise error
+            # Relinquish ownership before entering CloseHandle. An asynchronous
+            # exception can arrive after the kernel closes the handle but before
+            # Python observes the return value; retaining the numeric value in
+            # that case could close an unrelated handle after Windows reuses it.
             self._handle = None
+            if not self._kernel32.CloseHandle(handle):
+                raise _last_error()
 
     def launch_error(self, stderr: bytes) -> OSError | None:
         prefix = _ERROR_PREFIX + self._nonce.encode("ascii") + b":"
@@ -206,11 +208,8 @@ def _create_gate(kernel32: Any) -> tuple[int, int]:
 
 
 def _close_handle(kernel32: Any, handle: int) -> None:
-    if kernel32.CloseHandle(handle):
-        return
-    error = _last_error()
     if not kernel32.CloseHandle(handle):
-        raise error
+        raise _last_error()
 
 
 def _release_gate(kernel32: Any, handle: int) -> None:
@@ -257,15 +256,17 @@ def spawn_windows_process(
         nonlocal gate_read_open, gate_write_open
         first_error: BaseException | None = None
         if gate_write_open:
+            # Invalidate ownership first for the same asynchronous-exception
+            # reason as WindowsJob.close(). Never retry a numeric HANDLE.
+            gate_write_open = False
             try:
                 _close_handle(kernel32, gate_write)
-                gate_write_open = False
             except BaseException as error:
                 first_error = error
         if gate_read_open:
+            gate_read_open = False
             try:
                 _close_handle(kernel32, gate_read)
-                gate_read_open = False
             except BaseException as error:
                 if first_error is None:
                     first_error = error
@@ -312,7 +313,7 @@ def spawn_windows_process(
         try:
             job.assign(process_handle)
         finally:
-            kernel32.CloseHandle(process_handle)
+            _close_handle(kernel32, process_handle)
 
         # Set this before entering WriteFile: an interruption during the C call
         # cannot prove whether the child observed the release byte.
@@ -339,7 +340,7 @@ def spawn_windows_process(
                     cleanup_error = caught
             try:
                 process.wait(timeout=1.0)
-            except (OSError, subprocess.TimeoutExpired) as caught:
+            except BaseException as caught:
                 if cleanup_error is None:
                     cleanup_error = caught
         try:
@@ -348,7 +349,11 @@ def spawn_windows_process(
             if cleanup_error is None:
                 cleanup_error = caught
         if release_attempted:
-            raise _ProcessHandoffInterrupted(type(error).__name__) from error
+            cleanup_error_type = None if cleanup_error is None else type(cleanup_error).__name__
+            raise _ProcessHandoffInterrupted(
+                type(error).__name__,
+                cleanup_error_type=cleanup_error_type,
+            ) from error
         if cleanup_error is not None:
             raise cleanup_error from error
         raise
