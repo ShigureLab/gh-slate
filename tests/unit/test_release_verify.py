@@ -4,10 +4,14 @@ import hashlib
 import importlib.util
 import io
 import os
+import re
+import shutil
 import stat
+import subprocess
 import sys
 import tarfile
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, cast
 
@@ -253,7 +257,12 @@ def test_extension_assets_are_exact_executable_self_extracting_bundles(
     assert b"shasum -a 256" in content[:4096]
     assert b"extension payload checksum mismatch" in content[:4096]
     assert b"BASHPID" not in content[:4096]
-    assert b'payload_file="${lock_dir}.payload.$$"' in content[:4096]
+    assert b"lock_dir=" not in content[:4096]
+    assert b"timed out waiting" not in content[:4096]
+    assert b"gh-slate-extension-v2" in content[:4096]
+    assert b"mktemp -d" in content[:4096]
+    assert b'payload_file="${stage_dir}/.payload"' in content[:4096]
+    assert b'ln -sn "${stage_dir}" "${install_dir}"' in content[:4096]
     if os.name != "nt":
         assert all(path.stat().st_mode & stat.S_IXUSR for path in assets)
 
@@ -268,6 +277,114 @@ def test_extension_assets_are_exact_executable_self_extracting_bundles(
             extension_dir,
             version=VERSION,
         )
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="the self-extracting extension assets require Bash and Unix symlinks",
+)
+def test_extension_asset_ignores_stale_legacy_lock_and_orphan_stage(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    assets = release_verify.build_extension_assets(
+        project,
+        tmp_path / "assets",
+        version=VERSION,
+    )
+    content = assets[0].read_bytes()
+    digest_match = re.search(
+        rb"(?m)^payload_sha256=([0-9a-f]{64})$",
+        content[:4096],
+    )
+    assert digest_match is not None
+    digest = digest_match.group(1).decode("ascii")
+
+    cache = tmp_path / "cache"
+    legacy_lock = cache / "gh-slate-extension" / f"{VERSION}-{digest}.lock"
+    legacy_lock.mkdir(parents=True)
+    install_root = cache / "gh-slate-extension-v2"
+    orphan = install_root / f".{VERSION}-{digest}.stage.orphan"
+    orphan.mkdir(parents=True)
+    environment = os.environ.copy()
+    environment["HOME"] = str(tmp_path / "home")
+    environment["XDG_CACHE_HOME"] = str(cache)
+    (tmp_path / "home").mkdir()
+
+    result = subprocess.run(
+        [assets[0], "--version"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "gh slate test\n"
+    assert result.stderr == ""
+    install = install_root / f"{VERSION}-{digest}"
+    assert install.is_symlink()
+    assert (install / ".ready").is_file()
+    assert legacy_lock.is_dir()
+    assert orphan.is_dir()
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="the self-extracting extension assets require Bash and Unix symlinks",
+)
+def test_extension_asset_concurrently_publishes_one_ready_cache(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    assets = release_verify.build_extension_assets(
+        project,
+        tmp_path / "assets",
+        version=VERSION,
+    )
+    content = assets[0].read_bytes()
+    digest_match = re.search(
+        rb"(?m)^payload_sha256=([0-9a-f]{64})$",
+        content[:4096],
+    )
+    assert digest_match is not None
+    digest = digest_match.group(1).decode("ascii")
+
+    cache = tmp_path / "cache"
+    environment = os.environ.copy()
+    environment["HOME"] = str(tmp_path / "home")
+    environment["XDG_CACHE_HOME"] = str(cache)
+    (tmp_path / "home").mkdir()
+
+    def invoke() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [assets[0], "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+            timeout=20,
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = tuple(executor.map(lambda _index: invoke(), range(8)))
+
+    assert all(result.returncode == 0 for result in results)
+    assert all(result.stdout == "gh slate test\n" for result in results)
+    assert all(result.stderr == "" for result in results)
+    install_root = cache / "gh-slate-extension-v2"
+    install = install_root / f"{VERSION}-{digest}"
+    assert install.is_symlink()
+    assert (install / ".ready").is_file()
+    published_stage = install.resolve()
+    private_stages = tuple(
+        path.resolve()
+        for path in install_root.iterdir()
+        if path.name.startswith(f".{VERSION}-{digest}.stage.") and path.is_dir()
+    )
+    assert private_stages == (published_stage,)
+    assert not (published_stage / ".payload").exists()
 
 
 def test_release_verification_writes_hashes_for_the_same_artifact_set(

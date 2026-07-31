@@ -456,36 +456,26 @@ set -euo pipefail
 payload_offset={payload_offset:020d}
 payload_sha256={payload_sha256}
 cache_home="${{XDG_CACHE_HOME:-${{HOME:?HOME must be set}}/.cache}}"
-install_root="${{cache_home}}/gh-slate-extension"
+install_root="${{cache_home}}/gh-slate-extension-v2"
 install_dir="${{install_root}}/{version}-${{payload_sha256}}"
 ready_file="${{install_dir}}/.ready"
-lock_dir="${{install_dir}}.lock"
-payload_file="${{lock_dir}}.payload.$$"
 
 mkdir -p "${{install_root}}"
-lock_acquired=0
-attempt=0
-while [[ ! -f "${{ready_file}}" ]]; do
-  if mkdir "${{lock_dir}}" 2>/dev/null; then
-    lock_acquired=1
-    break
-  fi
-  attempt=$((attempt + 1))
-  if (( attempt >= 200 )); then
-    echo "error: timed out waiting for the gh-slate extension cache lock" >&2
-    exit 1
-  fi
-  sleep 0.05
-done
-
-if (( lock_acquired )); then
+if [[ ! -f "${{ready_file}}" ]]; then
+  stage_dir="$(mktemp -d "${{install_root}}/.{version}-${{payload_sha256}}.stage.XXXXXX")"
+  payload_file="${{stage_dir}}/.payload"
+  published=0
   cleanup() {{
     rm -f "${{payload_file}}"
-    rmdir "${{lock_dir}}" 2>/dev/null || true
+    if (( ! published )); then
+      rm -rf "${{stage_dir}}"
+    fi
   }}
-  trap cleanup EXIT INT TERM
-  rm -rf "${{install_dir}}"
-  mkdir -p "${{install_dir}}"
+  terminate() {{
+    exit 1
+  }}
+  trap cleanup EXIT
+  trap terminate HUP INT TERM
   tail -c "+$((10#${{payload_offset}} + 1))" "$0" > "${{payload_file}}"
   if command -v sha256sum >/dev/null 2>&1; then
     actual_payload_sha256="$(sha256sum "${{payload_file}}")"
@@ -500,14 +490,23 @@ if (( lock_acquired )); then
     echo "error: gh-slate extension payload checksum mismatch" >&2
     exit 1
   fi
-  tar -xzf "${{payload_file}}" -C "${{install_dir}}"
+  tar -xzf "${{payload_file}}" -C "${{stage_dir}}"
   rm -f "${{payload_file}}"
-  chmod u+x "${{install_dir}}/gh-slate"
-  test -f "${{install_dir}}/pyproject.toml"
-  test -f "${{install_dir}}/uv.lock"
-  : > "${{ready_file}}"
-  rmdir "${{lock_dir}}"
-  trap - EXIT INT TERM
+  chmod u+x "${{stage_dir}}/gh-slate"
+  test -f "${{stage_dir}}/pyproject.toml"
+  test -f "${{stage_dir}}/uv.lock"
+  : > "${{stage_dir}}/.ready"
+  if ln -sn "${{stage_dir}}" "${{install_dir}}" 2>/dev/null; then
+    published=1
+  fi
+  trap - HUP INT TERM
+  trap - EXIT
+  cleanup
+fi
+
+if [[ ! -f "${{ready_file}}" ]]; then
+  echo "error: gh-slate extension cache publication failed" >&2
+  exit 1
 fi
 
 exec "${{install_dir}}/gh-slate" "$@"

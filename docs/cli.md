@@ -1605,6 +1605,9 @@ Acceptance gates:
 - every skill recipe is accepted by the current parser under both command
   prefixes;
 - built wheel and sdist install in clean environments and expose the same CLI;
+- self-extracting assets publish a verified private staging directory through
+  one atomic symlink; stale legacy locks and orphan stages never block startup,
+  and concurrent launchers converge on one ready cache;
 - the release workflow publishes the already-verified artifacts rather than
   rebuilding different ones;
 - GitHub.com live E2E, artifact installation, extension installation, and skill
