@@ -533,7 +533,16 @@ def _event_target(
                 code="target_event_invalid",
             )
         record = cast("Mapping[str, object]", issue)
-        default_kind = "issues"
+        if "pull_request" in record:
+            marker = record["pull_request"]
+            if not isinstance(marker, Mapping):
+                raise _error(
+                    "event.issue.pull_request must be an object",
+                    code="target_event_invalid",
+                )
+            default_kind = "pull"
+        else:
+            default_kind = "issues"
     else:
         raise _error(
             "GitHub event does not contain an Issue or Pull Request",

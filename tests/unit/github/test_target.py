@@ -242,6 +242,76 @@ def test_actions_omitted_target_is_event_but_local_omission_is_error(
     assert local.value.code == "target_required"
 
 
+def test_issue_comment_event_with_pull_request_marker_resolves_as_pull(
+    tmp_path: Path,
+) -> None:
+    event_path = tmp_path / "event.json"
+    event_path.write_text(
+        json.dumps(
+            {
+                "issue": {
+                    "number": 42,
+                    "html_url": "https://github.example.com/owner/repo/pull/42",
+                    "pull_request": {
+                        "url": "https://api.github.example.com/repos/owner/repo/pulls/42",
+                    },
+                },
+                "repository": {
+                    "full_name": "owner/repo",
+                    "html_url": "https://github.example.com/owner/repo",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    target = resolve_target(
+        None,
+        environ={
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_EVENT_PATH": str(event_path),
+            "GITHUB_REPOSITORY": "owner/repo",
+            "GITHUB_SERVER_URL": "https://github.example.com",
+        },
+    )
+
+    assert target == ResolvedTarget(
+        host="github.example.com",
+        repository="owner/repo",
+        number=42,
+        url="https://github.example.com/owner/repo/pull/42",
+    )
+
+
+@pytest.mark.parametrize("marker", [None, "pull", 1, []])
+def test_issue_comment_pull_request_marker_must_be_an_object(
+    tmp_path: Path,
+    marker: object,
+) -> None:
+    event_path = tmp_path / "event.json"
+    event_path.write_text(
+        json.dumps(
+            {
+                "issue": {
+                    "number": 42,
+                    "html_url": "https://github.com/owner/repo/pull/42",
+                    "pull_request": marker,
+                },
+                "repository": {"full_name": "owner/repo"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(GitHubReadError) as caught:
+        resolve_target(
+            "@event",
+            environ={"GITHUB_EVENT_PATH": str(event_path)},
+        )
+
+    assert caught.value.code == "target_event_invalid"
+
+
 def test_event_payload_context_conflicts_fail_closed(tmp_path: Path) -> None:
     event_path = tmp_path / "event.json"
     environ = _event(event_path)
