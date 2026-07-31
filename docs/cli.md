@@ -335,11 +335,14 @@ flowchart LR
     B --> C["Transform typed data"]
     C --> D["Validate JSON Schema"]
     D --> E["Render Markdown"]
-    E --> F["Check hashes and size"]
+    E --> F["Reject reserved markers; check hashes and size"]
     F --> G["Write one comment body"]
 ```
 
-Any decode, jq, schema, Jinja, drift, or size error occurs before the write.
+Any decode, jq, schema, Jinja, drift, reserved-marker, or size error occurs
+before the write. Rendered Markdown containing the managed
+`<!-- gh-slate:` prefix is rejected as a whole before any POST or PATCH, so a
+template cannot smuggle a second managed marker into the visible projection.
 
 ### 4.5 Other lifecycle commands
 
@@ -627,6 +630,7 @@ Important invariants:
 - the marker and envelope names must agree;
 - the state hash covers the canonical functional state;
 - `render_sha256` covers exact normalized visible Markdown;
+- rendered Markdown may not contain the reserved `<!-- gh-slate:` prefix;
 - revisions increase on functional state changes;
 - a repair of visible drift may keep the same functional revision;
 - decoders reject unknown marker/state-format major versions;
@@ -1202,6 +1206,7 @@ Deliverables:
 - new-state creation and existing data/schema/renderer replacement-or-reuse;
 - the complete decode, transform, validate, render, hash, size, and write
   pipeline;
+- whole-body reserved-marker rejection before the first POST or PATCH;
 - unchanged detection with no PATCH;
 - drift, duplicate, controller, mode, and `--if-revision` conflicts;
 - a second pre-write read, one intended POST/PATCH, and post-write
