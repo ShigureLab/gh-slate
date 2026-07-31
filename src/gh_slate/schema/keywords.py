@@ -155,6 +155,16 @@ def _ecmascript_pattern(source: str) -> str:
                     result.append(rf"(?a:\{escaped})")
                 index += 2
                 continue
+            if escaped == "k":
+                if in_class or index + 2 >= len(source) or source[index + 2] != "<":
+                    raise ValueError("invalid ECMA-262 named backreference")
+                closing_bracket = source.find(">", index + 3)
+                if closing_bracket < 0 or closing_bracket == index + 3:
+                    raise ValueError("invalid ECMA-262 named backreference")
+                name = source[index + 3 : closing_bracket]
+                result.append(rf"\g<{name}>")
+                index = closing_bracket + 1
+                continue
             if escaped.isascii() and escaped.isalpha() and escaped not in _ECMASCRIPT_PASSTHROUGH_ESCAPES:
                 raise ValueError("unsupported ECMA-262 regex escape")
             result.extend((character, escaped))

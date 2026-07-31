@@ -119,7 +119,7 @@ def test_schema_regex_format_uses_the_runtime_regex_dialect() -> None:
         validate_schema({"pattern": "["})
     assert invalid.value.code == "schema_invalid"
 
-    for pattern in (r"\a", r"\R", r"\X", r"\m", r"\M", r"\h", r"\H", r"\U0001F600"):
+    for pattern in (r"\a", r"\R", r"\X", r"\m", r"\M", r"\h", r"\H", r"\U0001F600", r"\k"):
         with pytest.raises(SchemaError) as unsupported_escape:
             validate_schema({"pattern": pattern})
         assert unsupported_escape.value.code == "schema_invalid"
@@ -137,6 +137,7 @@ def test_schema_regex_format_uses_the_runtime_regex_dialect() -> None:
         (r"^.$", "a", "\u2028"),
         (r"^abc$", "abc", "abc\n"),
         (r"^\cC$", "\x03", r"\cC"),
+        (r"^(?<letter>a)\k<letter>$", "aa", "ab"),
     ],
 )
 def test_ecmascript_regex_semantics(pattern: str, accepted: str, rejected: str) -> None:
