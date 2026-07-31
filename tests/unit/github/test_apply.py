@@ -19,6 +19,7 @@ from gh_slate.github.apply import (
     ApplyResult,
     apply,
 )
+from gh_slate.github.models import GitHubActor
 from gh_slate.github.target import ResolvedTarget
 from gh_slate.github.write import GhWriteOutcomeUnknown, GhWriteTimeout
 from gh_slate.rendering import (
@@ -45,6 +46,8 @@ TARGET = ResolvedTarget(
     url=ISSUE_URL,
 )
 EMPTY_HASH = "0" * 64
+ACTOR_ID = 101
+OTHER_ACTOR_ID = 202
 
 
 def _renderer() -> RendererDescriptorV1:
@@ -56,6 +59,7 @@ def _body(
     *,
     revision: int = 1,
     controller: str = "ci-bot",
+    controller_id: int | None = ACTOR_ID,
     renderer: RendererDescriptorV1 | None = None,
     schema: SchemaSnapshotV1 | None = None,
     page_url: str = ISSUE_URL,
@@ -64,7 +68,7 @@ def _body(
     state = StateV1(
         name="ci",
         revision=revision,
-        controller=ControllerV1(login=controller),
+        controller=ControllerV1(login=controller, id=controller_id),
         data={"status": status},
         data_schema=schema,
         renderer=descriptor,
@@ -88,12 +92,13 @@ def _record(
     *,
     page_url: str = ISSUE_URL,
     author: str = "ci-bot",
+    author_id: int = ACTOR_ID,
 ) -> dict[str, object]:
     return {
         "id": identifier,
         "body": body,
         "html_url": f"{page_url}#issuecomment-{identifier}",
-        "user": {"login": author},
+        "user": {"id": author_id, "login": author},
         "created_at": "2026-07-31T00:00:00Z",
         "updated_at": "2026-07-31T00:01:00Z",
     }
@@ -102,7 +107,8 @@ def _record(
 @dataclass(slots=True)
 class FakeGitHub:
     comments: list[dict[str, object]] = field(default_factory=list)
-    actor: str = "ci-bot"
+    actor_login: str = "ci-bot"
+    actor_id: int = ACTOR_ID
     target_html_url: str = ISSUE_URL
     write_behavior: str = "normal"
     before_comment_read: dict[int, Callable[[FakeGitHub], None]] = field(default_factory=dict)
@@ -112,9 +118,19 @@ class FakeGitHub:
     comment_reads: int = 0
     next_identifier: int = 100
 
-    def current_actor(self, hostname: str | None = None) -> str:
+    def current_actor(self, hostname: str | None = None) -> GitHubActor:
         self.read_calls.append(("ACTOR", hostname))
-        return self.actor
+        return GitHubActor(id=self.actor_id, login=self.actor_login)
+
+    def resolve_actor(
+        self,
+        login: str,
+        hostname: str | None = None,
+    ) -> GitHubActor:
+        self.read_calls.append(("RESOLVE_ACTOR", login, hostname))
+        if login.casefold() == self.actor_login.casefold():
+            return GitHubActor(id=self.actor_id, login=self.actor_login)
+        return GitHubActor(id=OTHER_ACTOR_ID, login=login)
 
     def api_get(
         self,
@@ -147,7 +163,8 @@ class FakeGitHub:
             identifier,
             body,
             page_url=self.target_html_url,
-            author=self.actor,
+            author=self.actor_login,
+            author_id=self.actor_id,
         )
 
     def _finish_write(
@@ -264,6 +281,10 @@ def test_create_uses_canonical_target_metadata_and_exactly_one_post() -> None:
     assert remote.write_calls[0][3] == HOST
     decoded = decode_comment(cast("str", remote.comments[0]["body"]))
     assert decoded.visible_markdown == f"{REPOSITORY}#{NUMBER} {PULL_URL}\n"
+    assert decoded.state.controller == ControllerV1(
+        login="ci-bot",
+        id=ACTOR_ID,
+    )
 
 
 def test_update_reuses_renderer_schema_and_controller_then_patches_once() -> None:
@@ -306,7 +327,10 @@ def test_update_reuses_renderer_schema_and_controller_then_patches_once() -> Non
     assert decoded.state.data == {"status": "new"}
     assert decoded.state.data_schema == schema
     assert decoded.state.renderer == _renderer()
-    assert decoded.state.controller.login == "CI-Bot"
+    assert decoded.state.controller == ControllerV1(
+        login="ci-bot",
+        id=ACTOR_ID,
+    )
     comments_endpoint = f"repos/{REPOSITORY}/issues/{NUMBER}/comments?per_page=100"
     assert remote.events == [
         ("GET", comments_endpoint),
@@ -314,6 +338,55 @@ def test_update_reuses_renderer_schema_and_controller_then_patches_once() -> Non
         ("PATCH", f"repos/{REPOSITORY}/issues/comments/7"),
         ("GET", comments_endpoint),
     ]
+
+
+def test_update_survives_login_rename_and_refreshes_controller_metadata() -> None:
+    remote = FakeGitHub(
+        comments=[
+            _record(
+                7,
+                _body(controller="old-login"),
+                author="new-login",
+            )
+        ],
+        actor_login="new-login",
+    )
+
+    result = _apply(
+        remote,
+        mode="update",
+        data={"status": "new"},
+    )
+
+    assert result.action == "updated"
+    assert [call[0] for call in remote.write_calls] == ["PATCH"]
+    decoded = decode_comment(cast("str", remote.comments[0]["body"]))
+    assert decoded.state.controller == ControllerV1(
+        login="new-login",
+        id=ACTOR_ID,
+    )
+
+
+def test_legacy_login_only_state_is_upgraded_on_the_next_write() -> None:
+    remote = FakeGitHub(
+        comments=[
+            _record(
+                7,
+                _body(controller="old-login", controller_id=None),
+                author="new-login",
+            )
+        ],
+        actor_login="new-login",
+    )
+
+    result = _apply(remote, mode="update")
+
+    assert result.action == "updated"
+    decoded = decode_comment(cast("str", remote.comments[0]["body"]))
+    assert decoded.state.controller == ControllerV1(
+        login="new-login",
+        id=ACTOR_ID,
+    )
 
 
 def test_explicit_schema_removal_is_a_functional_update() -> None:

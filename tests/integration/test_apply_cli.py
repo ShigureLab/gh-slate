@@ -19,6 +19,7 @@ HOST = "github.example"
 REPOSITORY = "owner/repo"
 NUMBER = 42
 ACTOR = "ci-bot"
+ACTOR_ID = 101
 
 
 def _result(value: object) -> ProcessResult:
@@ -53,7 +54,7 @@ class FakeGhBackend:
     ) -> ProcessResult:
         self.events.append(("GET", endpoint, hostname))
         if endpoint == "user":
-            return _result({"login": ACTOR})
+            return _result({"id": ACTOR_ID, "login": ACTOR})
         if endpoint == f"repos/{REPOSITORY}/issues/{NUMBER}":
             return _result({"html_url": self.page_url})
         if endpoint == self.comments_endpoint:
@@ -80,7 +81,7 @@ class FakeGhBackend:
                 "id": identifier,
                 "body": body,
                 "html_url": (f"{self.page_url}#issuecomment-{identifier}"),
-                "user": {"login": ACTOR},
+                "user": {"id": ACTOR_ID, "login": ACTOR},
                 "created_at": "2026-07-31T00:00:00Z",
                 "updated_at": "2026-07-31T00:00:00Z",
             }
@@ -107,8 +108,12 @@ class ReadRunner:
         *,
         timeout: float,
         hostname: str | None,
+        max_stdout_bytes: int,
+        max_stderr_bytes: int,
     ) -> ProcessResult:
         assert timeout > 0
+        assert max_stdout_bytes > 0
+        assert max_stderr_bytes > 0
         assert argv[0:2] == ("gh", "api")
         assert argv[argv.index("--method") + 1] == "GET"
         return self.backend.get(

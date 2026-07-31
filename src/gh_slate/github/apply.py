@@ -17,6 +17,7 @@ from gh_slate.codec import (
 )
 from gh_slate.codec.model import MAX_REVISION
 from gh_slate.errors import ExitCode, GhSlateError
+from gh_slate.github.models import GitHubActor
 from gh_slate.github.store import CommentStore
 from gh_slate.github.target import (
     ResolvedTarget,
@@ -44,7 +45,13 @@ class ApplyReadClient(Protocol):
         paginate: bool = False,
     ) -> object: ...
 
-    def current_actor(self, hostname: str | None = None) -> str: ...
+    def current_actor(self, hostname: str | None = None) -> GitHubActor: ...
+
+    def resolve_actor(
+        self,
+        login: str,
+        hostname: str | None = None,
+    ) -> GitHubActor: ...
 
 
 class ApplyWriteClient(Protocol):
@@ -236,27 +243,35 @@ def _conflict(
     )
 
 
-def _same_login(left: str, right: str) -> bool:
-    return left.casefold() == right.casefold()
-
-
-def _controller(request: ApplyRequest, reader: ApplyReadClient) -> str:
+def _controller(
+    request: ApplyRequest,
+    reader: ApplyReadClient,
+) -> GitHubActor:
     actor = reader.current_actor(request.target.host)
-    if not isinstance(actor, str) or not actor:
+    if not isinstance(actor, GitHubActor):
         raise ApplyError(
-            "current GitHub actor lookup returned an invalid login",
+            "current GitHub actor lookup returned an invalid identity",
             code="github_response_invalid",
         )
-    if request.controller is not None and not _same_login(
-        request.controller,
-        actor,
-    ):
-        raise _conflict(
-            "requested controller is not the current authenticated actor",
-            code="controller_conflict",
-            requested=request.controller,
-            current_actor=actor,
+    if request.controller is not None:
+        requested = reader.resolve_actor(
+            request.controller,
+            request.target.host,
         )
+        if not isinstance(requested, GitHubActor):
+            raise ApplyError(
+                "requested GitHub controller lookup returned an invalid identity",
+                code="github_response_invalid",
+            )
+        if requested.id != actor.id:
+            raise _conflict(
+                "requested controller is not the current authenticated actor",
+                code="controller_conflict",
+                requested=requested.login,
+                requested_id=requested.id,
+                current_actor=actor.login,
+                current_actor_id=actor.id,
+            )
     return actor
 
 
@@ -264,7 +279,7 @@ def _read_existing(
     store: CommentStore,
     request: ApplyRequest,
     *,
-    controller: str,
+    controller: GitHubActor,
 ) -> _Existing | None:
     candidates = store.candidates(
         request.target,
@@ -400,7 +415,7 @@ def _desired_state(
     request: ApplyRequest,
     existing: _Existing | None,
     *,
-    controller: str,
+    controller: GitHubActor,
     context: SlateContext,
 ) -> tuple[StateV1, str, str, str, bool]:
     previous = None if existing is None else existing.state
@@ -415,7 +430,6 @@ def _desired_state(
                 exit_code=ExitCode.VALIDATION,
                 hints=("pass a Jinja, table, or list renderer",),
             )
-        stored_controller = ControllerV1(login=controller)
         reuse_renderer = False
         reuse_schema = False
     else:
@@ -423,11 +437,14 @@ def _desired_state(
         renderer = previous.renderer if request.renderer is None else request.renderer
         replacing_schema = request.replace_schema or request.data_schema is not None
         schema = request.data_schema if replacing_schema else previous.data_schema
-        stored_controller = previous.controller
         reuse_renderer = request.renderer is None
         reuse_schema = not replacing_schema
 
     assert renderer is not None
+    stored_controller = ControllerV1(
+        login=controller.login,
+        id=controller.id,
+    )
     rendered = render(
         data,
         renderer,
@@ -458,7 +475,7 @@ def _revalidate_before_write(
     store: CommentStore,
     request: ApplyRequest,
     *,
-    controller: str,
+    controller: GitHubActor,
     initial: _Existing | None,
 ) -> None:
     current = _read_existing(
@@ -552,7 +569,7 @@ def _verify_remote(
     store: CommentStore,
     request: ApplyRequest,
     *,
-    controller: str,
+    controller: GitHubActor,
     intended_state_sha256: str,
     expected_comment_id: int | None,
     response_id: int | None,
