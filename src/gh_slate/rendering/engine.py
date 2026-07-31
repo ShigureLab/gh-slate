@@ -48,6 +48,7 @@ if TYPE_CHECKING:
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _MAX_SCHEMA_PROJECTION_PARTS = 2048
 _PREFLIGHT_CONTROLLER_LOGIN = "0123456789abcdefghijklmnopqrstuvwxyz-a0"
+_NO_PROJECTION_INSTANCE = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,6 +215,7 @@ class _SchemaProjection:
         schema: object,
         resolver: Resolver[object],
         *,
+        instance: object = _NO_PROJECTION_INSTANCE,
         active: frozenset[int] = frozenset(),
     ) -> tuple[tuple[Mapping[str, object], Resolver[object]], ...]:
         if not isinstance(schema, Mapping):
@@ -243,6 +245,7 @@ class _SchemaProjection:
                 self.parts(
                     resolved.contents,
                     resolved.resolver,
+                    instance=instance,
                     active=next_active,
                 )
             )
@@ -257,6 +260,7 @@ class _SchemaProjection:
                     self.parts(
                         subschema,
                         nested_resolver,
+                        instance=instance,
                         active=next_active,
                     )
                 )
@@ -268,15 +272,30 @@ class _SchemaProjection:
                 self.parts(
                     subschema,
                     nested_resolver,
+                    instance=instance,
                     active=next_active,
                 )
             )
+        dependent = typed.get("dependentSchemas")
+        if isinstance(dependent, Mapping) and isinstance(instance, Mapping):
+            for trigger, subschema in dependent.items():
+                if trigger not in instance or not isinstance(subschema, Mapping):
+                    continue
+                result.extend(
+                    self.parts(
+                        subschema,
+                        nested_resolver,
+                        instance=instance,
+                        active=next_active,
+                    )
+                )
         return tuple(result)
 
 
 def _table_item_schema(
     snapshot: SchemaSnapshotV1 | None,
     selector: str,
+    data: Mapping[str, JsonValue],
 ) -> object:
     if snapshot is None or not isinstance(snapshot.document, Mapping):
         return None
@@ -291,39 +310,59 @@ def _table_item_schema(
     ).resolver_with_root(
         DRAFT202012.create_resource(root),
     )
-    candidates: tuple[tuple[object, Resolver[object]], ...] = ((root, resolver),)
+    candidates: tuple[tuple[object, Resolver[object], object], ...] = ((root, resolver, data),)
     for key in path:
-        next_candidates: list[tuple[object, Resolver[object]]] = []
-        for candidate, candidate_resolver in candidates:
+        next_candidates: list[tuple[object, Resolver[object], object]] = []
+        for candidate, candidate_resolver, candidate_instance in candidates:
             for fragment, fragment_resolver in projection.parts(
                 candidate,
                 candidate_resolver,
+                instance=candidate_instance,
             ):
                 properties = fragment.get("properties")
                 if not isinstance(properties, Mapping) or key not in properties:
                     continue
                 subschema = cast("Mapping[str, object]", properties)[key]
                 if isinstance(subschema, (bool, Mapping)):
-                    next_candidates.append((subschema, fragment_resolver))
+                    child_instance = _NO_PROJECTION_INSTANCE
+                    if isinstance(candidate_instance, Mapping) and key in candidate_instance:
+                        instance_mapping = cast(
+                            "Mapping[object, object]",
+                            candidate_instance,
+                        )
+                        child_instance = instance_mapping[key]
+                    next_candidates.append((subschema, fragment_resolver, child_instance))
         if not next_candidates:
             return None
         candidates = tuple(next_candidates)
 
-    item_candidates: list[tuple[object, Resolver[object]]] = []
-    for candidate, candidate_resolver in candidates:
+    item_candidates: list[tuple[object, Resolver[object], object]] = []
+    for candidate, candidate_resolver, candidate_instance in candidates:
         for fragment, fragment_resolver in projection.parts(
             candidate,
             candidate_resolver,
+            instance=candidate_instance,
         ):
             items = fragment.get("items")
             if isinstance(items, (bool, Mapping)):
-                item_candidates.append((items, fragment_resolver))
+                item_instance: object = _NO_PROJECTION_INSTANCE
+                if isinstance(candidate_instance, tuple):
+                    present_keys: dict[str, None] = {}
+                    for row in candidate_instance:
+                        if isinstance(row, Mapping):
+                            for row_key in row:
+                                if isinstance(row_key, str):
+                                    present_keys[row_key] = None
+                    if present_keys:
+                        item_instance = present_keys
+                item_candidates.append((items, fragment_resolver, item_instance))
 
     properties_in_order: dict[str, object] = {}
-    for candidate, candidate_resolver in item_candidates:
+    for candidate, candidate_resolver, candidate_instance in item_candidates:
         for fragment, _fragment_resolver in projection.parts(
             candidate,
             candidate_resolver,
+            instance=candidate_instance,
         ):
             properties = fragment.get("properties")
             if not isinstance(properties, Mapping):
@@ -407,6 +446,7 @@ def _render(
                 else _table_item_schema(
                     snapshot,
                     parsed.selector,
+                    canonical,
                 )
             )
             resolved = resolve_table_renderer(

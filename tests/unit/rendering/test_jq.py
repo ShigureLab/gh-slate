@@ -8,7 +8,7 @@ from typing import cast
 
 import pytest
 
-from gh_slate.rendering import jq as jq_module
+from gh_slate.rendering import _jq_worker as worker_module, jq as jq_module
 from gh_slate.rendering.errors import RenderingError
 from gh_slate.rendering.jq import DEFAULT_JQ_LIMITS, JqLimits, select_one
 
@@ -269,6 +269,27 @@ def test_worker_environment_preserves_only_windows_system_root() -> None:
         jq_module._worker_environment(platform="win32", environment={})
     assert caught.value.code == "jq_worker_error"
     assert caught.value.details == {"os_error": "SystemRootMissing"}
+
+
+def test_worker_applies_a_windows_job_memory_limit_instead_of_unix_rlimits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    guard = object()
+    observed: list[tuple[str, int, int | None]] = []
+
+    def windows_limit(memory_bytes: int) -> object:
+        observed.append(("windows", memory_bytes, None))
+        return guard
+
+    def unix_limits(memory_bytes: int, cpu_seconds: int) -> None:
+        observed.append(("unix", memory_bytes, cpu_seconds))
+
+    monkeypatch.setattr(worker_module, "_apply_windows_memory_limit", windows_limit)
+    monkeypatch.setattr(worker_module, "_apply_unix_limits", unix_limits)
+
+    assert worker_module._apply_process_limits(4096, 3, platform="nt") is guard
+    assert worker_module._apply_process_limits(8192, 5, platform="posix") is None
+    assert observed == [("windows", 4096, None), ("unix", 8192, 5)]
 
 
 def cast_list(value: object) -> list[str]:

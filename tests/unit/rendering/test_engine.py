@@ -278,6 +278,53 @@ def test_table_schema_projection_traverses_conditional_subschemas(
     ]
 
 
+def test_table_schema_projection_activates_dependent_schemas_from_data() -> None:
+    schema = validate_schema(
+        {
+            "type": "object",
+            "properties": {"mode": {"type": "string"}},
+            "dependentSchemas": {
+                "mode": {
+                    "properties": {
+                        "jobs": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "status": {"type": "string"},
+                                    "name": {"type": "string"},
+                                },
+                            },
+                        }
+                    }
+                }
+            },
+        }
+    )
+    descriptor = TableRendererV1(selector=".jobs").to_descriptor()
+
+    active = render(
+        {"mode": "ci", "jobs": []},
+        descriptor,
+        schema=schema,
+        slate=SlateContext(name="ci"),
+    )
+    inactive = render(
+        {"jobs": []},
+        descriptor,
+        schema=schema,
+        slate=SlateContext(name="ci"),
+    )
+
+    assert active.markdown == "| status | name |\n| --- | --- |\n"
+    assert active.renderer.to_json()["columns"] == [
+        {"path": ["status"], "header": "status"},
+        {"path": ["name"], "header": "name"},
+    ]
+    assert inactive.markdown == "_No data._\n"
+    assert inactive.renderer.to_json()["columns"] == []
+
+
 def test_jinja_filters_obey_the_shared_builtin_render_limits() -> None:
     descriptor = jinja_descriptor('{{ data.rows | md_table(columns=["name"]) }}')
 
