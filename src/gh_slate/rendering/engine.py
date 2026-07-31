@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import re
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from decimal import Decimal, DecimalException
 from typing import TYPE_CHECKING, NoReturn, cast
 
 from referencing import Registry
@@ -48,6 +50,7 @@ if TYPE_CHECKING:
     from referencing._core import Resolver
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_JQ_INDEX_LITERAL = re.compile(r"-?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")
 _MAX_SCHEMA_PROJECTION_PARTS = 2048
 _PREFLIGHT_CONTROLLER_LOGIN = "0123456789abcdefghijklmnopqrstuvwxyz-a0"
 
@@ -180,10 +183,22 @@ def _selector_path(selector: str) -> tuple[str | int, ...] | None:
             closing_bracket = selector.find("]", token_start)
             if closing_bracket < 0:
                 return None
-            token = selector[token_start:closing_bracket]
-            if re.fullmatch(r"(?:0|[1-9][0-9]*)", token) is None:
+            token = selector[token_start:closing_bracket].strip()
+            if _JQ_INDEX_LITERAL.fullmatch(token) is None:
                 return None
-            path.append(int(token))
+            try:
+                numeric_index = Decimal(token)
+                if (
+                    not numeric_index.is_finite()
+                    or numeric_index != numeric_index.to_integral_value()
+                    or numeric_index < -sys.maxsize - 1
+                    or numeric_index > sys.maxsize
+                ):
+                    return None
+                index = int(numeric_index)
+            except (DecimalException, ValueError, OverflowError):
+                return None
+            path.append(index)
             position = closing_bracket + 1
             continue
         cursor = token_start + 1
@@ -436,13 +451,25 @@ def _project_table_item_schema(
                             if matched is not False:
                                 subschemas.append(pattern_schema)
                 else:
-                    prefix_items = fragment.get("prefixItems")
-                    if isinstance(prefix_items, tuple) and key < len(prefix_items):
-                        subschemas.append(prefix_items[key])
+                    schema_indexes: tuple[int, ...]
+                    if key >= 0:
+                        schema_indexes = (key,)
                     else:
-                        items = fragment.get("items")
-                        if isinstance(items, (bool, Mapping)):
-                            subschemas.append(items)
+                        schema_indexes = tuple(
+                            dict.fromkeys(
+                                len(instance) + key
+                                for instance in candidate_instances.values
+                                if isinstance(instance, tuple) and len(instance) + key >= 0
+                            )
+                        )
+                    prefix_items = fragment.get("prefixItems")
+                    for schema_index in schema_indexes:
+                        if isinstance(prefix_items, tuple) and schema_index < len(prefix_items):
+                            subschemas.append(prefix_items[schema_index])
+                        else:
+                            items = fragment.get("items")
+                            if isinstance(items, (bool, Mapping)):
+                                subschemas.append(items)
                 for subschema in subschemas:
                     if not isinstance(subschema, (bool, Mapping)):
                         continue
@@ -456,7 +483,7 @@ def _project_table_item_schema(
                         child_instances = tuple(
                             instance[key]
                             for instance in candidate_instances.values
-                            if isinstance(instance, tuple) and key < len(instance)
+                            if isinstance(instance, tuple) and -len(instance) <= key < len(instance)
                         )
                     next_candidates.append(
                         (

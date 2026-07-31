@@ -177,6 +177,118 @@ def test_schema_projection_supports_numeric_jq_indices(
 
 
 @pytest.mark.parametrize(
+    ("index_token", "group_index"),
+    [
+        (" 0 ", 0),
+        ("00", 0),
+        ("0.0", 0),
+        ("1e0", 1),
+        ("-1", 1),
+    ],
+)
+def test_schema_projection_accepts_jq_integer_literal_indices(
+    index_token: str,
+    group_index: int,
+) -> None:
+    schema = validate_schema(
+        {
+            "properties": {
+                "groups": {
+                    "type": "array",
+                    "items": {
+                        "properties": {
+                            "jobs": {
+                                "type": "array",
+                                "items": {
+                                    "properties": {
+                                        "status": {},
+                                        "name": {},
+                                    }
+                                },
+                            }
+                        }
+                    },
+                }
+            }
+        }
+    )
+    groups = [{"jobs": []} for _ in range(group_index + 1)]
+
+    result = render(
+        {"groups": groups},
+        TableRendererV1(selector=f".groups[{index_token}].jobs").to_descriptor(),
+        schema=schema,
+        slate=SlateContext(name="ci"),
+    )
+
+    assert result.renderer.to_json()["columns"] == [
+        {"path": ["status"], "header": "status"},
+        {"path": ["name"], "header": "name"},
+    ]
+
+
+def test_negative_numeric_index_selects_the_matching_prefix_item_schema() -> None:
+    schema = validate_schema(
+        {
+            "properties": {
+                "groups": {
+                    "type": "array",
+                    "prefixItems": [
+                        {
+                            "properties": {
+                                "jobs": {
+                                    "type": "array",
+                                    "items": {"properties": {"wrong": {}}},
+                                }
+                            }
+                        },
+                        {
+                            "properties": {
+                                "jobs": {
+                                    "type": "array",
+                                    "items": {
+                                        "properties": {
+                                            "status": {},
+                                            "name": {},
+                                        }
+                                    },
+                                }
+                            }
+                        },
+                    ],
+                }
+            }
+        }
+    )
+
+    result = render(
+        {"groups": [{"jobs": []}, {"jobs": []}]},
+        TableRendererV1(selector=".groups[-1].jobs").to_descriptor(),
+        schema=schema,
+        slate=SlateContext(name="ci"),
+    )
+
+    assert result.renderer.to_json()["columns"] == [
+        {"path": ["status"], "header": "status"},
+        {"path": ["name"], "header": "name"},
+    ]
+
+
+def test_extreme_numeric_selector_falls_back_without_projection_errors() -> None:
+    selector = f".groups[{'9' * 5000}].jobs // .fallback"
+
+    result = render(
+        {"groups": [], "fallback": []},
+        TableRendererV1(selector=selector).to_descriptor(),
+        schema={},
+        slate=SlateContext(name="ci"),
+    )
+
+    assert result.markdown == "_No data._\n"
+    assert result.renderer.to_json()["columns"] == []
+
+
+@pytest.mark.parametrize(
     "jobs",
     [
         [],
