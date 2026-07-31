@@ -8,6 +8,7 @@ from typing import cast
 
 import pytest
 
+from gh_slate.rendering import jq as jq_module
 from gh_slate.rendering.errors import RenderingError
 from gh_slate.rendering.jq import DEFAULT_JQ_LIMITS, JqLimits, select_one
 
@@ -117,11 +118,27 @@ def test_worker_uses_isolated_process_controls(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(subprocess, "run", complete)
 
     assert select_one(None, ".") is None
-    assert observed["env"] == {}
+    assert observed["env"] == jq_module._worker_environment()
     assert observed["check"] is False
     assert observed["input"] == b"null"
     assert observed["cwd"] != "."
     assert cast_list(observed["command"])[1] == "-I"
+
+
+def test_worker_environment_preserves_only_windows_system_root() -> None:
+    parent = {
+        "SystemRoot": "C:\\Windows",
+        "GH_TOKEN": "must-not-leak",
+        "HOME": "must-not-leak",
+    }
+
+    assert jq_module._worker_environment(platform="win32", environment=parent) == {"SystemRoot": "C:\\Windows"}
+    assert jq_module._worker_environment(platform="linux", environment=parent) == {}
+
+    with pytest.raises(RenderingError) as caught:
+        jq_module._worker_environment(platform="win32", environment={})
+    assert caught.value.code == "jq_worker_error"
+    assert caught.value.details == {"os_error": "SystemRootMissing"}
 
 
 def cast_list(value: object) -> list[str]:

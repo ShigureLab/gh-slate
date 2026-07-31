@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import subprocess
 import sys
 import tempfile
@@ -52,6 +53,30 @@ _WORKER_ERROR_CODES = {
     "source_limit": "jq_source_limit",
     "internal": "jq_worker_error",
 }
+
+
+def _worker_environment(
+    *,
+    platform: str = sys.platform,
+    environment: Mapping[str, str] = os.environ,
+) -> dict[str, str]:
+    """Return the smallest environment needed to start the worker.
+
+    Windows requires ``SystemRoot`` to start some executables and side-by-side
+    assemblies. The trusted worker clears this value before importing jq, so
+    selectors still cannot observe the parent process environment.
+    """
+
+    if platform != "win32":
+        return {}
+    system_root = environment.get("SystemRoot")
+    if not system_root:
+        raise _rendering_error(
+            "jq worker requires SystemRoot on Windows",
+            code="jq_worker_error",
+            os_error="SystemRootMissing",
+        )
+    return {"SystemRoot": system_root}
 
 
 def _rendering_error(message: str, *, code: str, **details: object) -> RenderingError:
@@ -277,7 +302,7 @@ def _evaluate(data: object, filter_text: str, limits: JqLimits) -> tuple[JsonVal
                 input=source,
                 capture_output=True,
                 cwd=empty_cwd,
-                env={},
+                env=_worker_environment(),
                 timeout=limits.timeout_seconds,
                 check=False,
             )
