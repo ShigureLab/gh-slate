@@ -437,9 +437,12 @@ def _project_table_item_schema(
             ):
                 subschemas: list[object] = []
                 if isinstance(key, str):
+                    property_covered = False
                     properties = fragment.get("properties")
                     if isinstance(properties, Mapping) and key in properties:
                         subschemas.append(cast("Mapping[str, object]", properties)[key])
+                        property_covered = True
+                    pattern_covered = False
                     pattern_properties = fragment.get("patternProperties")
                     if isinstance(pattern_properties, Mapping):
                         for pattern_value, pattern_schema in pattern_properties.items():
@@ -450,6 +453,12 @@ def _project_table_item_schema(
                             )
                             if matched is not False:
                                 subschemas.append(pattern_schema)
+                            if matched is True:
+                                pattern_covered = True
+                    if not property_covered and not pattern_covered:
+                        additional_properties = fragment.get("additionalProperties")
+                        if isinstance(additional_properties, (bool, Mapping)):
+                            subschemas.append(additional_properties)
                 else:
                     schema_indexes: tuple[int, ...]
                     if key >= 0:

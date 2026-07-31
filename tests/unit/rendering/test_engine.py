@@ -108,6 +108,38 @@ def test_schema_projection_supports_quoted_jq_keys_for_empty_tables() -> None:
     assert result.renderer.to_json()["columns"] == [{"path": ["value"], "header": "value"}]
 
 
+@pytest.mark.parametrize("jobs", [[], [{"name": "linux", "status": "passing"}]])
+def test_schema_projection_follows_additional_properties(
+    jobs: list[dict[str, str]],
+) -> None:
+    schema = validate_schema(
+        {
+            "type": "object",
+            "additionalProperties": {
+                "type": "array",
+                "items": {
+                    "properties": {
+                        "status": {"type": "string"},
+                        "name": {"type": "string"},
+                    }
+                },
+            },
+        }
+    )
+
+    result = render(
+        {"jobs": jobs},
+        TableRendererV1(selector=".jobs").to_descriptor(),
+        schema=schema,
+        slate=SlateContext(name="ci"),
+    )
+
+    assert result.renderer.to_json()["columns"] == [
+        {"path": ["status"], "header": "status"},
+        {"path": ["name"], "header": "name"},
+    ]
+
+
 @pytest.mark.parametrize(
     ("group_schema", "group_index"),
     [
@@ -527,7 +559,10 @@ def test_table_schema_projection_follows_pattern_properties(
                     },
                 }
             },
-            "additionalProperties": False,
+            "additionalProperties": {
+                "type": "array",
+                "items": {"properties": {"wrong": {}}},
+            },
         }
     )
 
