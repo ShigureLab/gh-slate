@@ -138,7 +138,7 @@ def _ecmascript_group_name(source: str) -> str:
                 raise ValueError("invalid ECMA-262 group name escape")
             hexadecimal = source[index + 3 : closing_brace]
             next_index = closing_brace + 1
-            if not 1 <= len(hexadecimal) <= 6:
+            if not hexadecimal:
                 raise ValueError("invalid ECMA-262 group name escape")
         else:
             hexadecimal = source[index + 2 : index + 6]
@@ -147,7 +147,10 @@ def _ecmascript_group_name(source: str) -> str:
             next_index = index + 6
         if any(character not in _HEXADECIMAL_DIGITS for character in hexadecimal):
             raise ValueError("invalid ECMA-262 group name escape")
-        codepoint = int(hexadecimal, 16)
+        significant_hexadecimal = hexadecimal.lstrip("0") or "0"
+        if len(significant_hexadecimal) > 6:
+            raise ValueError("invalid ECMA-262 group name escape")
+        codepoint = int(significant_hexadecimal, 16)
         if codepoint > 0x10FFFF:
             raise ValueError("invalid ECMA-262 group name escape")
 

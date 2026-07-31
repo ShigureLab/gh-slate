@@ -169,6 +169,7 @@ def test_schema_regex_format_uses_the_runtime_regex_dialect() -> None:
         (r"^(?<$>a)\k<$>$", "aa", "ab"),
         (r"^(?<\u0061>a)\k<a>$", "aa", "ab"),
         (r"^(?<\uD835\uDC9C>a)\k<𝒜>$", "aa", "ab"),
+        (r"^(?<\u{00000061}>a)\k<\u{61}>$", "aa", "ab"),
         (r"^(?:(?<x>a)|(?<x>b))\k<x>$", "bb", "ab"),
         (r"^(?:(?<x>a)|b)+\k<x>$", "ab", "aba"),
         (r"^(?i:a)$", "A", "b"),
