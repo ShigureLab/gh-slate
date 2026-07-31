@@ -121,6 +121,9 @@ def test_worker_uses_isolated_process_controls(monkeypatch: pytest.MonkeyPatch) 
     assert observed["env"] == jq_module._worker_environment()
     assert observed["check"] is False
     assert observed["input"] == b"null"
+    assert observed["stdout"] is subprocess.PIPE
+    assert observed["stderr"] is subprocess.DEVNULL
+    assert "capture_output" not in observed
     assert observed["cwd"] != "."
     assert cast_list(observed["command"])[1] == "-I"
 

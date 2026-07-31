@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from typing import cast
 
 from gh_slate.codec import (
+    ControllerV1,
     EncodedComment,
     JsonValue,
     RendererDescriptorV1,
@@ -18,6 +19,7 @@ from gh_slate.codec import (
     strict_loads,
 )
 from gh_slate.codec.limits import SizeReport, enforce_size_limits
+from gh_slate.codec.model import MAX_GITHUB_USER_ID, MAX_REVISION
 from gh_slate.codec.text import utf8_size
 from gh_slate.rendering.errors import RenderingError
 from gh_slate.rendering.jinja import SlateContext, render_jinja
@@ -223,6 +225,32 @@ def _enforce_output(markdown: str, limits: RenderLimits) -> None:
         )
 
 
+def _preflight_materialization(result: RenderResult, *, name: str) -> None:
+    """Apply the complete comment-envelope limits to a local render.
+
+    Local rendering has no authenticated controller or stored revision yet.
+    Maximum-width numeric metadata makes this provisional state conservative
+    for those fields while reusing the production encoder for every wire and
+    reserved-marker boundary.
+    """
+
+    encode_comment(
+        StateV1(
+            name=name,
+            revision=MAX_REVISION,
+            controller=ControllerV1(
+                login="gh-slate-local-preview",
+                id=MAX_GITHUB_USER_ID,
+            ),
+            data=result.data,
+            data_schema=result.data_schema,
+            renderer=result.renderer,
+            render_sha256=result.render_sha256,
+        ),
+        result.markdown,
+    )
+
+
 def render(
     data: object,
     renderer: RendererDescriptorV1,
@@ -271,13 +299,15 @@ def render(
         resolved_descriptor,
         markdown=markdown,
     )
-    return RenderResult(
+    result = RenderResult(
         data=canonical,
         data_schema=snapshot,
         renderer=resolved_descriptor,
         markdown=markdown,
         render_sha256=render_sha256(markdown),
     )
+    _preflight_materialization(result, name=slate.name)
+    return result
 
 
 def render_state(

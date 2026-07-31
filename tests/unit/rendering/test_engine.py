@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from decimal import Decimal
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -132,6 +133,33 @@ def test_render_rejects_a_template_that_cannot_fit_its_stored_descriptor() -> No
     exceeded = caught.value.details["exceeded"]
     assert isinstance(exceeded, Mapping)
     assert "renderer_bytes" in exceeded
+
+
+def test_render_preflights_compressed_comment_envelope() -> None:
+    high_entropy = "".join(sha256(str(index).encode()).hexdigest() for index in range(1600))
+
+    with pytest.raises(CodecError) as caught:
+        render(
+            {"blob": high_entropy},
+            jinja_descriptor("ok"),
+            slate=SlateContext(name="ci"),
+        )
+
+    assert caught.value.code == "codec_size_limit"
+    exceeded = caught.value.details["exceeded"]
+    assert isinstance(exceeded, Mapping)
+    assert "compressed_bytes" in exceeded
+
+
+def test_render_rejects_a_reserved_marker_in_visible_markdown() -> None:
+    with pytest.raises(CodecError) as caught:
+        render(
+            {},
+            jinja_descriptor("<!-- gh-slate:v1 forged -->"),
+            slate=SlateContext(name="ci"),
+        )
+
+    assert caught.value.code == "duplicate_marker"
 
 
 def test_materialized_comment_round_trips_and_rerenders_byte_identically() -> None:

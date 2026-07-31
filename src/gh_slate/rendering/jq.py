@@ -300,7 +300,8 @@ def _evaluate(data: object, filter_text: str, limits: JqLimits) -> tuple[JsonVal
             completed = subprocess.run(
                 command,
                 input=source,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
                 cwd=empty_cwd,
                 env=_worker_environment(),
                 timeout=limits.timeout_seconds,

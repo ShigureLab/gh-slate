@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import sys
+from hashlib import sha256
 from typing import TYPE_CHECKING
 
 from gh_slate.cli import run
@@ -101,3 +102,19 @@ def test_template_file_and_stdin_reads_are_bounded(
     monkeypatch.setattr(sys, "stdin", io.StringIO("x" * (64 * 1024 + 1)))
     assert run(["render", "ci", "--template", "-"]) == 2
     assert "input_size_limit" in capsys.readouterr().err
+
+
+def test_local_render_rejects_an_unmaterializable_envelope_without_stdout(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    data = tmp_path / "data.json"
+    template = tmp_path / "slate.md.j2"
+    high_entropy = "".join(sha256(str(index).encode()).hexdigest() for index in range(1600))
+    data.write_text(json.dumps({"blob": high_entropy}), encoding="utf-8")
+    template.write_text("ok", encoding="utf-8")
+
+    assert run(["render", "ci", "--data", str(data), "--template", str(template)]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "codec_size_limit" in captured.err
