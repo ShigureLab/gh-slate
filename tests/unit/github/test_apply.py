@@ -788,6 +788,25 @@ def test_post_write_refetch_failure_is_unknown_and_never_retries() -> None:
     assert remote.comment_reads == 3
 
 
+def test_successful_create_missing_from_first_refetch_is_unknown_and_never_retries() -> None:
+    remote = FakeGitHub()
+
+    def hide_created_comment(github: FakeGitHub) -> None:
+        github.comments.clear()
+
+    remote.before_comment_read[3] = hide_created_comment
+
+    with pytest.raises(ApplyError) as caught:
+        _apply(remote, renderer=_renderer())
+
+    assert caught.value.code == "post_write_verification_unknown"
+    assert caught.value.exit_code == ExitCode.RUNTIME
+    assert caught.value.details["reason"] == "slate_missing"
+    assert caught.value.hints == ("inspect the slate before attempting another mutation",)
+    assert [call[0] for call in remote.write_calls] == ["POST"]
+    assert remote.comment_reads == 3
+
+
 @pytest.mark.parametrize("interruption", [KeyboardInterrupt(), SystemExit(130)])
 @pytest.mark.parametrize(
     ("write_behavior", "expected_code"),

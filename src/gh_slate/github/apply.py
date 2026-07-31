@@ -544,6 +544,13 @@ def _verification_error(
     unknown: bool,
     reason: str,
 ) -> ApplyError:
+    if recovery_kind is None and unknown:
+        return ApplyError(
+            "the write was sent, but its remote outcome could not be determined",
+            code="post_write_verification_unknown",
+            details={"name": request.name, "reason": reason},
+            hints=("inspect the slate before attempting another mutation",),
+        )
     if recovery_kind is not None and unknown:
         timeout = recovery_kind == "timeout"
         return ApplyError(
@@ -594,16 +601,6 @@ def _verify_remote(
             name=request.name,
         )
     except Exception as error:
-        if recovery_kind is None:
-            raise ApplyError(
-                "the write was sent, but its remote state could not be verified",
-                code="post_write_verification_unknown",
-                details={
-                    "name": request.name,
-                    "reason": f"refetch_failed:{type(error).__name__}",
-                },
-                hints=("inspect the slate before attempting another mutation",),
-            ) from None
         raise _verification_error(
             request,
             recovery_kind=recovery_kind,
@@ -623,7 +620,11 @@ def _verify_remote(
         raise _verification_error(
             request,
             recovery_kind=recovery_kind,
-            unknown=(recovery_kind is not None and expected_comment_id is None),
+            # A successful create can be temporarily absent from GitHub's
+            # paginated reads even when POST returned a comment id. Keep the
+            # outcome unknown so an immediate upsert cannot race into a second
+            # create. Existing updates retain their conflict classification.
+            unknown=expected_comment_id is None,
             reason="slate_missing",
         )
     if len(candidates) != 1:
