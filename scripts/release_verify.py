@@ -460,6 +460,37 @@ install_root="${{cache_home}}/gh-slate-extension-v2"
 install_dir="${{install_root}}/{version}-${{payload_sha256}}"
 ready_file="${{install_dir}}/.ready"
 recovery_link="${{install_dir}}.recover"
+stage_name_prefix=".{version}-${{payload_sha256}}.stage."
+
+is_recovery_stage_path() {{
+  local candidate="$1"
+  local candidate_parent="${{candidate%/*}}"
+  local candidate_name="${{candidate##*/}}"
+  local candidate_suffix
+  [[ "${{candidate_parent}}" == "${{install_root}}" ]] || return 1
+  [[ "${{candidate_name}}" == "${{stage_name_prefix}}"* ]] || return 1
+  candidate_suffix="${{candidate_name#"${{stage_name_prefix}}"}}"
+  [[ -n "${{candidate_suffix}}" && "${{candidate_suffix}}" != *[!A-Za-z0-9]* ]]
+}}
+
+find_recovery_terminal() {{
+  local candidate
+  local hop
+  recovery_terminal=""
+  [[ -L "${{recovery_link}}" ]] || return 1
+  candidate="$(readlink "${{recovery_link}}")" || return 1
+  for (( hop = 0; hop < 16; hop++ )); do
+    is_recovery_stage_path "${{candidate}}" || return 1
+    if [[ -L "${{candidate}}" ]]; then
+      candidate="$(readlink "${{candidate}}")" || return 1
+      continue
+    fi
+    [[ ! -e "${{candidate}}" ]] || return 1
+    recovery_terminal="${{candidate}}"
+    return 0
+  done
+  return 1
+}}
 
 mkdir -p "${{install_root}}"
 if [[ ! -f "${{ready_file}}" ]]; then
@@ -507,11 +538,26 @@ if [[ ! -f "${{ready_file}}" ]]; then
   elif [[ -f "${{ready_file}}" ]]; then
     preserve_stage=0
   else
-    if ! ln -sn "${{stage_dir}}" "${{recovery_link}}" 2>/dev/null; then
-      preserve_stage=0
+    owns_recovery=0
+    if ln -sn "${{stage_dir}}" "${{recovery_link}}" 2>/dev/null; then
+      owns_recovery=1
+    elif [[ ! -f "${{recovery_link}}/.ready" ]]; then
+      recovery_terminal=""
+      if find_recovery_terminal; then
+        if ln -sn "${{stage_dir}}" "${{recovery_terminal}}" 2>/dev/null; then
+          owns_recovery=1
+        fi
+      fi
     fi
     if [[ -L "${{recovery_link}}" && -f "${{recovery_link}}/.ready" ]]; then
       recovery_target="$(readlink "${{recovery_link}}")"
+      if ! is_recovery_stage_path "${{recovery_target}}"; then
+        echo "error: gh-slate extension recovery target is invalid" >&2
+        exit 1
+      fi
+      if (( ! owns_recovery )); then
+        preserve_stage=0
+      fi
       publication_link="${{stage_dir}}/.publish"
       ln -sn "${{recovery_target}}" "${{publication_link}}"
       if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -519,6 +565,8 @@ if [[ ! -f "${{ready_file}}" ]]; then
       else
         mv -fT -- "${{publication_link}}" "${{install_dir}}"
       fi
+    elif (( ! owns_recovery )); then
+      preserve_stage=0
     fi
   fi
   trap - HUP INT TERM

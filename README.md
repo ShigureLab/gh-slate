@@ -184,13 +184,19 @@ gh slate data get ci-summary '.jobs[] | select(.status != "passed") | .name' --t
 ```
 
 First inspect the slate with `view --json`. If it reports revision `1`, choose
-one of these writes: mutate one exact path, or transform the complete data
+one of these writes: mutate one static path, or transform the complete data
 object with jq. Both pin the observed revision and reject an already-stale read:
 
 ```bash
 gh slate data set ci-summary '.jobs[1].status' --target https://github.com/OWNER/REPO/issues/42 --value-string passed --if-revision 1 --json
 gh slate data update ci-summary '.jobs |= map(if .name == $name then .status = "passed" else . end)' --target https://github.com/OWNER/REPO/issues/42 --arg name windows --if-revision 1 --json
 ```
+
+`data set` and `data delete` accept static jq-compatible paths such as
+`.status`, `.jobs[1].status`, and `.["key.with.dot"]`. A path cannot depend on
+the current data, arithmetic, a pipe, or interpolation; use `data update` for
+computed transforms. This keeps path selection independent of jq's IEEE-754
+number projection while untouched JSON numbers remain exact.
 
 For an interactive typed edit, set `GH_EDITOR`, `GIT_EDITOR`, `VISUAL`, or
 `EDITOR`, then run:

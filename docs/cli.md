@@ -130,8 +130,8 @@ gh slate
 ├── delete NAME                delete the entire managed comment
 ├── data
 │   ├── get NAME [FILTER]      query data with jq
-│   ├── set NAME PATH          set one value using an exact jq path
-│   ├── delete NAME PATH...    delete values using exact jq paths
+│   ├── set NAME PATH          set one value using a static jq path
+│   ├── delete NAME PATH...    delete values using static jq paths
 │   ├── update NAME FILTER     transform the full data object with jq
 │   └── edit NAME              edit typed JSON in $GH_EDITOR/$EDITOR
 ├── schema
@@ -555,10 +555,12 @@ gh slate data set ci-summary '.["key.with.dot"]' \
   --target 42
 ```
 
-`PATH` must be an exact jq path expression. Internally it is resolved with jq
-`path`/`setpath` semantics; arbitrary transforms belong in `data update`.
+`PATH` must be a static jq-compatible path composed from `.field`,
+`["exact.key"]`, and non-negative `[0]` segments. It is validated with jq
+against `null`, never resolved from the stored data; arithmetic, pipes,
+interpolation, and other computed paths belong in `data update`.
 Missing containers are created according to the next typed path segment, and
-arrays are padded with JSON nulls when an exact non-negative index extends
+arrays are padded with JSON nulls when a static non-negative index extends
 them. The final mutation runs in Python so untouched arbitrary-precision
 integers are not round-tripped through libjq.
 
@@ -1485,7 +1487,7 @@ Deliverables:
 
 - `data get`, including zero/one/many jq results and raw, compact, and exit
   status modes;
-- `data set` and `data delete` using exact jq path semantics and unambiguous
+- `data set` and `data delete` using static jq path semantics and unambiguous
   JSON, string, and file value sources;
 - full `data update` with real jq filters, `--arg`, `--argjson`, and `@FILE`;
 - `data edit` with the documented editor precedence and parse/validation loop;

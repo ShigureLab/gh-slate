@@ -219,7 +219,8 @@ large integers that jq must preserve exactly as strings.
   --json
 ```
 
-For exact paths, retain JSON types explicitly:
+For static paths, retain JSON types explicitly. Use `data update` when path
+selection itself must be computed from current data:
 
 ```bash
 "${GH_SLATE[@]}" data set "$NAME" '.coverage' \
