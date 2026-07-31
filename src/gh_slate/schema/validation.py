@@ -361,13 +361,56 @@ def _validation_message(keyword: str | None) -> str:
     return messages.get(keyword, f"value does not satisfy schema keyword '{keyword}'")
 
 
-def _validation_diagnostic(error: ValidationError) -> SchemaDiagnostic:
+def _schema_locations(schema: object) -> dict[int, tuple[object, ...]]:
+    locations: dict[int, tuple[object, ...]] = {}
+
+    def visit(current: object, path: tuple[object, ...]) -> None:
+        if isinstance(current, bool) or not isinstance(current, Mapping):
+            return
+        typed = cast("Mapping[str, object]", current)
+        locations[id(typed)] = path
+
+        for keyword in _SCHEMA_SINGLE_KEYWORDS:
+            child = typed.get(keyword)
+            if isinstance(child, (bool, Mapping)):
+                visit(child, (*path, keyword))
+
+        for keyword in _SCHEMA_ARRAY_KEYWORDS:
+            children = typed.get(keyword)
+            if not isinstance(children, (list, tuple)):
+                continue
+            for index, child in enumerate(children):
+                if isinstance(child, (bool, Mapping)):
+                    visit(child, (*path, keyword, index))
+
+        for keyword in _SCHEMA_MAP_KEYWORDS:
+            children = typed.get(keyword)
+            if not isinstance(children, Mapping):
+                continue
+            for name, child in children.items():
+                if isinstance(child, (bool, Mapping)):
+                    visit(child, (*path, keyword, name))
+
+    visit(schema, ())
+    return locations
+
+
+def _validation_diagnostic(
+    error: ValidationError,
+    *,
+    schema_locations: Mapping[int, tuple[object, ...]],
+) -> SchemaDiagnostic:
     keyword = error.validator if isinstance(error.validator, str) else None
+    schema_path = tuple(error.absolute_schema_path)
+    if isinstance(error.schema, Mapping):
+        source_path = schema_locations.get(id(error.schema))
+        if source_path is not None and (keyword is None or keyword in error.schema):
+            schema_path = source_path if keyword is None else (*source_path, keyword)
     return _diagnostic(
         code="validation_failed" if keyword is None else keyword,
         message=_validation_message(keyword),
         data_path=tuple(error.absolute_path),
-        schema_path=tuple(error.absolute_schema_path),
+        schema_path=schema_path,
         keyword=keyword,
     )
 
@@ -385,6 +428,7 @@ def _collect_diagnostics(
     errors: Iterable[ValidationError],
     *,
     maximum: int,
+    schema_locations: Mapping[int, tuple[object, ...]],
 ) -> tuple[list[SchemaDiagnostic], int]:
     selected: list[
         tuple[
@@ -395,7 +439,10 @@ def _collect_diagnostics(
     ] = []
     count = 0
     for error in errors:
-        diagnostic = _validation_diagnostic(error)
+        diagnostic = _validation_diagnostic(
+            error,
+            schema_locations=schema_locations,
+        )
         # The monotonically increasing index means tuple comparison never
         # reaches the non-orderable dataclass when two sort keys are equal.
         insort(selected, (_diagnostic_sort_key(diagnostic), count, diagnostic))
@@ -466,6 +513,7 @@ def validate_data(
     )
     validator_data = to_validator_value(frozen)
     registry: Registry[object] = Registry(retrieve=_deny_retrieve)
+    schema_locations = _schema_locations(validator_schema)
     try:
         with evaluation_budget():
             diagnostics, error_count = _collect_diagnostics(
@@ -474,6 +522,7 @@ def validate_data(
                     registry=registry,
                 ).iter_errors(validator_data),
                 maximum=max_errors,
+                schema_locations=schema_locations,
             )
     except Unresolvable:
         raise SchemaError(

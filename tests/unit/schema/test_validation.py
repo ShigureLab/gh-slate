@@ -412,6 +412,29 @@ def test_unresolved_local_ref_is_wrapped_without_native_exception() -> None:
     assert captured.value.__cause__ is None
 
 
+def test_validation_diagnostic_resolves_local_ref_to_source_pointer() -> None:
+    schema = {
+        "$defs": {
+            "label/name": {
+                "type": "string",
+            }
+        },
+        "properties": {
+            "name": {
+                "$ref": "#/$defs/label~1name",
+            }
+        },
+    }
+
+    with pytest.raises(SchemaError) as captured:
+        validate_data({"name": Decimal(1)}, schema)
+
+    diagnostic = captured.value.diagnostics[0]
+    assert diagnostic.data_pointer == "/name"
+    assert diagnostic.schema_pointer == "/$defs/label~1name/type"
+    assert diagnostic.keyword == "type"
+
+
 def test_diagnostics_are_rfc6901_sorted_and_truncated() -> None:
     schema = {
         "type": "object",
