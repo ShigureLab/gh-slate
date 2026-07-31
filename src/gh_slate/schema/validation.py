@@ -312,7 +312,7 @@ def validate_schema(
     try:
         Draft202012Validator.check_schema(
             validator_schema,
-            format_checker=_SCHEMA_FORMAT_CHECKER,
+            format_checker=_SCHEMA_FORMAT_CHECKER,  # ty: ignore[unknown-argument]
         )
     except JsonSchemaSchemaError as error:
         _raise_single(
