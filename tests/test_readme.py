@@ -16,7 +16,8 @@ DOCUMENTED_COMMANDS = [
     ),
     (
         "gh slate apply ci-summary --target https://github.com/OWNER/REPO/issues/42 --mode upsert "
-        "--data report.json --table '.jobs' --columns name,status --title 'CI summary' --dry-run",
+        "--data report.json --schema report.schema.json --table '.jobs' "
+        "--columns name,status --title 'CI summary' --dry-run",
         [
             "apply",
             "ci-summary",
@@ -26,6 +27,8 @@ DOCUMENTED_COMMANDS = [
             "upsert",
             "--data",
             "report.json",
+            "--schema",
+            "report.schema.json",
             "--table",
             ".jobs",
             "--columns",
@@ -179,6 +182,7 @@ def test_install_and_safety_contracts_are_documented() -> None:
     readme = README.read_text(encoding="utf-8")
 
     for command in (
+        "uv tool install .",
         "uv tool install gh-slate",
         "gh extension install ShigureLab/gh-slate",
         "npx skills add https://github.com/ShigureLab/gh-slate --skill gh-slate",
@@ -203,6 +207,11 @@ def test_install_and_safety_contracts_are_documented() -> None:
     assert "byte-identical, source-bound artifacts" in readme
     assert "full commit SHA" in readme
     assert "Release one tag at a time" in readme
+    assert "post_write_verification_unknown" in readme
+    assert "write_timeout_unknown" in readme
+    assert "duplicate-comment risk" in readme
+    assert "exactly one JSON object" in readme
+    assert "autoescaping is disabled" in readme
 
 
 def test_every_gh_extension_quickstart_command_parses() -> None:

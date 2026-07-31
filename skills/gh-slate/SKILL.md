@@ -69,8 +69,11 @@ stops. If neither candidate is compatible, offer one CLI installation path;
 installing the CLI and installing this skill are separate:
 
 ```bash
-# Python CLI:
+# Python CLI after the package is published:
 uv tool install 'gh-slate>=0.1.0'
+
+# Python CLI from a pre-release checkout, including on Windows:
+uv tool install .
 
 # Or the GitHub CLI extension:
 gh extension install ShigureLab/gh-slate
@@ -113,7 +116,8 @@ gh auth status
    `updated`, `repaired`, `deleted`, and `unchanged`; do not claim success
    before the command returns a confirmed result.
 6. On conflict or unknown outcome, refetch and report what is observed. Do not
-   blindly replay a non-idempotent jq update.
+   blindly replay any mutation. In particular, one missing read after an
+   unknown create is not proof that GitHub rejected the POST.
 
 Inspect and validate:
 
@@ -338,6 +342,26 @@ case-sensitive name; do not turn duplicate matches into bulk deletion:
   --confirm "$NAME" \
   --json
 ```
+
+### Recover an unknown remote outcome
+
+Treat `post_write_verification_unknown`, `write_timeout_unknown`,
+`write_outcome_unknown`, `repair_outcome_unknown`, and
+`delete_outcome_unknown` as unresolved remote state, not ordinary retryable
+errors. Perform only read operations first:
+
+```bash
+"${GH_SLATE[@]}" list --target "$TARGET" --repo "$OWNER_REPO" --json
+"${GH_SLATE[@]}" view "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --json
+"${GH_SLATE[@]}" state verify "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --json
+```
+
+Stop when the intended state is present. For an existing slate whose outcome
+is now unambiguous, refetch and pin any later mutation to the newly observed
+revision. If a slate was missing before an unknown create and is still missing
+on the first refetch, do not create or upsert it again: keep observing the
+target's comments/API until the original managed comment can be identified.
+Only an explicit operator decision may accept the duplicate-comment risk.
 
 ## Report the result
 

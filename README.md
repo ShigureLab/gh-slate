@@ -27,6 +27,16 @@ Requirements:
 - `uv` for the Python tool installation and, on supported Unix platforms, the
   repository-backed GitHub CLI extension launcher.
 
+Until the first PyPI release, install the Python CLI from a checkout. This is
+also the supported development install on Windows:
+
+```bash
+git clone https://github.com/ShigureLab/gh-slate.git
+cd gh-slate
+uv tool install .
+gh-slate --help
+```
+
 After a release is published to PyPI, install the Python tool with:
 
 ```bash
@@ -74,8 +84,9 @@ gh skill install ShigureLab/gh-slate gh-slate --agent codex --scope user
 
 ## Preflight
 
-Check GitHub authentication first, then exercise the same gh, jq, Jinja, and
-JSON Schema runtime used by normal commands:
+Check GitHub authentication first. `doctor` verifies the `gh` version and
+authenticated actor, loads the renderer/schema dependencies, and runs a jq
+smoke query through the isolated worker used by normal commands:
 
 ```bash
 gh auth status
@@ -103,6 +114,10 @@ Run `gh slate COMMAND --help` for every flag. The examples below use the
 extension spelling; replace `gh slate` with `gh-slate` when using the Python
 tool.
 
+There is no separate `init` command: the first `apply --mode create` or
+`apply --mode upsert` initializes a slate. Names are lowercase, at most 64
+characters, match `[a-z0-9][a-z0-9._-]{0,63}`, and cannot contain `--`.
+
 ## Quick start
 
 Assume `report.json` contains:
@@ -117,19 +132,55 @@ Assume `report.json` contains:
 }
 ```
 
+and `report.schema.json` contains:
+
+```json
+{
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "properties": {
+      "jobs": {
+         "type": "array",
+         "items": {
+            "type": "object",
+            "properties": {
+               "name": { "type": "string" },
+               "status": { "type": "string" }
+            },
+            "required": ["name", "status"]
+         }
+      },
+      "summary": { "type": "string" }
+   },
+   "required": ["jobs", "summary"]
+}
+```
+
 Preview a table without writing, then upsert exactly one named slate. A name is
 unique only within one target and controller, so `ci-summary` can be reused on
 another Issue or Pull Request:
 
 ```bash
-gh slate apply ci-summary --target https://github.com/OWNER/REPO/issues/42 --mode upsert --data report.json --table '.jobs' --columns name,status --title 'CI summary' --dry-run
-gh slate apply ci-summary --target https://github.com/OWNER/REPO/issues/42 --mode upsert --data report.json --table '.jobs' --columns name,status --title 'CI summary' --json
+gh slate apply ci-summary --target https://github.com/OWNER/REPO/issues/42 --mode upsert --data report.json --schema report.schema.json --table '.jobs' --columns name,status --title 'CI summary' --dry-run
+gh slate apply ci-summary --target https://github.com/OWNER/REPO/issues/42 --mode upsert --data report.json --schema report.schema.json --table '.jobs' --columns name,status --title 'CI summary' --json
 ```
 
 List all managed slates on the target:
 
 ```bash
 gh slate list --target https://github.com/OWNER/REPO/issues/42 --json
+```
+
+The corresponding read-only commands render local input, print the remote
+Markdown, open the exact comment, export the hidden typed state, or print the
+stored schema:
+
+```bash
+gh slate render ci-summary --data report.json --schema report.schema.json --table '.jobs' --columns name,status --title 'CI summary'
+gh slate view ci-summary --target https://github.com/OWNER/REPO/issues/42
+gh slate view ci-summary --target https://github.com/OWNER/REPO/issues/42 --web
+gh slate state export ci-summary --target https://github.com/OWNER/REPO/issues/42
+gh slate schema get ci-summary --target https://github.com/OWNER/REPO/issues/42
 ```
 
 For the next complete update, pass only the new data. Omitting renderer and
@@ -184,11 +235,20 @@ or `compact_json` filters shown above; arbitrary calls, imports, includes,
 filesystem access, environment variables, and default Jinja globals are not
 available.
 
+Jinja autoescaping is disabled because the output is Markdown, not HTML.
+Direct scalar interpolation and `compact_json` do not escape Markdown syntax:
+for example, untrusted backticks can break a code span. `md_table` and
+`md_list` apply the built-in Markdown text escaping rules; for values placed
+directly into links, code spans, headings, or raw prose, validate or escape them
+for that exact context in the trusted template.
+
 ### Add or change a JSON Schema
 
-Schemas use JSON Schema draft 2020-12 and are stored with the data. Validate a
-candidate against the current schema, infer a permissive starting point, or
-replace the schema explicitly:
+Schemas use JSON Schema draft 2020-12 and are stored with the data. `$ref`
+and `$dynamicRef` may only point to an empty or same-document `#...`
+fragment; remote URLs, files, and relative registry references are rejected
+without I/O. Validate a candidate against the current schema, infer a
+permissive starting point, or replace the schema explicitly:
 
 ```bash
 gh slate schema validate ci-summary report.json --target https://github.com/OWNER/REPO/issues/42 --json
@@ -216,7 +276,7 @@ revision `1`; all pin that observation and reject an already-stale read:
 gh slate data set ci-summary '.jobs[1].status' --target https://github.com/OWNER/REPO/issues/42 --value-string passed --if-revision 1 --json
 gh slate data set ci-summary '.coverage' --target https://github.com/OWNER/REPO/issues/42 --value 91.7 --if-revision 1 --json
 gh slate data set ci-summary '.jobs[1]' --target https://github.com/OWNER/REPO/issues/42 --value-file windows-result.json --if-revision 1 --json
-gh slate data delete ci-summary '.legacy' '.jobs[2]' --target https://github.com/OWNER/REPO/issues/42 --if-revision 1 --json
+gh slate data delete ci-summary '.legacy' '.jobs[2]' --target https://github.com/OWNER/REPO/issues/42 --ignore-missing --if-revision 1 --json
 gh slate data update ci-summary '.jobs |= map(if .name == $name then .status = "passed" else . end)' --target https://github.com/OWNER/REPO/issues/42 --arg name windows --if-revision 1 --json
 gh slate data update ci-summary '.jobs[$index] = $result' --target https://github.com/OWNER/REPO/issues/42 --argjson index 1 --argjson result @windows-result.json --if-revision 1 --json
 ```
@@ -233,6 +293,21 @@ JSON document, so `91`, `"91"`, `true`, and `"true"` remain distinct. For
 `data update`, `--arg` binds text while `--argjson` binds typed JSON; prefix its
 value with `@` to load a JSON file. Deleting an absent path is an error unless
 `--ignore-missing` is requested.
+
+jq runs in a bounded isolated subprocess. Environment access, extra inputs,
+imports/includes/modules, and host-introspection builtins are unavailable;
+deterministic renderer selectors additionally reject time/date and
+platform-dependent math builtins. libjq projects numbers through IEEE-754, so
+`data get` and renderer selectors can round integers outside the exact range.
+Store precision-sensitive IDs and large integers as strings when they must pass
+through jq.
+
+`data update` is stricter because it writes canonical state. Its input,
+`--argjson` values, numeric filter literals, and output must preserve identity
+through jq's number model, otherwise the command fails before writing. The
+filter must produce exactly one JSON object; zero results, multiple results,
+scalars, and arrays are errors. Use `data set` or `data delete` when exact
+large numbers must remain numeric.
 
 For an interactive typed edit, set `GH_EDITOR`, `GIT_EDITOR`, `VISUAL`, or
 `EDITOR`, then run:
@@ -274,10 +349,10 @@ of replaying that write. When the intended revision is found and verified, the
 JSON result reports `"recovered": true`; treat that as a successful observed
 write.
 
-If the command still fails with `write_outcome_unknown`,
-`repair_outcome_unknown`, or `delete_outcome_unknown`, do not blindly retry.
-Observe the target first, then decide from the newly reported state and
-revision:
+If the command still fails with
+`post_write_verification_unknown`, `write_timeout_unknown`,
+`write_outcome_unknown`, `repair_outcome_unknown`, or
+`delete_outcome_unknown`, do not blindly retry. Observe the target first:
 
 ```bash
 gh slate list --target https://github.com/OWNER/REPO/issues/42 --json
@@ -285,9 +360,19 @@ gh slate view ci-summary --target https://github.com/OWNER/REPO/issues/42 --json
 gh slate state verify ci-summary --target https://github.com/OWNER/REPO/issues/42 --json
 ```
 
-If the intended state is already present, stop. Otherwise refetch, choose the
-next operation from the current revision, and use that new value with
-`--if-revision`; never replay a mutation pinned to the old observation.
+If the intended state is already present, stop. For an update, repair, or
+delete whose current outcome is now unambiguous, choose any next operation from
+the newly observed revision and pin that revision with `--if-revision`; never
+replay a mutation pinned to the old observation.
+
+An unknown `create` or `upsert` needs extra care. If the slate was missing
+before the write and remains absent on the first refetch, that absence does not
+prove the create POST failed: GitHub's comment listing may not have exposed it
+yet, and there is no revision to pin. Do not recreate solely from that one
+missing read. Continue read-only observation with `list`, inspect the target's
+comments or API for the original managed comment, and retry `view`/`state verify`
+once it appears. Create again only after an explicit human decision that
+accepts the duplicate-comment risk.
 
 ## State and safety model
 

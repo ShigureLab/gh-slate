@@ -95,7 +95,7 @@ def test_bundled_skill_layout_frontmatter_and_parser_contract() -> None:
     result = _run()
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout == ("Checked gh-slate skill: 18 recipes, 14 help routes, 25 flags, 2 prefixes\n")
+    assert result.stdout == ("Checked gh-slate skill: 21 recipes, 15 help routes, 25 flags, 2 prefixes\n")
 
 
 def test_skill_remains_valid_after_a_plain_install_copy(
