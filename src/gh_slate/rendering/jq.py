@@ -44,8 +44,34 @@ class JqLimits:
 
 DEFAULT_JQ_LIMITS = JqLimits()
 
-_FORBIDDEN_IDENTIFIERS = frozenset({"env", "import", "include", "module"})
-_FORBIDDEN_VARIABLES = frozenset({"ENV"})
+_FORBIDDEN_IDENTIFIERS = frozenset(
+    {
+        "builtins",
+        "env",
+        "get_jq_origin",
+        "get_prog_origin",
+        "get_search_list",
+        "import",
+        "include",
+        "input",
+        "input_filename",
+        "input_line_number",
+        "inputs",
+        "module",
+    }
+)
+_NONDETERMINISTIC_IDENTIFIERS = frozenset(
+    {
+        "gmtime",
+        "localtime",
+        "mktime",
+        "now",
+        "strftime",
+        "strflocaltime",
+        "strptime",
+    }
+)
+_FORBIDDEN_VARIABLES = frozenset({"ENV", "JQ_BUILD_CONFIGURATION"})
 _WORKER_ERROR_CODES = {
     "compile": "jq_compile_error",
     "runtime": "jq_runtime_error",
@@ -94,7 +120,7 @@ def _utf8_bytes(value: str, *, subject: str) -> bytes:
         ) from None
 
 
-def _scan_filter(filter_text: str) -> None:
+def _scan_filter(filter_text: str, *, deterministic: bool) -> None:
     """Reject jq facilities that can observe the worker host.
 
     The scanner ignores ordinary string content and comments, but follows jq
@@ -165,9 +191,12 @@ def _scan_filter(filter_text: str) -> None:
                 while end < len(filter_text) and (filter_text[end] == "_" or filter_text[end].isalnum()):
                     end += 1
                 identifier = filter_text[index:end]
-                if identifier in _FORBIDDEN_IDENTIFIERS and previous_significant(index) != ".":
+                forbidden = identifier in _FORBIDDEN_IDENTIFIERS or (
+                    deterministic and identifier in _NONDETERMINISTIC_IDENTIFIERS
+                )
+                if forbidden and previous_significant(index) != ".":
                     raise _rendering_error(
-                        "jq modules and environment access are disabled",
+                        "jq host observation and nondeterministic builtins are disabled",
                         code="jq_filter_forbidden",
                         token=identifier,
                     )
@@ -265,7 +294,7 @@ def _evaluate(data: object, filter_text: str, limits: JqLimits) -> tuple[JsonVal
             actual_bytes=len(filter_bytes),
             max_bytes=limits.max_selector_bytes,
         )
-    _scan_filter(filter_text)
+    _scan_filter(filter_text, deterministic=True)
 
     try:
         source = canonical_json_bytes(data)

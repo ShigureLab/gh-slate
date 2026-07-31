@@ -46,6 +46,18 @@ def test_select_one_has_stable_cardinality_and_jq_errors(filter_text: str, code:
     [
         "env",
         "$ENV.HOME",
+        "$JQ_BUILD_CONFIGURATION",
+        "builtins",
+        "get_jq_origin",
+        "get_prog_origin",
+        "get_search_list",
+        "now",
+        "localtime",
+        "strflocaltime",
+        "input",
+        "inputs",
+        "input_filename",
+        "input_line_number",
         'import "secrets" as secrets; .',
         'include "secrets"; .',
         'module {"name": "secrets"}; .',
@@ -61,9 +73,10 @@ def test_selector_rejects_host_observation_facilities(filter_text: str) -> None:
 
 
 def test_selector_scan_is_token_aware_for_data_strings_fields_and_comments() -> None:
-    source = {"env": "data"}
+    source = {"env": "data", "now": "stored"}
 
     assert select_one(source, ".env # import module include $ENV") == "data"
+    assert select_one(source, ".now # now localtime") == "stored"
     assert select_one(source, '"env import include module $ENV"') == "env import include module $ENV"
 
 

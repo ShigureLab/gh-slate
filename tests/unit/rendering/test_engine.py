@@ -104,6 +104,66 @@ def test_schema_projection_supports_quoted_jq_keys_for_empty_tables() -> None:
     assert result.renderer.to_json()["columns"] == [{"path": ["value"], "header": "value"}]
 
 
+@pytest.mark.parametrize(
+    "jobs",
+    [
+        [],
+        [{"name": "linux", "status": "passing"}],
+    ],
+)
+def test_table_schema_projection_resolves_local_refs_and_all_of(
+    jobs: list[dict[str, str]],
+) -> None:
+    schema = validate_schema(
+        {
+            "$defs": {
+                "jobs/list": {"$ref": "#/$defs/job-array"},
+                "job-array": {
+                    "type": "array",
+                    "items": {"$ref": "#row"},
+                },
+                "row": {
+                    "$anchor": "row",
+                    "type": "object",
+                    "allOf": [
+                        {
+                            "properties": {
+                                "status": {"type": "string"},
+                            }
+                        },
+                        {
+                            "properties": {
+                                "name": {"type": "string"},
+                            }
+                        },
+                    ],
+                },
+            },
+            "allOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "jobs": {"$ref": "#/$defs/jobs~1list"},
+                    },
+                }
+            ],
+        }
+    )
+
+    result = render(
+        {"jobs": jobs},
+        TableRendererV1(selector=".jobs").to_descriptor(),
+        schema=schema,
+        slate=SlateContext(name="ci"),
+    )
+
+    assert result.markdown.startswith("| status | name |\n| --- | --- |\n")
+    assert result.renderer.to_json()["columns"] == [
+        {"path": ["status"], "header": "status"},
+        {"path": ["name"], "header": "name"},
+    ]
+
+
 def test_jinja_filters_obey_the_shared_builtin_render_limits() -> None:
     descriptor = jinja_descriptor('{{ data.rows | md_table(columns=["name"]) }}')
 
@@ -239,9 +299,51 @@ def test_jinja_descriptor_is_exact_and_context_name_must_match_state() -> None:
         render_state(state)
     assert missing_context.value.code == "render_context_required"
 
+    incomplete_contexts = (
+        SlateContext(name="ci"),
+        SlateContext(
+            name="ci",
+            repository="owner/repo",
+            number=42,
+        ),
+        SlateContext(
+            name="ci",
+            repository="owner/repo",
+            url="https://github.com/owner/repo/issues/42",
+        ),
+        SlateContext(
+            name="ci",
+            number=42,
+            url="https://github.com/owner/repo/issues/42",
+        ),
+    )
+    for context in incomplete_contexts:
+        with pytest.raises(RenderingError) as incomplete:
+            render_state(state, slate=context)
+        assert incomplete.value.code == "render_context_required"
+
     with pytest.raises(RenderingError) as context_error:
-        render_state(state, slate=SlateContext(name="other"))
+        render_state(
+            state,
+            slate=SlateContext(
+                name="other",
+                repository="owner/repo",
+                number=42,
+                url="https://github.com/owner/repo/issues/42",
+            ),
+        )
     assert context_error.value.code == "render_context_mismatch"
+
+    complete = render_state(
+        state,
+        slate=SlateContext(
+            name="ci",
+            repository="owner/repo",
+            number=42,
+            url="https://github.com/owner/repo/issues/42",
+        ),
+    )
+    assert complete.markdown == "true\n"
 
 
 @pytest.mark.parametrize("selector", [".missing | empty", ".[]"])
