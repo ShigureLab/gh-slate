@@ -176,6 +176,23 @@ def test_static_contract_rejects_event_snapshot_as_dashboard_state(
     assert "fetch the current target" in result.stderr
 
 
+def test_static_contract_rejects_dependabot_direct_writer(tmp_path: Path) -> None:
+    shutil.copytree(ACTIONS, tmp_path / "examples" / "actions")
+    workflow = tmp_path / "examples" / "actions" / "pull-request-dashboard.yml"
+    workflow.write_text(
+        workflow.read_text(encoding="utf-8").replace(
+            " &&\n      github.event.pull_request.user.login != 'dependabot[bot]'",
+            "",
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run(str(CHECKER), str(tmp_path))
+
+    assert result.returncode == 1
+    assert "must skip fork and Dependabot tokens" in result.stderr
+
+
 @pytest.mark.parametrize(
     ("filename", "activity"),
     [

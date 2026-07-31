@@ -14,9 +14,11 @@ concurrency:
 
 jobs:
   update:
-    # pull_request tokens are read-only for forks. Use the reducer/consumer pair
-    # below when fork Pull Requests must receive a dashboard.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    # pull_request tokens are read-only for forks and Dependabot. Use the
+    # reducer/consumer pair below when either must receive a dashboard.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

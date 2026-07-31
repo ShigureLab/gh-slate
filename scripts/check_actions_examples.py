@@ -282,8 +282,12 @@ def _check_pull_request(root: Path) -> None:
         job_name="update",
     )
     guard = job.get("if")
-    if guard != "github.event.pull_request.head.repo.full_name == github.repository":
-        _fail(path, "pull_request writer must skip fork tokens")
+    expected_guard = (
+        "github.event.pull_request.head.repo.full_name == github.repository && "
+        "github.event.pull_request.user.login != 'dependabot[bot]'"
+    )
+    if guard != expected_guard:
+        _fail(path, "pull_request writer must skip fork and Dependabot tokens")
     group = _mapping(workflow["concurrency"], path, "concurrency")["group"]
     if "${{ github.event.pull_request.number }}" not in str(group) or "pr-dashboard" not in str(group):
         _fail(path, "Pull Request concurrency must include the target and slate name")

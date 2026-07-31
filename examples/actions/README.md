@@ -6,8 +6,9 @@ needed YAML files into `.github/workflows/` and keep the referenced
 branch.
 
 - `issue-dashboard.yml` updates one Issue slate.
-- `pull-request-dashboard.yml` handles same-repository Pull Requests without
-  running Pull Request code.
+- `pull-request-dashboard.yml` handles ordinary same-repository Pull Requests
+  without running Pull Request code. It skips forks and Dependabot because
+  their `pull_request` tokens cannot write comments.
 - `pull-request-target-reducer.yml` has no repository permissions and never
   checks out code. It reduces only repository and target identity to a JSON
   artifact capped at 16 KiB.
@@ -15,6 +16,9 @@ branch.
   It redownloads the exact reducer artifact, treats it as untrusted, validates
   its size and fixed shape, checks out only the trusted default branch, refetches
   the current Pull Request, and then performs one update.
+
+Use the reducer/consumer pair when fork or Dependabot Pull Requests need a
+dashboard; do not try to make their direct `pull_request` token writable.
 
 The Issue and Pull Request event payloads select which target to update; they
 are not rendered as current state. Every writer fetches the current GitHub
