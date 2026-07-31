@@ -49,15 +49,16 @@ def _spawn_process(
     argv: tuple[str, ...],
     *,
     environment: Mapping[str, str] | None,
+    stdin: int = subprocess.DEVNULL,
 ) -> tuple[subprocess.Popen[bytes], _ProcessTree | None]:
     if os.name == "nt":
         from gh_slate.github._windows_process import spawn_windows_process
 
-        return spawn_windows_process(argv, environment=environment)
+        return spawn_windows_process(argv, environment=environment, stdin=stdin)
     return (
         subprocess.Popen(
             argv,
-            stdin=subprocess.DEVNULL,
+            stdin=stdin,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             shell=False,

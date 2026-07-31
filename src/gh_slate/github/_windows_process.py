@@ -169,6 +169,7 @@ def spawn_windows_process(
     argv: tuple[str, ...],
     *,
     environment: Mapping[str, str] | None,
+    stdin: int = subprocess.DEVNULL,
 ) -> tuple[subprocess.Popen[bytes], WindowsJob]:
     """Start a command only after its gated launcher is contained in a Job."""
 
@@ -199,7 +200,7 @@ def spawn_windows_process(
         try:
             process = subprocess.Popen(
                 launcher,
-                stdin=subprocess.DEVNULL,
+                stdin=stdin,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 shell=False,
