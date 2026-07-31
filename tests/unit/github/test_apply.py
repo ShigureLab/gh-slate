@@ -389,6 +389,21 @@ def test_legacy_login_only_state_is_upgraded_on_the_next_write() -> None:
     )
 
 
+def test_internal_stable_controller_identity_avoids_login_reresolution() -> None:
+    remote = FakeGitHub(
+        comments=[_record(7, _body())],
+    )
+
+    result = _apply(
+        remote,
+        mode="update",
+        controller=GitHubActor(id=ACTOR_ID, login="stale-login"),
+    )
+
+    assert result.action == "unchanged"
+    assert all(call[0] != "RESOLVE_ACTOR" for call in remote.read_calls)
+
+
 def test_explicit_schema_removal_is_a_functional_update() -> None:
     schema = validate_schema({"type": "object"})
     remote = FakeGitHub(

@@ -108,7 +108,7 @@ class ApplyRequest:
     data_schema: SchemaInput = None
     replace_schema: bool = False
     renderer: RendererDescriptorV1 | None = None
-    controller: str | None = None
+    controller: str | GitHubActor | None = None
     if_revision: int | None = None
     dry_run: bool = False
 
@@ -127,11 +127,18 @@ class ApplyRequest:
                 exit_code=ExitCode.VALIDATION,
                 details={"mode": self.mode},
             )
-        if self.controller is not None and (
-            not isinstance(self.controller, str)
-            or not self.controller
-            or self.controller != self.controller.strip()
-            or any(character.isspace() or ord(character) < 0x20 for character in self.controller)
+        if (
+            self.controller is not None
+            and not isinstance(
+                self.controller,
+                GitHubActor,
+            )
+            and (
+                not isinstance(self.controller, str)
+                or not self.controller
+                or self.controller != self.controller.strip()
+                or any(character.isspace() or ord(character) < 0x20 for character in self.controller)
+            )
         ):
             raise ApplyError(
                 "controller login must not be empty",
@@ -254,9 +261,13 @@ def _controller(
             code="github_response_invalid",
         )
     if request.controller is not None:
-        requested = reader.resolve_actor(
-            request.controller,
-            request.target.host,
+        requested = (
+            request.controller
+            if isinstance(request.controller, GitHubActor)
+            else reader.resolve_actor(
+                request.controller,
+                request.target.host,
+            )
         )
         if not isinstance(requested, GitHubActor):
             raise ApplyError(
