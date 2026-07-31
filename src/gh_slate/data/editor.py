@@ -4,7 +4,8 @@ import os
 import shlex
 import subprocess
 import tempfile
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Protocol
@@ -198,6 +199,42 @@ def _read_edited_file(path: Path, *, max_bytes: int) -> bytes:
     return source
 
 
+@contextmanager
+def _temporary_editor_file(initial: bytes) -> Iterator[Path]:
+    try:
+        workspace = tempfile.TemporaryDirectory(prefix="gh-slate-edit-")
+    except OSError as error:
+        raise _editor_error(
+            "editor workspace could not be created",
+            code="data_editor_workspace_failed",
+            operation="create",
+            error_type=type(error).__name__,
+        ) from None
+
+    try:
+        path = Path(workspace.name) / "data.json"
+        try:
+            path.write_bytes(initial)
+        except OSError as error:
+            raise _editor_error(
+                "initial editor JSON could not be written",
+                code="data_editor_workspace_failed",
+                operation="write",
+                error_type=type(error).__name__,
+            ) from None
+        yield path
+    finally:
+        try:
+            workspace.cleanup()
+        except OSError as error:
+            raise _editor_error(
+                "editor workspace could not be cleaned up",
+                code="data_editor_workspace_failed",
+                operation="cleanup",
+                error_type=type(error).__name__,
+            ) from None
+
+
 def edit_json(
     value: object,
     *,
@@ -228,9 +265,7 @@ def edit_json(
             max_bytes=max_bytes,
         )
 
-    with tempfile.TemporaryDirectory(prefix="gh-slate-edit-") as directory:
-        path = Path(directory) / "data.json"
-        path.write_bytes(initial)
+    with _temporary_editor_file(initial) as path:
         attempt = 0
         while True:
             attempt += 1

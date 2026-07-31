@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, cast
 import pytest
 
 from gh_slate.codec.errors import CodecError
-from gh_slate.data import DataError, edit_json, select_editor
+from gh_slate.data import DataError, edit_json, editor as editor_module, select_editor
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -197,6 +197,54 @@ def test_edit_json_reports_editor_failure_and_size_limit() -> None:
     with pytest.raises(DataError) as oversized:
         edit_json({"text": "abcdef"}, editor=("fake-editor",), runner=lambda _argv: 0, max_bytes=4)
     assert oversized.value.code == "data_input_size_limit"
+
+
+@pytest.mark.parametrize(
+    ("failure", "operation"),
+    [
+        ("create", "create"),
+        ("write", "write"),
+        ("cleanup", "cleanup"),
+    ],
+)
+def test_edit_json_wraps_workspace_io_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: str,
+    operation: str,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    class TemporaryWorkspace:
+        name = str(workspace)
+
+        def cleanup(self) -> None:
+            if failure == "cleanup":
+                raise PermissionError
+
+    def temporary_directory(*, prefix: str) -> TemporaryWorkspace:
+        assert prefix == "gh-slate-edit-"
+        if failure == "create":
+            raise PermissionError
+        return TemporaryWorkspace()
+
+    monkeypatch.setattr(editor_module.tempfile, "TemporaryDirectory", temporary_directory)
+    if failure == "write":
+
+        def fail_write(_path: Path, _value: bytes) -> int:
+            raise PermissionError
+
+        monkeypatch.setattr(Path, "write_bytes", fail_write)
+
+    with pytest.raises(DataError) as captured:
+        edit_json({}, editor=("fake-editor",), runner=lambda _argv: 0)
+
+    assert captured.value.code == "data_editor_workspace_failed"
+    assert captured.value.details == {
+        "operation": operation,
+        "error_type": "PermissionError",
+    }
 
 
 def test_default_editor_runner_never_enables_a_shell(monkeypatch: pytest.MonkeyPatch) -> None:
