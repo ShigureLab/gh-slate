@@ -109,6 +109,74 @@ def test_schema_projection_supports_quoted_jq_keys_for_empty_tables() -> None:
 
 
 @pytest.mark.parametrize(
+    ("group_schema", "group_index"),
+    [
+        ({"prefixItems": [{}]}, 0),
+        ({"items": {}}, 0),
+        ({"prefixItems": [{}], "items": {}}, 1),
+    ],
+)
+@pytest.mark.parametrize("jobs", [[], [{"name": "linux", "status": "passing"}]])
+def test_schema_projection_supports_numeric_jq_indices(
+    group_schema: dict[str, object],
+    group_index: int,
+    jobs: list[dict[str, str]],
+) -> None:
+    row_schema = {
+        "properties": {
+            "status": {"type": "string"},
+            "name": {"type": "string"},
+        }
+    }
+    selected_group_schema = {
+        "properties": {
+            "jobs": {
+                "type": "array",
+                "items": row_schema,
+            }
+        }
+    }
+    configured_group_schema = dict(group_schema)
+    prefix_items = configured_group_schema.get("prefixItems")
+    if isinstance(prefix_items, list):
+        prefix_items = list(prefix_items)
+        if group_index < len(prefix_items):
+            prefix_items[group_index] = selected_group_schema
+        configured_group_schema["prefixItems"] = prefix_items
+    if "items" in configured_group_schema:
+        configured_group_schema["items"] = selected_group_schema
+    groups: list[dict[str, object]] = [{} for _ in range(group_index)]
+    groups.append({"jobs": jobs})
+    schema = validate_schema(
+        {
+            "type": "object",
+            "properties": {
+                "groups": {
+                    "type": "array",
+                    **configured_group_schema,
+                }
+            },
+        }
+    )
+
+    result = render(
+        {"groups": groups},
+        TableRendererV1(selector=f".groups[{group_index}].jobs").to_descriptor(),
+        schema=schema,
+        slate=SlateContext(name="ci"),
+    )
+
+    assert result.renderer.to_json()["columns"] == [
+        {"path": ["status"], "header": "status"},
+        {"path": ["name"], "header": "name"},
+    ]
+    if jobs:
+        assert result.markdown.startswith("| status | name |\n")
+    else:
+        assert result.markdown == "| status | name |\n| --- | --- |\n"
+
+
+@pytest.mark.parametrize(
     "jobs",
     [
         [],

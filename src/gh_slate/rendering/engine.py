@@ -149,7 +149,7 @@ def _enforce_components(
     )
 
 
-def _selector_path(selector: str) -> tuple[str, ...] | None:
+def _selector_path(selector: str) -> tuple[str | int, ...] | None:
     """Parse the non-transforming jq subset usable for schema projection."""
 
     selector = selector.strip()
@@ -158,7 +158,7 @@ def _selector_path(selector: str) -> tuple[str, ...] | None:
     if not selector.startswith("."):
         return None
 
-    path: list[str] = []
+    path: list[str | int] = []
     position = 0
     while position < len(selector):
         if selector[position] == ".":
@@ -174,8 +174,18 @@ def _selector_path(selector: str) -> tuple[str, ...] | None:
         if not selector.startswith("[", position):
             return None
         token_start = position + 1
-        if token_start >= len(selector) or selector[token_start] != '"':
+        if token_start >= len(selector):
             return None
+        if selector[token_start] != '"':
+            closing_bracket = selector.find("]", token_start)
+            if closing_bracket < 0:
+                return None
+            token = selector[token_start:closing_bracket]
+            if re.fullmatch(r"(?:0|[1-9][0-9]*)", token) is None:
+                return None
+            path.append(int(token))
+            position = closing_bracket + 1
+            continue
         cursor = token_start + 1
         escaped = False
         while cursor < len(selector):
@@ -411,27 +421,43 @@ def _project_table_item_schema(
                 instances=candidate_instances,
             ):
                 subschemas: list[object] = []
-                properties = fragment.get("properties")
-                if isinstance(properties, Mapping) and key in properties:
-                    subschemas.append(cast("Mapping[str, object]", properties)[key])
-                pattern_properties = fragment.get("patternProperties")
-                if isinstance(pattern_properties, Mapping):
-                    for pattern_value, pattern_schema in pattern_properties.items():
-                        matched = _schema_matches(
-                            {"pattern": str(pattern_value)},
-                            fragment_resolver,
-                            key,
-                        )
-                        if matched is not False:
-                            subschemas.append(pattern_schema)
+                if isinstance(key, str):
+                    properties = fragment.get("properties")
+                    if isinstance(properties, Mapping) and key in properties:
+                        subschemas.append(cast("Mapping[str, object]", properties)[key])
+                    pattern_properties = fragment.get("patternProperties")
+                    if isinstance(pattern_properties, Mapping):
+                        for pattern_value, pattern_schema in pattern_properties.items():
+                            matched = _schema_matches(
+                                {"pattern": str(pattern_value)},
+                                fragment_resolver,
+                                key,
+                            )
+                            if matched is not False:
+                                subschemas.append(pattern_schema)
+                else:
+                    prefix_items = fragment.get("prefixItems")
+                    if isinstance(prefix_items, tuple) and key < len(prefix_items):
+                        subschemas.append(prefix_items[key])
+                    else:
+                        items = fragment.get("items")
+                        if isinstance(items, (bool, Mapping)):
+                            subschemas.append(items)
                 for subschema in subschemas:
                     if not isinstance(subschema, (bool, Mapping)):
                         continue
-                    child_instances = tuple(
-                        cast("Mapping[object, object]", instance)[key]
-                        for instance in candidate_instances.values
-                        if isinstance(instance, Mapping) and key in instance
-                    )
+                    if isinstance(key, str):
+                        child_instances = tuple(
+                            cast("Mapping[object, object]", instance)[key]
+                            for instance in candidate_instances.values
+                            if isinstance(instance, Mapping) and key in instance
+                        )
+                    else:
+                        child_instances = tuple(
+                            instance[key]
+                            for instance in candidate_instances.values
+                            if isinstance(instance, tuple) and key < len(instance)
+                        )
                     next_candidates.append(
                         (
                             subschema,
