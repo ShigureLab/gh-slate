@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, fields
-from decimal import Decimal
+from decimal import (
+    ROUND_HALF_EVEN,
+    Context,
+    Decimal,
+    DivisionByZero,
+    InvalidOperation,
+    Overflow,
+    localcontext,
+)
 from types import MappingProxyType
 from typing import cast
 
@@ -52,6 +60,16 @@ class JinjaLimits:
 
 
 DEFAULT_JINJA_LIMITS = JinjaLimits()
+_JINJA_DECIMAL_CONTEXT = Context(
+    prec=28,
+    rounding=ROUND_HALF_EVEN,
+    Emin=-999_999,
+    Emax=999_999,
+    capitals=1,
+    clamp=0,
+    flags=[],
+    traps=[InvalidOperation, DivisionByZero, Overflow],
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -381,36 +399,37 @@ def render_jinja(
         )
 
     try:
-        guarded_tree = _GuardLoops().visit(syntax_tree)
-        code = environment.compile(guarded_tree)
-        template = environment.template_class.from_code(
-            environment,
-            code,
-            environment.globals,
-            None,
-        )
-        chunks: list[str] = []
-        output_bytes = 0
-        for chunk in template.generate(
-            data=canonical_data,
-            slate=canonical_slate,
-        ):
-            output_bytes += utf8_size(chunk, field="Jinja output")
-            output_limit = min(
-                limits.max_output_bytes,
-                render_limits.max_output_bytes,
+        with localcontext(_JINJA_DECIMAL_CONTEXT):
+            guarded_tree = _GuardLoops().visit(syntax_tree)
+            code = environment.compile(guarded_tree)
+            template = environment.template_class.from_code(
+                environment,
+                code,
+                environment.globals,
+                None,
             )
-            if output_bytes > output_limit:
-                raise RenderingError(
-                    "Jinja output exceeds the configured byte limit",
-                    code="jinja_output_limit",
-                    details={
-                        "actual_bytes": output_bytes,
-                        "max_bytes": output_limit,
-                    },
+            chunks: list[str] = []
+            output_bytes = 0
+            for chunk in template.generate(
+                data=canonical_data,
+                slate=canonical_slate,
+            ):
+                output_bytes += utf8_size(chunk, field="Jinja output")
+                output_limit = min(
+                    limits.max_output_bytes,
+                    render_limits.max_output_bytes,
                 )
-            chunks.append(chunk)
-        return "".join(chunks)
+                if output_bytes > output_limit:
+                    raise RenderingError(
+                        "Jinja output exceeds the configured byte limit",
+                        code="jinja_output_limit",
+                        details={
+                            "actual_bytes": output_bytes,
+                            "max_bytes": output_limit,
+                        },
+                    )
+                chunks.append(chunk)
+            return "".join(chunks)
     except RenderingError:
         raise
     except UndefinedError:

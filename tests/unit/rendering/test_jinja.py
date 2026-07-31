@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal, Inexact, getcontext, localcontext
 
 import pytest
 
@@ -54,6 +54,22 @@ def test_rendering_is_deterministic() -> None:
     second = render_jinja(source, data=data, slate=slate())
 
     assert first == second == '{"a":0,"z":1e+22}'
+
+
+def test_decimal_arithmetic_uses_a_fixed_isolated_context() -> None:
+    source = "{{ data.one / data.seven }}"
+    data = {"one": Decimal(1), "seven": Decimal(7)}
+    expected = "0.1428571428571428571428571429"
+
+    with localcontext() as caller:
+        caller.prec = 2
+        caller.rounding = ROUND_DOWN
+        caller.traps[Inexact] = True
+
+        assert render_jinja(source, data=data, slate=slate()) == expected
+        assert getcontext().prec == 2
+        assert getcontext().rounding == ROUND_DOWN
+        assert getcontext().traps[Inexact] is True
 
 
 @pytest.mark.parametrize(
