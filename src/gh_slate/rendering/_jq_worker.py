@@ -253,15 +253,15 @@ def main(argv: list[str] | None = None) -> int:
     if len(arguments) != 6:
         return _emit_error("internal")
     try:
-        encoded_filter, max_results_text, source_limit_text, output_limit_text, memory_text, cpu_text = arguments
+        encoded_filter, max_results_text, transport_limit_text, output_limit_text, memory_text, cpu_text = arguments
         filter_bytes = base64.b64decode(encoded_filter, validate=True)
         filter_text = filter_bytes.decode("utf-8", errors="strict")
         max_results = int(max_results_text)
-        source_limit = int(source_limit_text)
+        transport_limit = int(transport_limit_text)
         output_limit = int(output_limit_text)
         memory_limit = int(memory_text)
         cpu_limit = int(cpu_text)
-        if min(max_results, source_limit, output_limit, memory_limit, cpu_limit) <= 0 or max_results > _MAX_RESULTS:
+        if min(max_results, transport_limit, output_limit, memory_limit, cpu_limit) <= 0 or max_results > _MAX_RESULTS:
             return _emit_error("internal")
     except (binascii.Error, UnicodeError, ValueError):
         return _emit_error("internal")
@@ -272,8 +272,8 @@ def main(argv: list[str] | None = None) -> int:
     except OSError:
         return _emit_error("internal")
 
-    source = sys.stdin.buffer.read(source_limit + 1)
-    if len(source) > source_limit:
+    source = sys.stdin.buffer.read(transport_limit + 1)
+    if len(source) > transport_limit:
         return _emit_error("source_limit")
     request = _decode_request(source)
     if request is None:

@@ -106,19 +106,68 @@ def test_evaluate_rejects_unsafe_argument_names(name: str) -> None:
     assert caught.value.code == "jq_args_invalid"
 
 
-def test_evaluate_rejects_non_json_arguments_and_bounds_the_full_stdin_request() -> None:
+def test_evaluate_rejects_non_json_arguments() -> None:
     with pytest.raises(RenderingError) as invalid:
         evaluate(None, ".", args={"value": 1.5})  # ty: ignore[invalid-argument-type]
     assert invalid.value.code == "jq_args_invalid"
 
-    with pytest.raises(RenderingError) as too_large:
-        evaluate(
-            None,
-            ".",
-            args={"value": "x" * 32},
-            limits=replace(DEFAULT_JQ_LIMITS, max_source_bytes=32),
-        )
-    assert too_large.value.code == "jq_source_limit"
+
+def test_data_and_arguments_have_independent_source_byte_budgets() -> None:
+    limit = 32
+    limits = replace(DEFAULT_JQ_LIMITS, max_source_bytes=limit)
+    exact_data = "x" * (limit - 2)
+    exact_args = {"x": "y" * (limit - 8)}
+
+    assert select_one(exact_data, ".", limits=limits) == exact_data
+    assert select_one(None, "$x", args=exact_args, limits=limits) == exact_args["x"]
+
+    with pytest.raises(RenderingError) as data_too_large:
+        evaluate("x" * (limit - 1), ".", limits=limits)
+    assert data_too_large.value.code == "jq_source_limit"
+    assert data_too_large.value.details == {
+        "subject": "data",
+        "actual_bytes": limit + 1,
+        "max_bytes": limit,
+    }
+
+    with pytest.raises(RenderingError) as args_too_large:
+        evaluate(None, ".", args={"x": "y" * (limit - 7)}, limits=limits)
+    assert args_too_large.value.code == "jq_source_limit"
+    assert args_too_large.value.details == {
+        "subject": "args",
+        "actual_bytes": limit + 1,
+        "max_bytes": limit,
+    }
+
+
+def test_worker_transport_budget_covers_both_sources_and_only_protocol_framing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    limit = 32
+    data = "x" * (limit - 2)
+    args = {"x": "y" * (limit - 8)}
+    observed: dict[str, object] = {}
+
+    def complete(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        observed["command"] = command
+        observed.update(kwargs)
+        return subprocess.CompletedProcess(command, 0, b'{"ok":true,"results":[null]}', b"")
+
+    monkeypatch.setattr(subprocess, "run", complete)
+
+    assert evaluate(
+        data,
+        ".",
+        args=args,
+        max_results=1,
+        limits=replace(DEFAULT_JQ_LIMITS, max_source_bytes=limit),
+    ) == (None,)
+
+    source = observed["input"]
+    command = cast_list(observed["command"])
+    assert isinstance(source, bytes)
+    assert len(source) == (2 * limit) + jq_module._PROTOCOL_REQUEST_OVERHEAD
+    assert command[5] == str(len(source))
 
 
 def test_select_one_returns_one_immutable_json_projection() -> None:
@@ -402,6 +451,39 @@ def test_worker_rejects_malformed_or_noncanonical_stdin_protocol(source: bytes) 
 
     assert completed.returncode == 0
     assert completed.stdout == b'{"ok":false,"kind":"protocol"}'
+
+
+def test_worker_rejects_input_beyond_its_exact_transport_budget() -> None:
+    worker = Path(jq_module.__file__).with_name("_jq_worker.py")
+    source = b'{"args":{},"data":null}'
+
+    def run(limit: int) -> subprocess.CompletedProcess[bytes]:
+        command = [
+            sys.executable,
+            "-I",
+            str(worker),
+            base64.b64encode(b".").decode("ascii"),
+            "1",
+            str(limit),
+            "4096",
+            str(DEFAULT_JQ_LIMITS.max_memory_bytes),
+            str(DEFAULT_JQ_LIMITS.max_cpu_seconds),
+        ]
+        return subprocess.run(
+            command,
+            input=source,
+            capture_output=True,
+            env=jq_module._worker_environment(),
+            check=False,
+        )
+
+    exact = run(len(source))
+    oversized = run(len(source) - 1)
+
+    assert exact.returncode == 0
+    assert exact.stdout == b'{"ok":true,"results":[null]}'
+    assert oversized.returncode == 0
+    assert oversized.stdout == b'{"ok":false,"kind":"source_limit"}'
 
 
 @pytest.mark.parametrize("location", ["data", "args"])

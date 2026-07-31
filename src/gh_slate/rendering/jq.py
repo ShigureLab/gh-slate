@@ -164,6 +164,10 @@ _PROTOCOL_MAX_DEPTH = DEFAULT_JSON_LIMITS.max_depth + 2
 _PROTOCOL_NODE_OVERHEAD = 3
 _PROTOCOL_OVERFLOW_SENTINEL_NODES = 1
 _PROTOCOL_MAX_NODES = DEFAULT_JSON_LIMITS.max_nodes + _PROTOCOL_NODE_OVERHEAD + _PROTOCOL_OVERFLOW_SENTINEL_NODES
+_REQUEST_PREFIX = b'{"args":'
+_REQUEST_SEPARATOR = b',"data":'
+_REQUEST_SUFFIX = b"}"
+_PROTOCOL_REQUEST_OVERHEAD = len(_REQUEST_PREFIX) + len(_REQUEST_SEPARATOR) + len(_REQUEST_SUFFIX)
 _WORKER_ERROR_CODES = {
     "compile": "jq_compile_error",
     "runtime": "jq_runtime_error",
@@ -455,6 +459,14 @@ def _request_bytes(
             code="jq_args_invalid",
             cause=error.code,
         ) from None
+    if len(args_source) > limits.max_source_bytes:
+        raise _rendering_error(
+            "jq arguments exceed the configured byte limit",
+            code="jq_source_limit",
+            subject="args",
+            actual_bytes=len(args_source),
+            max_bytes=limits.max_source_bytes,
+        )
     try:
         data_source = canonical_json_bytes(data)
     except CodecError as error:
@@ -463,16 +475,15 @@ def _request_bytes(
             code="jq_source_invalid",
             cause=error.code,
         ) from None
-
-    source = b'{"args":' + args_source + b',"data":' + data_source + b"}"
-    if len(source) > limits.max_source_bytes:
+    if len(data_source) > limits.max_source_bytes:
         raise _rendering_error(
-            "jq source and arguments exceed the configured byte limit",
+            "jq data exceeds the configured byte limit",
             code="jq_source_limit",
-            actual_bytes=len(source),
+            subject="data",
+            actual_bytes=len(data_source),
             max_bytes=limits.max_source_bytes,
         )
-    return source
+    return _REQUEST_PREFIX + args_source + _REQUEST_SEPARATOR + data_source + _REQUEST_SUFFIX
 
 
 def _evaluate(
@@ -513,7 +524,7 @@ def _evaluate(
         str(worker),
         encoded_filter,
         str(max_results),
-        str(limits.max_source_bytes),
+        str(len(source)),
         str(limits.max_output_bytes),
         str(limits.max_memory_bytes),
         str(limits.max_cpu_seconds),
