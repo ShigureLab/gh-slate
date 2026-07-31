@@ -224,3 +224,18 @@ def test_inference_does_not_invent_constraints() -> None:
                 assert_permissive(item)
 
     assert_permissive(document)
+
+
+def test_inference_rejects_a_generated_schema_above_the_component_limit() -> None:
+    data = {f"k{index}": None for index in range(4_000)}
+
+    with pytest.raises(SchemaError) as caught:
+        infer_schema(data)
+
+    schema_bytes = caught.value.details["schema_bytes"]
+    max_schema_bytes = caught.value.details["max_schema_bytes"]
+    assert isinstance(schema_bytes, int)
+    assert isinstance(max_schema_bytes, int)
+    assert caught.value.code == "schema_size_limit"
+    assert schema_bytes > max_schema_bytes
+    assert max_schema_bytes == 64 * 1024

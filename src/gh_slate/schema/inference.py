@@ -11,6 +11,7 @@ from gh_slate.codec.model import (
     SchemaSnapshotV1,
 )
 from gh_slate.schema.errors import SchemaError
+from gh_slate.schema.validation import _enforce_schema_size
 
 _JsonType: TypeAlias = Literal[
     "null",
@@ -126,10 +127,12 @@ def infer_schema(data: object) -> SchemaSnapshotV1:
         "$schema": JSON_SCHEMA_DIALECT_2020_12,
         **_schema_for(root),
     }
-    return SchemaSnapshotV1(
+    snapshot = SchemaSnapshotV1(
         dialect=JSON_SCHEMA_DIALECT_2020_12,
         document=document,
     )
+    _enforce_schema_size(snapshot)
+    return snapshot
 
 
 __all__ = ["infer_schema"]
