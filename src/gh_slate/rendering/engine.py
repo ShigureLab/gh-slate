@@ -24,7 +24,7 @@ from gh_slate.codec import (
     render_sha256,
     strict_loads,
 )
-from gh_slate.codec.limits import SizeReport, enforce_size_limits
+from gh_slate.codec.limits import DEFAULT_CODEC_LIMITS, SizeReport, enforce_size_limits
 from gh_slate.codec.model import (
     MAX_GITHUB_LOGIN_BYTES,
     MAX_GITHUB_USER_ID,
@@ -53,6 +53,8 @@ _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _JQ_INDEX_LITERAL = re.compile(r"-?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
 _MAX_SCHEMA_PROJECTION_PARTS = 2048
 _PREFLIGHT_CONTROLLER_LOGIN = "0123456789abcdefghijklmnopqrstuvwxyz-a0"
+_PREFLIGHT_CONTROLLER_COMPRESSED_RESERVE = 4 * MAX_GITHUB_LOGIN_BYTES
+_PREFLIGHT_CONTROLLER_ENCODED_RESERVE = 4 * ((_PREFLIGHT_CONTROLLER_COMPRESSED_RESERVE + 2) // 3) + 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -512,12 +514,30 @@ def _project_table_item_schema(
             candidate_resolver,
             instances=candidate_instances,
         ):
+            prefix_items = fragment.get("prefixItems")
+            prefix_count = min(len(prefix_items), max_rows) if isinstance(prefix_items, tuple) else 0
+            if isinstance(prefix_items, tuple):
+                for row_index, row_schema in enumerate(prefix_items[:max_rows]):
+                    if not isinstance(row_schema, (bool, Mapping)):
+                        continue
+                    rows = tuple(
+                        instance[row_index]
+                        for instance in candidate_instances.values
+                        if isinstance(instance, tuple) and row_index < len(instance)
+                    )
+                    item_candidates.append(
+                        (
+                            row_schema,
+                            fragment_resolver,
+                            _ProjectionInstances(rows),
+                        )
+                    )
             items = fragment.get("items")
-            if isinstance(items, (bool, Mapping)):
+            if isinstance(items, (bool, Mapping)) and max_rows > prefix_count:
                 rows: list[object] = []
                 for instance in candidate_instances.values:
                     if isinstance(instance, tuple):
-                        rows.extend(instance[:max_rows])
+                        rows.extend(instance[prefix_count:max_rows])
                 item_candidates.append(
                     (
                         items,
@@ -588,7 +608,7 @@ def _preflight_materialization(
     if len(_PREFLIGHT_CONTROLLER_LOGIN.encode("ascii")) != MAX_GITHUB_LOGIN_BYTES:  # pragma: no cover
         raise AssertionError("preflight controller login must use the full GitHub login budget")
 
-    encode_comment(
+    encoded = encode_comment(
         StateV1(
             name=name,
             revision=MAX_REVISION,
@@ -602,6 +622,18 @@ def _preflight_materialization(
             render_sha256=result.render_sha256,
         ),
         result.markdown,
+    )
+    # The fixed preview login cannot be a compression worst case: matching
+    # user data may turn it into a short LZ reference. Hold a fixed margin
+    # outside the compressed payload so every valid real login has room even
+    # when the provisional value compresses unusually well.
+    enforce_size_limits(
+        SizeReport(
+            compressed_bytes=(encoded.sizes.compressed_bytes + _PREFLIGHT_CONTROLLER_COMPRESSED_RESERVE),
+            encoded_bytes=(encoded.sizes.encoded_bytes + _PREFLIGHT_CONTROLLER_ENCODED_RESERVE),
+            body_bytes=(encoded.sizes.body_bytes + _PREFLIGHT_CONTROLLER_ENCODED_RESERVE),
+        ),
+        DEFAULT_CODEC_LIMITS,
     )
 
 

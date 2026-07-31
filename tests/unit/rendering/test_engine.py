@@ -108,6 +108,44 @@ def test_schema_projection_supports_quoted_jq_keys_for_empty_tables() -> None:
     assert result.renderer.to_json()["columns"] == [{"path": ["value"], "header": "value"}]
 
 
+@pytest.mark.parametrize("jobs", [[], [{"a": "first", "z": "last"}]])
+def test_schema_projection_uses_prefix_item_row_order(
+    jobs: list[dict[str, str]],
+) -> None:
+    schema = validate_schema(
+        {
+            "type": "object",
+            "properties": {
+                "jobs": {
+                    "type": "array",
+                    "prefixItems": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "z": {"type": "string"},
+                                "a": {"type": "string"},
+                            },
+                        }
+                    ],
+                    "items": False,
+                }
+            },
+        }
+    )
+
+    result = render(
+        {"jobs": jobs},
+        TableRendererV1(selector=".jobs").to_descriptor(),
+        schema=schema,
+        slate=SlateContext(name="ci"),
+    )
+
+    assert result.renderer.to_json()["columns"] == [
+        {"path": ["z"], "header": "z"},
+        {"path": ["a"], "header": "a"},
+    ]
+
+
 @pytest.mark.parametrize("jobs", [[], [{"name": "linux", "status": "passing"}]])
 def test_schema_projection_follows_additional_properties(
     jobs: list[dict[str, str]],
@@ -888,8 +926,8 @@ def test_render_preflights_compressed_comment_envelope() -> None:
 def test_render_preflight_uses_a_maximum_width_low_compressibility_controller(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    hashes = [sha256(str(index).encode()).hexdigest() for index in range(625)]
-    data = {"blob": "".join(hashes[:624]) + hashes[624][:4]}
+    hashes = [sha256(str(index).encode()).hexdigest() for index in range(620)]
+    data = {"blob": "".join(hashes[:619]) + hashes[619][:4]}
     descriptor = jinja_descriptor("ok")
     relaxed = replace(
         DEFAULT_CODEC_LIMITS,
@@ -940,6 +978,75 @@ def test_render_preflight_uses_a_maximum_width_low_compressibility_controller(
         render(
             data,
             descriptor,
+            slate=SlateContext(name="ci"),
+        )
+
+    assert caught.value.code == "codec_size_limit"
+    exceeded = caught.value.details["exceeded"]
+    assert isinstance(exceeded, Mapping)
+    assert "compressed_bytes" in exceeded
+
+
+def test_render_preflight_reserves_for_data_dependent_login_compression(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sentinel = engine_module._PREFLIGHT_CONTROLLER_LOGIN
+    data = {
+        "blob": ((sentinel + "|") * 128)
+        + "".join(sha256(f"padding-{index}".encode()).hexdigest() for index in range(64))
+    }
+    relaxed = replace(
+        DEFAULT_CODEC_LIMITS,
+        max_compressed_bytes=64 * 1024,
+    )
+    captured: list[StateV1] = []
+
+    def capture(state: StateV1, markdown: str):
+        captured.append(state)
+        return encode_comment(state, markdown, limits=relaxed)
+
+    monkeypatch.setattr(engine_module, "encode_comment", capture)
+    rendered = render(
+        data,
+        jinja_descriptor("ok"),
+        slate=SlateContext(name="ci"),
+    )
+
+    provisional = captured[0]
+    provisional_size = encode_comment(
+        provisional,
+        rendered.markdown,
+        limits=relaxed,
+    ).sizes.compressed_bytes
+    real_size = encode_comment(
+        replace(
+            provisional,
+            controller=ControllerV1(
+                login="z" * 39,
+                id=provisional.controller.id,
+            ),
+        ),
+        rendered.markdown,
+        limits=relaxed,
+    ).sizes.compressed_bytes
+    assert real_size > provisional_size
+
+    tight = replace(
+        DEFAULT_CODEC_LIMITS,
+        max_compressed_bytes=real_size - 1,
+    )
+    assert provisional_size <= tight.max_compressed_bytes
+    monkeypatch.setattr(engine_module, "DEFAULT_CODEC_LIMITS", tight)
+    monkeypatch.setattr(
+        engine_module,
+        "encode_comment",
+        lambda state, markdown: encode_comment(state, markdown, limits=tight),
+    )
+
+    with pytest.raises(CodecError) as caught:
+        render(
+            data,
+            jinja_descriptor("ok"),
             slate=SlateContext(name="ci"),
         )
 
