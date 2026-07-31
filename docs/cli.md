@@ -1,7 +1,8 @@
 # gh-slate CLI design
 
-Status: implementation-backed through batch 6; safe full-snapshot apply is
-complete offline, and batch 7 is the next implementation layer. The
+Status: implementation-backed through batch 7; jq-style data CRUD and remote
+schema commands are complete offline, and batch 8 is the next implementation
+layer. The
 credentialed Issue/PR smoke gate remains open, so the snapshot MVP is not yet
 labelled alpha-ready.
 
@@ -288,6 +289,11 @@ selector profile limits the filter to 16 KiB, canonical input and jq output to
 2 seconds. OS memory and CPU rlimits are applied where supported; the wall
 timeout and byte limits remain mandatory on every platform.
 
+The serialized-output cap does not imply that one jq value is materialized
+incrementally: libjq may allocate that value inside the isolated worker before
+encoding reaches the byte cap. The separate worker address-space limit is the
+ceiling on supported operating systems.
+
 The isolated result is parsed back through the immutable JSON codec, so jq
 cannot mutate the input `StateV1`. libjq nevertheless uses IEEE-754 numeric
 semantics: a selected integer outside the exactly representable range may be
@@ -500,6 +506,8 @@ gh slate data get ci-summary \
 
 The default filter is `.`. A query may produce zero, one, or many results and
 supports jq-like `--raw-output`, `--compact-output`, and `--exit-status`.
+One invocation returns at most 1,024 results by default; crossing the bounded
+result limit is a validation error rather than an unbounded allocation.
 
 ### 5.2 Set
 
@@ -527,6 +535,10 @@ gh slate data set ci-summary '.["key.with.dot"]' \
 
 `PATH` must be an exact jq path expression. Internally it is resolved with jq
 `path`/`setpath` semantics; arbitrary transforms belong in `data update`.
+Missing containers are created according to the next typed path segment, and
+arrays are padded with JSON nulls when an exact non-negative index extends
+them. The final mutation runs in Python so untouched arbitrary-precision
+integers are not round-tripped through libjq.
 
 Value sources are mutually exclusive and never guessed:
 
@@ -604,6 +616,8 @@ Schemas use JSON Schema draft 2020-12:
 gh slate schema set ci-summary report.schema.json --target 42
 gh slate schema get ci-summary --target 42
 gh slate schema validate ci-summary candidate.json --target 42
+gh slate schema infer ci-summary --target 42 > inferred.schema.json
+gh slate schema infer ci-summary --target 42 --apply
 ```
 
 Every later mutation validates before rendering and writing.
@@ -644,6 +658,9 @@ gh-slate execution profile, not changes to the stored JSON Schema document.
 - it does not invent semantic formats.
 
 Users can edit and apply the inferred schema when stricter validation is wanted.
+`schema infer` is read-only by default and prints the inferred document.
+`--apply` explicitly stores that exact snapshot through the same
+revision-pinned mutation pipeline as `schema set`.
 Standard schema annotations such as `title`, `description`, and `format` may
 inform built-in rendering. Presentation details such as selected rows and
 column order remain in the renderer specification so schema validation and
@@ -651,10 +668,18 @@ layout do not become entangled.
 
 Round-trip guarantees follow JSON semantics. They do not promise to preserve
 whitespace, object key spelling order, or a number's original textual lexeme.
-Both renderer selectors and full jq updates inherit libjq's IEEE-754 numeric
-semantics. A jq projection may therefore round an otherwise valid canonical
-JSON integer. IDs or integers requiring lexical or arbitrary-precision
-preservation should be stored as strings and described as strings in the
+Renderer projections inherit libjq's IEEE-754 numeric semantics and may round
+an otherwise valid canonical JSON integer in visible Markdown. A full
+`data update` fails closed before writing when either its input or result
+contains an integer outside jq's exact range
+`[-9007199254740991, 9007199254740991]`; `data set` and `data delete` keep
+untouched arbitrary-precision integers in Python. Before running a full update,
+identity preflights also reject any stored value or `--argjson` binding that
+libjq would round merely by reading it, and numeric filter literals must
+round-trip through the same runtime. These are storage-boundary checks, not an
+arbitrary-precision arithmetic engine: jq calculations retain libjq's
+IEEE-754 semantics. IDs or numbers that must participate in arithmetic outside
+those guarantees should be stored as strings and described as strings in the
 schema.
 
 JSON ingestion rejects duplicate object keys, NaN, and Infinity.
@@ -1406,6 +1431,11 @@ adoption, or any claim of linearizable concurrent writes.
 
 Branch: `codex/data-crud`
 
+Status: complete with unit, command-contract, and fake-GitHub CLI integration
+coverage. Every mutation is revision-pinned to its first read, executes its
+local transform once, and delegates at most one write to batch 6. Credentialed
+live testing remains part of the later operational gate.
+
 Goal: expose the structured state as the jq-like query and mutation interface
 described in this document.
 
@@ -1428,6 +1458,11 @@ Acceptance gates:
 - paths work for keys containing dots and other special characters;
 - missing deletes, `--ignore-missing`, jq zero/multiple results, and
   scalar/array update results have explicit tested behavior;
+- the jq worker protocol reserves two depth levels for its object/array
+  envelope, so a value at the full JSON depth limit still round-trips while one
+  level beyond it fails closed;
+- mutations carry the resolved controller ID through the apply transaction
+  instead of reverting to login-based ownership;
 - a failed jq transform, schema validation, editor parse, render, revision
   check, or size check performs zero writes;
 - unchanged transforms perform zero writes and successful transforms perform
