@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import os
 import subprocess
 import sys
@@ -373,6 +374,69 @@ def test_default_runner_kills_and_reaps_on_timeout() -> None:
         )
 
     assert time.monotonic() - started < 3
+
+
+class _InterruptedProcess:
+    def __init__(self, interruption: BaseException) -> None:
+        self.stdin = io.BytesIO()
+        self.stdout = io.BytesIO()
+        self.stderr = io.BytesIO()
+        self.interruption = interruption
+        self.killed = False
+        self.wait_calls = 0
+
+    def kill(self) -> None:
+        self.killed = True
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.wait_calls += 1
+        if self.wait_calls == 1:
+            raise self.interruption
+        return 0
+
+
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt(), SystemExit(130)])
+def test_post_start_interrupt_is_an_unknown_write_outcome(
+    interruption: BaseException,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = _InterruptedProcess(interruption)
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: process,
+    )
+
+    with pytest.raises(GhWriteOutcomeUnknown) as caught:
+        GhWriteProcess(runner=SubprocessWriteRunner()).post(
+            "repos/owner/repo/issues/42/comments",
+            {"body": "safe"},
+        )
+
+    assert caught.value.code == "gh_write_process_error"
+    assert caught.value.details == {"error_type": type(interruption).__name__}
+    assert process.killed
+    assert process.wait_calls == 2
+    assert process.stdin.closed
+    assert process.stdout.closed
+    assert process.stderr.closed
+
+
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt(), SystemExit(130)])
+def test_pre_start_interrupt_is_not_reclassified(
+    interruption: BaseException,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def start(*_args: object, **_kwargs: object) -> None:
+        raise interruption
+
+    monkeypatch.setattr(subprocess, "Popen", start)
+
+    with pytest.raises(type(interruption)):
+        GhWriteProcess(runner=SubprocessWriteRunner()).post(
+            "repos/owner/repo/issues/42/comments",
+            {"body": "safe"},
+        )
 
 
 def test_timeout_uses_a_dedicated_unknown_outcome_error() -> None:

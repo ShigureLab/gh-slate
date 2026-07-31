@@ -232,8 +232,6 @@ class SubprocessWriteRunner:
             for worker in workers:
                 if worker.ident is not None:
                     worker.join()
-            if isinstance(error, (KeyboardInterrupt, SystemExit)):
-                raise
             raise _WriteProcessStartedError(type(error).__name__) from error
 
         for worker in workers:
