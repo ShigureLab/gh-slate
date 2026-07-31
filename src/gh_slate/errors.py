@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 class ExitCode(IntEnum):
@@ -19,6 +22,7 @@ class GhSlateError(Exception):
     code: str = "runtime_error"
     exit_code: ExitCode = ExitCode.RUNTIME
     hints: tuple[str, ...] = ()
+    details: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         Exception.__init__(self, self.message)
@@ -30,6 +34,8 @@ class GhSlateError(Exception):
         }
         if self.hints:
             payload["hints"] = list(self.hints)
+        if self.details:
+            payload["details"] = dict(self.details)
         return {"error": payload}
 
 

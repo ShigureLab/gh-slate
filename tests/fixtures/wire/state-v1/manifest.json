@@ -1,0 +1,18 @@
+{
+  "format": "gh-slate/state-v1",
+  "fixtures": {
+    "full-types": {
+      "comment.md": "df7137b106ccd51b43e04d4adf7c1daaf823d53cce5ee6f86e9a9b993930903c",
+      "expected.json": "b98fcda108eb2e9e8d7723f4e04fab36d554ec0ca4dbff504b9abe5b861d687d",
+      "source.state.json": "77b3694c6463a9a26146b5a4aa5e2d29619272c7acb9c31a865455aad771bc94",
+      "state.canonical.json": "b324287f86f66c0892e170f2bb85c7000465e94ef2f88884c14d4b7d7f7c3c55",
+      "visible.md": "ba2546884f603968fcd36a3e5aab919b747bb6906f99fce08c77600b7853cbae"
+    },
+    "minimal": {
+      "comment.md": "4ee54d3a9c5fb30f2bba64915440fe9053053d2ed4d8ab03687af6a14c4ddf3a",
+      "expected.json": "df0c98d15952acfccc617bc0f3af9477aa8e6e5ec99f6e183dbb7f57ccb996e8",
+      "state.canonical.json": "db7a150c36b738b469fb85a9a3cff5d6717c45ac377d8aba5c275e34fef541f5",
+      "visible.md": "06e6aeb0ab519d41fb7e9bf3ad4d9fe92a1d230b8cb5b2ed25dfcfc7d5faf09d"
+    }
+  }
+}
