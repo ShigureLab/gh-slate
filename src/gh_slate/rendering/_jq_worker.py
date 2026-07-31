@@ -8,6 +8,7 @@ import math
 import os
 import re
 import sys
+from decimal import Decimal, DecimalException
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -136,10 +137,28 @@ def _reject_constant(token: str) -> object:
     raise ValueError(f"non-finite JSON number: {token}")
 
 
-def _parse_float(token: str) -> float:
-    value = float(token)
-    if not math.isfinite(value):
+def _parse_decimal(token: str) -> Decimal:
+    try:
+        value = Decimal(token)
+    except DecimalException:
+        raise ValueError("invalid JSON number") from None
+    if not value.is_finite():
         raise ValueError("non-finite JSON number")
+    return value
+
+
+def _project_for_jq(value: object) -> object:
+    """Project exact protocol numbers into libjq's finite double domain."""
+
+    if isinstance(value, Decimal):
+        projected = float(value)
+        if math.isinf(projected):
+            return math.copysign(sys.float_info.max, projected)
+        return projected
+    if isinstance(value, list):
+        return [_project_for_jq(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _project_for_jq(item) for key, item in value.items()}
     return value
 
 
@@ -210,7 +229,7 @@ def _decode_request(source: bytes) -> tuple[object, dict[str, object]] | None:
         text = source.decode("utf-8", errors="strict")
         request = json.loads(
             text,
-            parse_float=_parse_float,
+            parse_float=_parse_decimal,
             parse_constant=_reject_constant,
             object_pairs_hook=_object_without_duplicates,
         )
@@ -259,6 +278,8 @@ def main(argv: list[str] | None = None) -> int:
     if request is None:
         return _emit_error("protocol")
     data, jq_args = request
+    projected_data = _project_for_jq(data)
+    projected_args = {name: _project_for_jq(value) for name, value in jq_args.items()}
 
     try:
         import jq  # ty: ignore[unresolved-import]
@@ -267,12 +288,12 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         compile_jq = jq.compile
-        program = compile_jq(filter_text, args=jq_args)
+        program = compile_jq(filter_text, args=projected_args)
     except Exception:
         return _emit_error("compile")
     try:
         result_bytes = _bounded_json_array(
-            iter(program.input_value(data)),
+            iter(program.input_value(projected_data)),
             max_results=max_results,
             max_bytes=output_limit,
         )

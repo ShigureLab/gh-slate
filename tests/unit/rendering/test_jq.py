@@ -563,6 +563,16 @@ def test_libjq_large_integer_rounding_is_projection_only_and_strings_stay_exact(
     assert source["number"] == exact_integer
 
 
+@pytest.mark.parametrize("huge", [Decimal("1e309"), Decimal("-1e309")])
+def test_finite_numbers_beyond_float_range_do_not_break_unrelated_queries(
+    huge: Decimal,
+) -> None:
+    source = {"huge": huge, "status": "ready"}
+
+    assert evaluate(source, ".status") == ("ready",)
+    assert source["huge"] == huge
+
+
 @pytest.mark.parametrize(
     "field",
     [

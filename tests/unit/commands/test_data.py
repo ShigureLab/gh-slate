@@ -342,6 +342,64 @@ def test_data_set_uses_an_exact_path_for_a_dotted_object_key(
     assert capsys.readouterr().err == ""
 
 
+def test_data_set_preserves_an_untouched_number_beyond_float_range(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    huge = Decimal("1e309")
+    session = _install_session(
+        monkeypatch,
+        data={"huge": huge, "status": "old"},
+    )
+
+    assert (
+        run(
+            [
+                "data",
+                "set",
+                "ci",
+                ".status",
+                "--target",
+                TARGET_URL,
+                "--value-string",
+                "new",
+            ]
+        )
+        == 0
+    )
+
+    assert session.drafts[0].data == {"huge": huge, "status": "new"}
+    assert capsys.readouterr().err == ""
+
+
+def test_data_delete_preserves_an_untouched_number_beyond_float_range(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    huge = Decimal("-1e309")
+    session = _install_session(
+        monkeypatch,
+        data={"huge": huge, "legacy": True},
+    )
+
+    assert (
+        run(
+            [
+                "data",
+                "delete",
+                "ci",
+                ".legacy",
+                "--target",
+                TARGET_URL,
+            ]
+        )
+        == 0
+    )
+
+    assert session.drafts[0].data == {"huge": huge}
+    assert capsys.readouterr().err == ""
+
+
 def test_data_delete_ignore_missing_produces_an_unchanged_draft(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
