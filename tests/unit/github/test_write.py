@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
-from typing import TYPE_CHECKING, cast
+from typing import Any, cast
 
 import pytest
 
@@ -18,9 +20,6 @@ from gh_slate.github.write import (
     GhWriteTimeout,
     SubprocessWriteRunner,
 )
-
-if TYPE_CHECKING:
-    from typing import BinaryIO
 
 
 @dataclass(slots=True)
@@ -292,34 +291,39 @@ def test_default_runner_never_uses_a_shell_and_inherits_gh_environment(
     captured: dict[str, object] = {}
     monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example")
     monkeypatch.setenv("GH_TOKEN", "inherited-token")
+    popen = subprocess.Popen
 
-    def complete(
+    def start(
         argv: tuple[str, ...],
-        **kwargs: object,
-    ) -> subprocess.CompletedProcess[bytes]:
+        **kwargs: Any,
+    ) -> subprocess.Popen[bytes]:
         captured["argv"] = argv
         captured.update(kwargs)
-        cast("BinaryIO", kwargs["stdout"]).write(b"{}")
-        return subprocess.CompletedProcess(argv, 0)
+        return cast("subprocess.Popen[bytes]", popen(argv, **kwargs))
 
-    monkeypatch.setattr(subprocess, "run", complete)
+    monkeypatch.setattr(subprocess, "Popen", start)
 
     result = SubprocessWriteRunner().run(
-        ("gh", "api", "--method", "POST", "--input", "-", "repos/o/r"),
+        (
+            sys.executable,
+            "-c",
+            "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())",
+        ),
         stdin=b'{"body":"secret"}',
         timeout=1.5,
         hostname="github.example.com",
-        max_stdout_bytes=8,
+        max_stdout_bytes=64,
         max_stderr_bytes=8,
     )
 
-    assert result == ProcessResult(0, b"{}", b"")
+    assert result == ProcessResult(0, b'{"body":"secret"}', b"")
     assert captured["shell"] is False
-    assert captured["input"] == b'{"body":"secret"}'
-    assert "capture_output" not in captured
-    assert "stdout" in captured
-    assert "stderr" in captured
-    assert captured["check"] is False
+    assert captured["stdin"] is subprocess.PIPE
+    assert captured["stdout"] is subprocess.PIPE
+    assert captured["stderr"] is subprocess.PIPE
+    assert "input" not in captured
+    assert "timeout" not in captured
+    assert "check" not in captured
     environment = cast("dict[str, str]", captured["env"])
     assert environment["HTTPS_PROXY"] == "http://proxy.example"
     assert environment["GH_TOKEN"] == "inherited-token"
@@ -327,30 +331,48 @@ def test_default_runner_never_uses_a_shell_and_inherits_gh_environment(
     assert os.environ["GH_TOKEN"] == "inherited-token"
 
 
-def test_default_runner_reads_only_one_byte_beyond_each_output_limit(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("file_descriptor", "limited_stream"),
+    [(1, "stdout"), (2, "stderr")],
+)
+def test_default_runner_kills_output_overflow_and_keeps_one_sentinel_byte(
+    file_descriptor: int,
+    limited_stream: str,
 ) -> None:
-    def complete(
-        argv: tuple[str, ...],
-        **kwargs: object,
-    ) -> subprocess.CompletedProcess[bytes]:
-        cast("BinaryIO", kwargs["stdout"]).write(b"x" * 100)
-        cast("BinaryIO", kwargs["stderr"]).write(b"y" * 100)
-        return subprocess.CompletedProcess(argv, 0)
-
-    monkeypatch.setattr(subprocess, "run", complete)
-
+    started = time.monotonic()
     result = SubprocessWriteRunner().run(
-        ("gh", "api", "--method", "POST", "--input", "-", "repos/o/r"),
+        (
+            sys.executable,
+            "-c",
+            (f"import os,time;os.write({file_descriptor},b'x'*(10*1024*1024));time.sleep(10)"),
+        ),
         stdin=b"{}",
-        timeout=1,
+        timeout=5,
         hostname=None,
-        max_stdout_bytes=4,
-        max_stderr_bytes=3,
+        max_stdout_bytes=1024,
+        max_stderr_bytes=1024,
     )
 
-    assert result.stdout == b"x" * 5
-    assert result.stderr == b"y" * 4
+    assert time.monotonic() - started < 3
+    assert len(getattr(result, limited_stream)) == 1025
+    other_stream = "stderr" if limited_stream == "stdout" else "stdout"
+    assert getattr(result, other_stream) == b""
+
+
+def test_default_runner_kills_and_reaps_on_timeout() -> None:
+    started = time.monotonic()
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        SubprocessWriteRunner().run(
+            (sys.executable, "-c", "import time; time.sleep(10)"),
+            stdin=b"{}",
+            timeout=0.1,
+            hostname=None,
+            max_stdout_bytes=1024,
+            max_stderr_bytes=1024,
+        )
+
+    assert time.monotonic() - started < 3
 
 
 def test_timeout_uses_a_dedicated_unknown_outcome_error() -> None:

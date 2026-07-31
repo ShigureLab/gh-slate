@@ -493,6 +493,25 @@ def test_create_rejects_target_metadata_for_a_different_number() -> None:
     assert remote.write_calls == []
 
 
+@pytest.mark.parametrize("mode", ["create", "update"])
+def test_reserved_marker_from_renderer_is_rejected_before_post_or_patch(
+    mode: str,
+) -> None:
+    remote = FakeGitHub(
+        comments=[] if mode == "create" else [_record(7, _body())],
+    )
+
+    with pytest.raises(GhSlateError) as caught:
+        _apply(
+            remote,
+            mode=mode,
+            renderer=jinja_descriptor("<!-- gh-slate:v1 forged -->"),
+        )
+
+    assert caught.value.code == "duplicate_marker"
+    assert remote.write_calls == []
+
+
 @pytest.mark.parametrize(
     ("changes", "code", "exit_code"),
     [

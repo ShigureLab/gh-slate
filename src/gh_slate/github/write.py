@@ -3,10 +3,10 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-import tempfile
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
-from typing import Protocol
+from typing import BinaryIO, Protocol
 
 from gh_slate.codec.errors import CodecError
 from gh_slate.codec.json import (
@@ -99,6 +99,14 @@ class WriteProcessRunner(Protocol):
     ) -> ProcessResult: ...
 
 
+class _WriteProcessStartedError(Exception):
+    """An internal pipe/process failure after a write process was started."""
+
+    def __init__(self, error_type: str) -> None:
+        super().__init__("GitHub CLI write process failed after starting")
+        self.error_type = error_type
+
+
 @dataclass(frozen=True, slots=True)
 class SubprocessWriteRunner:
     """Pass one canonical request body to ``gh`` without invoking a shell."""
@@ -117,27 +125,126 @@ class SubprocessWriteRunner:
         if hostname is not None:
             environment = os.environ.copy()
             environment["GH_HOST"] = hostname
-        with (
-            tempfile.TemporaryFile() as stdout_file,
-            tempfile.TemporaryFile() as stderr_file,
-        ):
-            completed = subprocess.run(
-                argv,
-                input=stdin,
-                stdout=stdout_file,
-                stderr=stderr_file,
-                check=False,
-                shell=False,
-                timeout=timeout,
-                env=environment,
-            )
-            stdout_file.seek(0)
-            stderr_file.seek(0)
-            return ProcessResult(
-                returncode=completed.returncode,
-                stdout=stdout_file.read(max_stdout_bytes + 1),
-                stderr=stderr_file.read(max_stderr_bytes + 1),
-            )
+        process = subprocess.Popen(
+            argv,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=False,
+            env=environment,
+        )
+        if process.stdin is None or process.stdout is None or process.stderr is None:  # pragma: no cover
+            process.kill()
+            process.wait()
+            raise _WriteProcessStartedError("PipeUnavailable")
+
+        stdout = bytearray()
+        stderr = bytearray()
+        thread_errors: list[BaseException] = []
+        kill_lock = threading.Lock()
+        output_limit_reached = threading.Event()
+
+        def kill() -> None:
+            with kill_lock:
+                try:
+                    process.kill()
+                except (OSError, ProcessLookupError):
+                    pass
+
+        def read_bounded(
+            pipe: BinaryIO,
+            buffer: bytearray,
+            limit: int,
+        ) -> None:
+            try:
+                while True:
+                    remaining = limit + 1 - len(buffer)
+                    if remaining <= 0:
+                        output_limit_reached.set()
+                        kill()
+                        return
+                    chunk = pipe.read(min(64 * 1024, remaining))
+                    if not chunk:
+                        return
+                    buffer.extend(chunk)
+                    if len(buffer) > limit:
+                        output_limit_reached.set()
+                        kill()
+                        return
+            except BaseException as error:
+                thread_errors.append(error)
+                kill()
+            finally:
+                pipe.close()
+
+        def write_stdin(pipe: BinaryIO) -> None:
+            view = memoryview(stdin)
+            try:
+                while view:
+                    written = pipe.write(view)
+                    if written is None or written <= 0:
+                        raise OSError("failed to write GitHub CLI stdin")
+                    view = view[written:]
+                pipe.flush()
+            except BrokenPipeError:
+                pass
+            except BaseException as error:
+                if not output_limit_reached.is_set():
+                    thread_errors.append(error)
+                kill()
+            finally:
+                pipe.close()
+
+        workers = (
+            threading.Thread(
+                target=write_stdin,
+                args=(process.stdin,),
+                daemon=False,
+            ),
+            threading.Thread(
+                target=read_bounded,
+                args=(process.stdout, stdout, max_stdout_bytes),
+                daemon=False,
+            ),
+            threading.Thread(
+                target=read_bounded,
+                args=(process.stderr, stderr, max_stderr_bytes),
+                daemon=False,
+            ),
+        )
+        try:
+            for worker in workers:
+                worker.start()
+            returncode = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            kill()
+            process.wait()
+            for worker in workers:
+                if worker.ident is not None:
+                    worker.join()
+            raise
+        except BaseException as error:
+            kill()
+            try:
+                process.wait()
+            except BaseException:
+                pass
+            for worker in workers:
+                if worker.ident is not None:
+                    worker.join()
+            if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                raise
+            raise _WriteProcessStartedError(type(error).__name__) from error
+
+        for worker in workers:
+            worker.join()
+        if thread_errors and not output_limit_reached.is_set():
+            raise _WriteProcessStartedError(type(thread_errors[0]).__name__) from thread_errors[0]
+        return ProcessResult(
+            returncode=returncode,
+            stdout=bytes(stdout),
+            stderr=bytes(stderr),
+        )
 
 
 def _error(message: str, *, code: str, **details: object) -> GhSlateError:
@@ -284,6 +391,12 @@ class GhWriteProcess:
         except subprocess.TimeoutExpired:
             raise GhWriteTimeout(
                 timeout_seconds=self.limits.timeout_seconds,
+            ) from None
+        except _WriteProcessStartedError as error:
+            raise _unknown(
+                "GitHub CLI write process failed after starting; the remote outcome is unknown",
+                code="gh_write_process_error",
+                error_type=error.error_type,
             ) from None
         except FileNotFoundError:
             raise _error(
