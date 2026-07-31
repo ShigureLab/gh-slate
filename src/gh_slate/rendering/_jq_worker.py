@@ -229,6 +229,7 @@ def _decode_request(source: bytes) -> tuple[object, dict[str, object]] | None:
         text = source.decode("utf-8", errors="strict")
         request = json.loads(
             text,
+            parse_int=_parse_decimal,
             parse_float=_parse_decimal,
             parse_constant=_reject_constant,
             object_pairs_hook=_object_without_duplicates,

@@ -404,6 +404,39 @@ def test_worker_rejects_malformed_or_noncanonical_stdin_protocol(source: bytes) 
     assert completed.stdout == b'{"ok":false,"kind":"protocol"}'
 
 
+@pytest.mark.parametrize("location", ["data", "args"])
+def test_worker_projects_plain_oversized_integer_tokens(location: str) -> None:
+    worker = Path(jq_module.__file__).with_name("_jq_worker.py")
+    command = [
+        sys.executable,
+        "-I",
+        str(worker),
+        base64.b64encode(b".status").decode("ascii"),
+        "1",
+        "4096",
+        "4096",
+        str(DEFAULT_JQ_LIMITS.max_memory_bytes),
+        str(DEFAULT_JQ_LIMITS.max_cpu_seconds),
+    ]
+    huge = b"1" + (b"0" * 309)
+    data = b'{"huge":' + huge + b',"status":"ready"}'
+    args = b"{}"
+    if location == "args":
+        data = b'{"status":"ready"}'
+        args = b'{"huge":' + huge + b"}"
+
+    completed = subprocess.run(
+        command,
+        input=b'{"args":' + args + b',"data":' + data + b"}",
+        capture_output=True,
+        env=jq_module._worker_environment(),
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == b'{"ok":true,"results":["ready"]}'
+
+
 def test_worker_environment_preserves_only_windows_system_root() -> None:
     parent = {
         "SystemRoot": "C:\\Windows",
