@@ -805,7 +805,14 @@ def test_default_write_runner_wait_uses_budget_remaining_after_worker_setup(
         clock[0] += 0.1
         real_start(worker)
 
-    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(
+        write_module,
+        "_spawn_process",
+        lambda argv, *, environment, stdin: (
+            cast("subprocess.Popen[bytes]", process),
+            None,
+        ),
+    )
     monkeypatch.setattr(threading.Thread, "start", start)
     monkeypatch.setattr(time, "monotonic", lambda: clock[0])
 
@@ -853,9 +860,12 @@ def test_post_start_interrupt_is_an_unknown_write_outcome(
 ) -> None:
     process = _InterruptedProcess(interruption)
     monkeypatch.setattr(
-        subprocess,
-        "Popen",
-        lambda *_args, **_kwargs: process,
+        write_module,
+        "_spawn_process",
+        lambda argv, *, environment, stdin: (
+            cast("subprocess.Popen[bytes]", process),
+            None,
+        ),
     )
 
     with pytest.raises(GhWriteOutcomeUnknown) as caught:
@@ -893,9 +903,12 @@ def test_post_wait_join_interrupt_is_an_unknown_write_outcome(
         real_join(worker, timeout)
 
     monkeypatch.setattr(
-        subprocess,
-        "Popen",
-        lambda *_args, **_kwargs: process,
+        write_module,
+        "_spawn_process",
+        lambda argv, *, environment, stdin: (
+            cast("subprocess.Popen[bytes]", process),
+            None,
+        ),
     )
     monkeypatch.setattr(threading.Thread, "join", interrupt_once)
 
@@ -935,7 +948,14 @@ def test_timeout_cleanup_interrupt_is_an_unknown_write_outcome(
             raise interruption
         real_join(worker, timeout)
 
-    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(
+        write_module,
+        "_spawn_process",
+        lambda argv, *, environment, stdin: (
+            cast("subprocess.Popen[bytes]", process),
+            None,
+        ),
+    )
     monkeypatch.setattr(threading.Thread, "join", maybe_interrupt)
 
     with pytest.raises(GhWriteOutcomeUnknown) as caught:
@@ -955,7 +975,14 @@ def test_timeout_cleanup_interrupt_is_an_unknown_write_outcome(
 
 def test_default_runner_clean_timeout_remains_a_write_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     process = _TimeoutCleanupProcess("none", AssertionError("unused"))
-    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(
+        write_module,
+        "_spawn_process",
+        lambda argv, *, environment, stdin: (
+            cast("subprocess.Popen[bytes]", process),
+            None,
+        ),
+    )
 
     with pytest.raises(GhWriteTimeout) as caught:
         GhWriteProcess(runner=SubprocessWriteRunner()).post(
@@ -979,7 +1006,7 @@ def test_pre_start_interrupt_is_not_reclassified(
     def start(*_args: object, **_kwargs: object) -> None:
         raise interruption
 
-    monkeypatch.setattr(subprocess, "Popen", start)
+    monkeypatch.setattr(write_module, "_spawn_process", start)
 
     with pytest.raises(type(interruption)):
         GhWriteProcess(runner=SubprocessWriteRunner()).post(

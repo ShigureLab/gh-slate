@@ -237,6 +237,16 @@ def test_selector_rejects_host_observation_facilities(filter_text: str) -> None:
     assert caught.value.code == "jq_filter_forbidden"
 
 
+def test_selector_scans_deep_string_interpolations_without_python_recursion() -> None:
+    filter_text = '"\\(' * 600 + "env" + ')"' * 600
+
+    with pytest.raises(RenderingError) as caught:
+        select_one(None, filter_text)
+
+    assert caught.value.code == "jq_filter_forbidden"
+    assert caught.value.details["token"] == "env"
+
+
 def test_selector_rejects_every_platform_dependent_c_math_builtin() -> None:
     expected = {
         "acos",

@@ -751,6 +751,34 @@ def test_data_update_rejects_out_of_range_filter_exponent_before_read(
     assert session.drafts == []
 
 
+def test_data_update_scans_deep_interpolations_without_python_recursion(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    session = _install_session(monkeypatch, data={"answer": 0})
+    filter_text = '"\\(' * 600 + "9007199254740993" + ')"' * 600
+
+    assert (
+        run(
+            [
+                "data",
+                "update",
+                "ci",
+                filter_text,
+                "--target",
+                TARGET_URL,
+            ]
+        )
+        == 2
+    )
+
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "error[data_update_unsafe_integer]" in output.err
+    assert session.requests == []
+    assert session.drafts == []
+
+
 def test_data_update_numeric_text_is_not_mistaken_for_a_filter_literal(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

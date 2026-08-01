@@ -939,6 +939,7 @@ def test_render_preflight_uses_a_maximum_width_low_compressibility_controller(
         captured.append(state)
         return encode_comment(state, markdown, limits=relaxed)
 
+    monkeypatch.setattr(engine_module, "DEFAULT_CODEC_LIMITS", relaxed)
     monkeypatch.setattr(engine_module, "encode_comment", capture)
     rendered = render(
         data,

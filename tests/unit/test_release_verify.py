@@ -644,6 +644,37 @@ def test_extension_asset_re_elects_a_dangling_recovery_chain(
     assert install.is_symlink() and not install.exists()
     assert recovery.is_symlink() and not recovery.exists()
 
+    real_ln = shutil.which("ln")
+    assert real_ln is not None
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_ln = fake_bin / "ln"
+    fake_ln.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+destination="${@: -1}"
+source="${@: -2:1}"
+if [[ "${destination}" == "${GH_SLATE_DELAYED_RECOVERY_TERMINAL}" ]]; then
+  if mkdir "${GH_SLATE_RECOVERY_CLAIM_GATE}" 2>/dev/null; then
+    sleep 0.25
+    exec "${GH_SLATE_REAL_LN}" "$@"
+  fi
+  exit 1
+fi
+if [[ "${destination}" == */.publish && "${source}" == "${destination%/.publish}" && ! -L "${GH_SLATE_DELAYED_RECOVERY_TERMINAL}" ]]; then
+  exit 1
+fi
+exec "${GH_SLATE_REAL_LN}" "$@"
+""",
+        encoding="utf-8",
+    )
+    fake_ln.chmod(0o755)
+    original_path = environment["PATH"]
+    environment["PATH"] = f"{fake_bin}{os.pathsep}{original_path}"
+    environment["GH_SLATE_REAL_LN"] = real_ln
+    environment["GH_SLATE_DELAYED_RECOVERY_TERMINAL"] = str(first_stage)
+    environment["GH_SLATE_RECOVERY_CLAIM_GATE"] = str(tmp_path / "recovery-claim-gate")
+
     with ThreadPoolExecutor(max_workers=8) as executor:
         results = tuple(executor.map(lambda _index: invoke(), range(8)))
 
@@ -658,6 +689,11 @@ def test_extension_asset_re_elects_a_dangling_recovery_chain(
         path for path in install_root.iterdir() if path.name.startswith(f".{VERSION}-{digest}.stage.")
     )
     assert stage_entries == (second_stage,)
+
+    environment["PATH"] = original_path
+    environment.pop("GH_SLATE_REAL_LN")
+    environment.pop("GH_SLATE_DELAYED_RECOVERY_TERMINAL")
+    environment.pop("GH_SLATE_RECOVERY_CLAIM_GATE")
 
     current_stage = second_stage
     for _attempt in range(20):
@@ -678,6 +714,93 @@ def test_extension_asset_re_elects_a_dangling_recovery_chain(
         )
         assert stage_entries == (next_stage,)
         current_stage = next_stage
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="the self-extracting extension assets require Bash and Unix symlinks",
+)
+def test_extension_asset_preserves_multihop_install_chain_when_publication_fails(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    assets = release_verify.build_extension_assets(
+        project,
+        tmp_path / "assets",
+        version=VERSION,
+    )
+    digest_match = re.search(
+        rb"(?m)^payload_sha256=([0-9a-f]{64})$",
+        assets[0].read_bytes()[:4096],
+    )
+    assert digest_match is not None
+    digest = digest_match.group(1).decode("ascii")
+
+    cache = tmp_path / "cache"
+    environment = os.environ.copy()
+    environment["HOME"] = str(tmp_path / "home")
+    environment["XDG_CACHE_HOME"] = str(cache)
+    (tmp_path / "home").mkdir()
+
+    def invoke() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [assets[0], "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+            timeout=20,
+        )
+
+    initial = invoke()
+    assert initial.returncode == 0, initial.stderr
+    install_root = cache / "gh-slate-extension-v2"
+    install = install_root / f"{VERSION}-{digest}"
+    first_bridge = install.resolve(strict=True)
+    terminal_bridge = install_root / f".{VERSION}-{digest}.stage.multihop"
+    recovery = Path(f"{install}.recover")
+    recovery.symlink_to(terminal_bridge)
+    shutil.rmtree(first_bridge)
+    first_bridge.symlink_to(terminal_bridge)
+    assert install.is_symlink() and not install.exists()
+    assert recovery.is_symlink() and not recovery.exists()
+
+    real_ln = shutil.which("ln")
+    assert real_ln is not None
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_ln = fake_bin / "ln"
+    fake_ln.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+destination="${@: -1}"
+source="${@: -2:1}"
+if [[ "${destination}" == */.publish && "${source}" == "${destination%/.publish}" ]]; then
+  exit 1
+fi
+exec "${GH_SLATE_REAL_LN}" "$@"
+""",
+        encoding="utf-8",
+    )
+    fake_ln.chmod(0o755)
+    original_path = environment["PATH"]
+    environment["PATH"] = f"{fake_bin}{os.pathsep}{original_path}"
+    environment["GH_SLATE_REAL_LN"] = real_ln
+
+    interrupted = invoke()
+
+    assert interrupted.returncode != 0
+    recovered_stage = install.resolve(strict=True)
+    assert (install / ".ready").is_file()
+    assert first_bridge.is_symlink()
+    assert terminal_bridge.is_symlink()
+    assert recovery.resolve(strict=True) == recovered_stage
+
+    environment["PATH"] = original_path
+    environment.pop("GH_SLATE_REAL_LN")
+    recovered = invoke()
+    assert recovered.returncode == 0, recovered.stderr
+    assert recovered.stdout == "gh slate test\n"
 
 
 @pytest.mark.skipif(
@@ -1298,7 +1421,10 @@ def test_all_repository_workflow_actions_use_immutable_commit_shas() -> None:
                 )
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="workflow shell validation requires Bash")
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="workflow shell validation requires Unix Bash",
+)
 def test_release_workflow_shell_blocks_are_syntactically_valid() -> None:
     for workflow in (_candidate_workflow(), _workflow()):
         for job in workflow["jobs"].values():

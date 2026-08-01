@@ -497,14 +497,23 @@ find_recovery_terminal() {{
 resolve_ready_recovery_target() {{
   local attempt
   local candidate
+  local recovery_root
   recovery_target=""
-  for (( attempt = 0; attempt < 4; attempt++ )); do
-    [[ -L "${{recovery_link}}" && -f "${{recovery_link}}/.ready" ]] || continue
-    candidate="$(cd -- "${{recovery_link}}" 2>/dev/null && pwd -P)" || continue
-    is_recovery_stage_path "${{candidate}}" || return 1
-    [[ -f "${{candidate}}/.ready" ]] || continue
-    recovery_target="${{candidate}}"
-    return 0
+  [[ -L "${{recovery_link}}" ]] || return 1
+  recovery_root="$(readlink "${{recovery_link}}")" || return 1
+  is_recovery_stage_path "${{recovery_root}}" || return 1
+  for (( attempt = 0; attempt < 500; attempt++ )); do
+    if [[ -L "${{recovery_link}}" && -f "${{recovery_link}}/.ready" ]]; then
+      candidate="$(cd -- "${{recovery_link}}" 2>/dev/null && pwd -P)" || candidate=""
+      if [[ -n "${{candidate}}" ]]; then
+        is_recovery_stage_path "${{candidate}}" || return 1
+        if [[ -f "${{candidate}}/.ready" ]]; then
+          recovery_target="${{candidate}}"
+          return 0
+        fi
+      fi
+    fi
+    sleep 0.01
   done
   return 1
 }}
@@ -520,9 +529,6 @@ if [[ ! -f "${{ready_file}}" ]]; then
     rm -f "${{payload_file}}"
     if [[ -n "${{publication_link}}" ]]; then
       rm -f "${{publication_link}}"
-    fi
-    if [[ -n "${{claimed_recovery_terminal}}" && -L "${{claimed_recovery_terminal}}" && -L "${{recovery_link}}" && "$(readlink "${{claimed_recovery_terminal}}")" == "${{stage_dir}}" && "$(readlink "${{recovery_link}}")" == "${{stage_dir}}" ]]; then
-      rm -f "${{claimed_recovery_terminal}}"
     fi
     if (( ! preserve_stage )); then
       rm -rf "${{stage_dir}}"
@@ -585,9 +591,6 @@ if [[ ! -f "${{ready_file}}" ]]; then
         mv -fT -- "${{publication_link}}" "${{recovery_link}}"
       fi
       publication_link=""
-      if [[ -n "${{claimed_recovery_terminal}}" && -L "${{claimed_recovery_terminal}}" && -L "${{recovery_link}}" && "$(readlink "${{claimed_recovery_terminal}}")" == "${{stage_dir}}" && "$(readlink "${{recovery_link}}")" == "${{stage_dir}}" ]]; then
-        rm -f "${{claimed_recovery_terminal}}"
-      fi
     fi
     if resolve_ready_recovery_target; then
       if (( ! owns_recovery )); then
@@ -599,6 +602,10 @@ if [[ ! -f "${{ready_file}}" ]]; then
         mv -fh -- "${{publication_link}}" "${{install_dir}}"
       else
         mv -fT -- "${{publication_link}}" "${{install_dir}}"
+      fi
+      if [[ -n "${{claimed_recovery_terminal}}" && -L "${{claimed_recovery_terminal}}" && -L "${{recovery_link}}" && "$(readlink "${{claimed_recovery_terminal}}")" == "${{stage_dir}}" && "$(readlink "${{recovery_link}}")" == "${{stage_dir}}" ]]; then
+        rm -f "${{claimed_recovery_terminal}}"
+        claimed_recovery_terminal=""
       fi
     elif (( ! owns_recovery )); then
       preserve_stage=0

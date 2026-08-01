@@ -6,6 +6,7 @@ from typing import cast
 
 import pytest
 
+import gh_slate.schema.keywords as schema_keywords
 from gh_slate.codec.json import DEFAULT_JSON_LIMITS
 from gh_slate.codec.model import JSON_SCHEMA_DIALECT_2020_12, SchemaSnapshotV1
 from gh_slate.schema.errors import SchemaError
@@ -129,6 +130,16 @@ def test_schema_regex_format_uses_the_runtime_regex_dialect() -> None:
         r"\H",
         r"\U0001F600",
         r"\k",
+        r"\p",
+        r"\P",
+        r"[\p]",
+        r"[\P]",
+        r"\_",
+        r"\!",
+        r"\-",
+        r"[\_]",
+        r"(a)\2",
+        r"\01",
         r"(?P<x>a)",
         r"(?<x>a)(?P=x)",
         r"(?'x'a)",
@@ -142,12 +153,40 @@ def test_schema_regex_format_uses_the_runtime_regex_dialect() -> None:
         r"(?|a)",
         r"(?R)",
         r"(?i)a",
+        r"(?i:a)",
+        r"(?-i:a)",
         r"(*PRUNE)",
         r"a++",
     ):
         with pytest.raises(SchemaError) as unsupported_escape:
             validate_schema({"pattern": pattern})
         assert unsupported_escape.value.code == "schema_invalid"
+
+
+def test_schema_regex_translation_expansion_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(schema_keywords, "MAX_REGEX_CAPTURE_RESET_EDGES", 3)
+    with pytest.raises(SchemaError) as capture_expansion:
+        validate_schema({"pattern": r"(((a)?)?)?"})
+    assert capture_expansion.value.code == "schema_invalid"
+
+    monkeypatch.setattr(schema_keywords, "MAX_REGEX_TRANSLATED_CHARACTERS", 8)
+    with pytest.raises(SchemaError) as text_expansion:
+        validate_schema({"pattern": r"\S"})
+    assert text_expansion.value.code == "schema_invalid"
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        r"^(?:(a?)|b)*\1$",
+        r"^((a)?)*\2$",
+        r"^(?:(?<x>a?)|b)*\k<x>$",
+    ],
+)
+def test_nullable_repeated_capture_groups_fail_closed(pattern: str) -> None:
+    with pytest.raises(SchemaError) as unsupported:
+        validate_schema({"pattern": pattern})
+    assert unsupported.value.code == "schema_invalid"
 
 
 @pytest.mark.parametrize(
@@ -172,7 +211,12 @@ def test_schema_regex_format_uses_the_runtime_regex_dialect() -> None:
         (r"^(?<\u{00000061}>a)\k<\u{61}>$", "aa", "ab"),
         (r"^(?:(?<x>a)|(?<x>b))\k<x>$", "bb", "ab"),
         (r"^(?:(?<x>a)|b)+\k<x>$", "ab", "aba"),
-        (r"^(?i:a)$", "A", "b"),
+        (r"^(a)?\1b$", "b", "ab"),
+        (r"^\1(a)$", "a", "aa"),
+        (r"^(?:(?<x>a)|(?<x>b))\1\2$", "bb", "ab"),
+        (r"^(?:(a)|b)+\1$", "ab", "aba"),
+        (r"^(?s:.(?-s:.))$", "\na", "\n\n"),
+        (r"(?m:^b(?-m:$))", "a\nb", "a\nb\nc"),
     ],
 )
 def test_ecmascript_regex_semantics(pattern: str, accepted: str, rejected: str) -> None:
@@ -183,6 +227,32 @@ def test_ecmascript_regex_semantics(pattern: str, accepted: str, rejected: str) 
     with pytest.raises(SchemaError) as mismatch:
         validate_data({"value": rejected}, schema)
     assert mismatch.value.code == "schema_validation_failed"
+
+
+@pytest.mark.parametrize("terminator", ["\n", "\r", "\u2028", "\u2029"])
+def test_ecmascript_scoped_dotall_and_multiline_cover_all_line_terminators(
+    terminator: str,
+) -> None:
+    dotall = {"properties": {"value": {"type": "string", "pattern": r"^(?s:.)$"}}}
+    multiline = {"properties": {"value": {"type": "string", "pattern": r"(?m:^b$)"}}}
+
+    validate_data({"value": terminator}, dotall)
+    validate_data({"value": f"a{terminator}b{terminator}c"}, multiline)
+
+
+@pytest.mark.parametrize(
+    ("pattern", "accepted"),
+    [
+        (r"^\$\(\)\[\]\{\}\|\/\\$", "$()[]{}|/\\"),
+        (r"^[\-]$", "-"),
+        (r"^\0$", "\x00"),
+    ],
+)
+def test_ecmascript_unicode_mode_escape_allowlist(pattern: str, accepted: str) -> None:
+    schema = {"properties": {"value": {"type": "string", "pattern": pattern}}}
+
+    validate_schema(schema)
+    validate_data({"value": accepted}, schema)
 
 
 @pytest.mark.parametrize("pattern", [r"^[\d]+$", r"^[^\D]+$", r"^[\w]+$"])

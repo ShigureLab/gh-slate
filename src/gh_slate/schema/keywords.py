@@ -16,6 +16,9 @@ from gh_slate.schema._markers import FalseSchema
 EVALUATION_TIMEOUT_SECONDS = 1.0
 REGEX_TIMEOUT_SECONDS = 0.05
 MAX_EVALUATION_OPERATIONS = 100_000
+MAX_REGEX_CAPTURE_RESET_EDGES = 65_536
+MAX_REGEX_GROUP_NESTING = 256
+MAX_REGEX_TRANSLATED_CHARACTERS = 1_048_576
 
 _ECMASCRIPT_CLASS_ESCAPES = {
     "d": r"0-9",
@@ -37,7 +40,10 @@ _ECMASCRIPT_ATOM_ESCAPES = {
     "s": f"[{_ECMASCRIPT_CLASS_ESCAPES['s']}]",
     "S": f"[^{_ECMASCRIPT_CLASS_ESCAPES['s']}]",
 }
-_ECMASCRIPT_PASSTHROUGH_ESCAPES = frozenset("fnrtvpuPx")
+_ECMASCRIPT_PASSTHROUGH_ESCAPES = frozenset("fnrtvux")
+_ECMASCRIPT_IDENTITY_ESCAPES = frozenset(r"^$\.*+?()[]{}|/")
+_ECMASCRIPT_CLASS_IDENTITY_ESCAPES = _ECMASCRIPT_IDENTITY_ESCAPES | {"-"}
+_ECMASCRIPT_LINE_TERMINATORS = r"\n\r\u2028\u2029"
 _HEXADECIMAL_DIGITS = frozenset("0123456789abcdefABCDEF")
 _ECMASCRIPT_IDENTIFIER_START = regex.compile(
     r"\A(?:[$_]|\p{ID_Start})\Z",
@@ -183,10 +189,17 @@ def _ecmascript_group_name(source: str) -> str:
     return name
 
 
-def _is_ecmascript_modifier_group(source: str, index: int) -> bool:
+def _ecmascript_modifier_group(
+    source: str,
+    index: int,
+) -> tuple[frozenset[str], frozenset[str]] | None:
+    # Python's Unicode IGNORECASE includes dotted and dotless I equivalences
+    # that ECMA-262 excludes. Keep ``i`` fail-closed until it can be translated
+    # with the exact ECMAScript case-fold table.
+    supported_modifiers = "ms"
     cursor = index + 2
     enabled_start = cursor
-    while cursor < len(source) and source[cursor] in "ims":
+    while cursor < len(source) and source[cursor] in supported_modifiers:
         cursor += 1
     enabled = source[enabled_start:cursor]
 
@@ -194,13 +207,13 @@ def _is_ecmascript_modifier_group(source: str, index: int) -> bool:
     if cursor < len(source) and source[cursor] == "-":
         cursor += 1
         disabled_start = cursor
-        while cursor < len(source) and source[cursor] in "ims":
+        while cursor < len(source) and source[cursor] in supported_modifiers:
             cursor += 1
         disabled = source[disabled_start:cursor]
         if not disabled:
-            return False
+            return None
 
-    return (
+    valid = (
         bool(enabled or disabled)
         and cursor < len(source)
         and source[cursor] == ":"
@@ -208,6 +221,71 @@ def _is_ecmascript_modifier_group(source: str, index: int) -> bool:
         and len(set(disabled)) == len(disabled)
         and set(enabled).isdisjoint(disabled)
     )
+    if not valid:
+        return None
+    return frozenset(enabled), frozenset(disabled)
+
+
+@dataclass(frozen=True, slots=True)
+class _CaptureGroup:
+    number: int
+    source_name: str | None
+    numeric_name: str
+    semantic_name: str | None
+
+
+def _ecmascript_captures(
+    source: str,
+) -> tuple[dict[int, _CaptureGroup], dict[str, str]]:
+    """Index capture occurrences before translating forward references."""
+
+    captures: dict[int, _CaptureGroup] = {}
+    semantic_names: dict[str, str] = {}
+    in_class = False
+    index = 0
+    while index < len(source):
+        character = source[index]
+        if character == "\\":
+            index += 2
+            continue
+        if not in_class and character == "[":
+            in_class = True
+            index += 1
+            continue
+        if in_class:
+            if character == "]":
+                in_class = False
+            index += 1
+            continue
+        if character != "(":
+            index += 1
+            continue
+
+        source_name: str | None = None
+        next_index = index + 1
+        if source.startswith("(?<", index) and index + 3 < len(source) and source[index + 3] not in "=!":
+            closing_bracket = source.find(">", index + 3)
+            if closing_bracket < 0:
+                raise ValueError("invalid ECMA-262 named capture")
+            source_name = _ecmascript_group_name(source[index + 3 : closing_bracket])
+            next_index = closing_bracket + 1
+        elif source.startswith("(?", index):
+            index += 1
+            continue
+
+        number = len(captures) + 1
+        semantic_name = None
+        if source_name is not None:
+            semantic_name = semantic_names.setdefault(source_name, f"n{len(semantic_names)}")
+        captures[index] = _CaptureGroup(
+            number=number,
+            source_name=source_name,
+            numeric_name=f"c{number}",
+            semantic_name=semantic_name,
+        )
+        index = next_index
+
+    return captures, semantic_names
 
 
 def _is_group_quantified(source: str, closing_index: int) -> bool:
@@ -246,20 +324,194 @@ def _is_braced_quantifier(source: str, closing_index: int) -> bool:
     )
 
 
+def _group_quantifier_can_repeat(source: str, closing_index: int) -> bool:
+    quantifier_index = closing_index + 1
+    if quantifier_index >= len(source):
+        return False
+    if source[quantifier_index] in "*+":
+        return True
+    if source[quantifier_index] == "?":
+        return False
+    if source[quantifier_index] != "{":
+        return False
+    closing_brace = source.find("}", quantifier_index + 1)
+    if closing_brace < 0:
+        return False
+    bounds = source[quantifier_index + 1 : closing_brace]
+    minimum, separator, maximum = bounds.partition(",")
+    if not minimum.isascii() or not minimum.isdecimal():
+        return False
+    if not separator:
+        return int(minimum) > 1
+    if not maximum:
+        return True
+    return maximum.isascii() and maximum.isdecimal() and int(maximum) > 1
+
+
+def _ecmascript_group_minimum_lengths(source: str) -> dict[int, int]:
+    """Return conservative zero-or-one minimum lengths for source groups."""
+
+    group_minimums: dict[int, int] = {}
+
+    def apply_quantifier(index: int, atom_minimum: int) -> tuple[int, int]:
+        if index >= len(source):
+            return atom_minimum, index
+        character = source[index]
+        if character in "*+?":
+            minimum = atom_minimum if character == "+" else 0
+            index += 1
+            if index < len(source) and source[index] == "?":
+                index += 1
+            return minimum, index
+        if character != "{":
+            return atom_minimum, index
+        closing_brace = source.find("}", index + 1)
+        if closing_brace < 0:
+            return atom_minimum, index
+        bounds = source[index + 1 : closing_brace]
+        minimum_text, separator, maximum_text = bounds.partition(",")
+        digits = frozenset("0123456789")
+        valid = (
+            bool(minimum_text)
+            and all(character in digits for character in minimum_text)
+            and (not separator or not maximum_text or all(character in digits for character in maximum_text))
+        )
+        if not valid:
+            return atom_minimum, index
+        minimum = atom_minimum if int(minimum_text) > 0 else 0
+        index = closing_brace + 1
+        if index < len(source) and source[index] == "?":
+            index += 1
+        return minimum, index
+
+    def parse_disjunction(
+        index: int,
+        *,
+        depth: int,
+        stop_at_closing_group: bool,
+    ) -> tuple[int, int]:
+        if depth > MAX_REGEX_GROUP_NESTING:
+            raise ValueError("ECMA-262 regex group nesting is too deep")
+        alternative_minimums: list[int] = []
+        branch_minimum = 0
+        while index < len(source):
+            character = source[index]
+            if stop_at_closing_group and character == ")":
+                break
+            if character == "|":
+                alternative_minimums.append(branch_minimum)
+                branch_minimum = 0
+                index += 1
+                continue
+
+            atom_minimum = 1
+            if character == "\\":
+                if index + 1 >= len(source):
+                    raise ValueError("trailing regex escape")
+                escaped = source[index + 1]
+                if escaped in {"b", "B"}:
+                    atom_minimum = 0
+                    index += 2
+                elif escaped == "k":
+                    closing_bracket = source.find(">", index + 3)
+                    if index + 2 >= len(source) or source[index + 2] != "<" or closing_bracket < 0:
+                        raise ValueError("invalid ECMA-262 named backreference")
+                    atom_minimum = 0
+                    index = closing_bracket + 1
+                elif escaped in "123456789":
+                    atom_minimum = 0
+                    index += 2
+                    while index < len(source) and source[index] in "0123456789":
+                        index += 1
+                elif escaped == "c":
+                    index += 3
+                elif escaped in {"p", "P"} and index + 2 < len(source) and source[index + 2] == "{":
+                    closing_brace = source.find("}", index + 3)
+                    if closing_brace < 0:
+                        raise ValueError("invalid ECMA-262 Unicode property escape")
+                    index = closing_brace + 1
+                else:
+                    index += 2
+            elif character == "[":
+                index += 1
+                while index < len(source):
+                    if source[index] == "\\":
+                        index += 2
+                    elif source[index] == "]":
+                        index += 1
+                        break
+                    else:
+                        index += 1
+                else:
+                    raise ValueError("unterminated character class")
+            elif character == "(":
+                opening_index = index
+                assertion = False
+                if source.startswith(("(?=", "(?!"), index):
+                    assertion = True
+                    content_start = index + 3
+                elif source.startswith(("(?<=", "(?<!"), index):
+                    assertion = True
+                    content_start = index + 4
+                elif source.startswith("(?:", index):
+                    content_start = index + 3
+                elif source.startswith("(?<", index) and index + 3 < len(source) and source[index + 3] not in "=!":
+                    closing_bracket = source.find(">", index + 3)
+                    if closing_bracket < 0:
+                        raise ValueError("invalid ECMA-262 named capture")
+                    content_start = closing_bracket + 1
+                elif source.startswith("(?", index):
+                    modifier = _ecmascript_modifier_group(source, index)
+                    if modifier is None:
+                        raise ValueError("unsupported regex group syntax")
+                    content_start = source.find(":", index + 2) + 1
+                else:
+                    content_start = index + 1
+                inner_minimum, closing_index = parse_disjunction(
+                    content_start,
+                    depth=depth + 1,
+                    stop_at_closing_group=True,
+                )
+                if closing_index >= len(source) or source[closing_index] != ")":
+                    raise ValueError("unterminated regex group")
+                atom_minimum = 0 if assertion else inner_minimum
+                group_minimums[opening_index] = atom_minimum
+                index = closing_index + 1
+            elif character in "^$":
+                atom_minimum = 0
+                index += 1
+            else:
+                index += 1
+
+            atom_minimum, index = apply_quantifier(index, atom_minimum)
+            branch_minimum = min(1, branch_minimum + atom_minimum)
+
+        alternative_minimums.append(branch_minimum)
+        return min(alternative_minimums), index
+
+    _, final_index = parse_disjunction(
+        0,
+        depth=0,
+        stop_at_closing_group=False,
+    )
+    if final_index != len(source):  # pragma: no cover - top-level parser invariant
+        raise ValueError("invalid ECMA-262 regex")
+    return group_minimums
+
+
 def _ecmascript_pattern(source: str) -> str:
     """Translate the supported ECMA-262 regex surface to ``regex`` syntax."""
 
     result: list[str] = []
-    group_names: dict[str, str] = {}
+    captures, semantic_names = _ecmascript_captures(source)
+    group_minimums = _ecmascript_group_minimum_lengths(source)
     capture_contexts: dict[str, list[tuple[tuple[int, int], ...]]] = {}
     branch_stack: list[list[int]] = [[0, 0]]
-    quantified_group_stack: list[tuple[int, set[str]]] = []
+    quantified_group_stack: list[tuple[int, int, set[str]]] = []
+    modifier_stack: list[frozenset[str]] = [frozenset()]
+    extra_group_closes: list[int] = []
     next_branch_scope = 1
-
-    def safe_group_name(name: str) -> str:
-        if name not in group_names:
-            group_names[name] = f"g{len(group_names)}"
-        return group_names[name]
+    capture_reset_edges = 0
 
     def captures_are_disjoint(
         left: tuple[tuple[int, int], ...],
@@ -270,11 +522,38 @@ def _ecmascript_pattern(source: str) -> str:
             scope in left_alternatives and left_alternatives[scope] != alternative for scope, alternative in right
         )
 
-    def push_group_scope(result_index: int) -> None:
+    def push_group_scope(
+        source_index: int,
+        result_index: int,
+        *,
+        modifier: tuple[frozenset[str], frozenset[str]] | None = None,
+        extra_closes: int = 0,
+    ) -> None:
         nonlocal next_branch_scope
         branch_stack.append([next_branch_scope, 0])
-        quantified_group_stack.append((result_index, set()))
+        quantified_group_stack.append((source_index, result_index, set()))
+        flags = set(modifier_stack[-1])
+        if modifier is not None:
+            enabled, disabled = modifier
+            flags.update(enabled)
+            flags.difference_update(disabled)
+        modifier_stack.append(frozenset(flags))
+        extra_group_closes.append(extra_closes)
         next_branch_scope += 1
+
+    def add_capture_names(*names: str) -> None:
+        nonlocal capture_reset_edges
+        for _, _, captured_names in quantified_group_stack:
+            for name in names:
+                if name in captured_names:
+                    continue
+                capture_reset_edges += 1
+                if capture_reset_edges > MAX_REGEX_CAPTURE_RESET_EDGES:
+                    raise ValueError("ECMA-262 capture reset expansion is too large")
+                captured_names.add(name)
+
+    def conditional_backreference(name: str) -> str:
+        return f"(?({name})\\g<{name}>|)"
 
     in_class = False
     class_content_start = -1
@@ -293,13 +572,14 @@ def _ecmascript_pattern(source: str) -> str:
             if source.startswith("(*", index):
                 raise ValueError("unsupported regex group syntax")
             group_result_index = len(result)
+            modifier = None
             if source.startswith("(?", index):
                 is_named_capture = (
                     source.startswith("(?<", index) and index + 3 < len(source) and source[index + 3] not in "=!"
                 )
+                modifier = _ecmascript_modifier_group(source, index)
                 if not is_named_capture and not (
-                    source.startswith(("(?:", "(?=", "(?!", "(?<=", "(?<!"), index)
-                    or _is_ecmascript_modifier_group(source, index)
+                    source.startswith(("(?:", "(?=", "(?!", "(?<=", "(?<!"), index) or modifier is not None
                 ):
                     raise ValueError("unsupported regex group syntax")
             else:
@@ -309,20 +589,29 @@ def _ecmascript_pattern(source: str) -> str:
                 closing_bracket = source.find(">", index + 3)
                 if closing_bracket < 0:
                     raise ValueError("invalid ECMA-262 named capture")
-                name = _ecmascript_group_name(source[index + 3 : closing_bracket])
+                capture = captures[index]
+                name = capture.source_name
+                if name is None or capture.semantic_name is None:  # pragma: no cover - pre-scan invariant
+                    raise ValueError("invalid ECMA-262 named capture")
                 context = tuple((scope, alternative) for scope, alternative in branch_stack)
                 if any(not captures_are_disjoint(previous, context) for previous in capture_contexts.get(name, [])):
                     raise ValueError("duplicate named captures must be in disjoint alternatives")
                 capture_contexts.setdefault(name, []).append(context)
-                safe_name = safe_group_name(name)
-                result.append(f"(?P<{safe_name}>")
-                push_group_scope(group_result_index)
-                for _, captured_names in quantified_group_stack:
-                    captured_names.add(safe_name)
+                result.append(f"(?P<{capture.numeric_name}>(?P<{capture.semantic_name}>")
+                push_group_scope(index, group_result_index, extra_closes=1)
+                add_capture_names(capture.numeric_name, capture.semantic_name)
                 index = closing_bracket + 1
                 continue
+
+            capture = captures.get(index)
+            if capture is not None:
+                result.append(f"(?P<{capture.numeric_name}>")
+                push_group_scope(index, group_result_index)
+                add_capture_names(capture.numeric_name)
+                index += 1
+                continue
             result.append(character)
-            push_group_scope(group_result_index)
+            push_group_scope(index, group_result_index, modifier=modifier)
             index += 1
             continue
         if character == "\\":
@@ -358,6 +647,15 @@ def _ecmascript_pattern(source: str) -> str:
                     result.append(rf"(?a:\{escaped})")
                 index += 2
                 continue
+            if escaped in {"p", "P"}:
+                if index + 2 >= len(source) or source[index + 2] != "{":
+                    raise ValueError("invalid ECMA-262 Unicode property escape")
+                closing_brace = source.find("}", index + 3)
+                if closing_brace < 0 or closing_brace == index + 3:
+                    raise ValueError("invalid ECMA-262 Unicode property escape")
+                result.append(source[index : closing_brace + 1])
+                index = closing_brace + 1
+                continue
             if escaped == "k":
                 if in_class or index + 2 >= len(source) or source[index + 2] != "<":
                     raise ValueError("invalid ECMA-262 named backreference")
@@ -365,16 +663,41 @@ def _ecmascript_pattern(source: str) -> str:
                 if closing_bracket < 0 or closing_bracket == index + 3:
                     raise ValueError("invalid ECMA-262 named backreference")
                 name = _ecmascript_group_name(source[index + 3 : closing_bracket])
-                safe_name = safe_group_name(name)
+                semantic_name = semantic_names.get(name)
+                if semantic_name is None:
+                    raise ValueError("invalid ECMA-262 named backreference")
                 # In ECMA-262, a backreference to a capture that has not
                 # participated (including a forward reference) matches the
                 # empty string. Python's regex engine needs an explicit
                 # conditional to preserve that behavior.
-                result.append(f"(?({safe_name})\\g<{safe_name}>|)")
+                result.append(conditional_backreference(semantic_name))
                 index = closing_bracket + 1
                 continue
-            if escaped.isascii() and escaped.isalpha() and escaped not in _ECMASCRIPT_PASSTHROUGH_ESCAPES:
-                raise ValueError("unsupported ECMA-262 regex escape")
+            if escaped in "0123456789":
+                decimal_end = index + 2
+                while decimal_end < len(source) and source[decimal_end] in "0123456789":
+                    decimal_end += 1
+                decimal = source[index + 1 : decimal_end]
+                if decimal.startswith("0"):
+                    if len(decimal) != 1:
+                        raise ValueError("invalid ECMA-262 decimal escape")
+                    result.append(r"\x00")
+                else:
+                    capture_number = int(decimal)
+                    if in_class or capture_number > len(captures):
+                        raise ValueError("invalid ECMA-262 numeric backreference")
+                    result.append(conditional_backreference(f"c{capture_number}"))
+                index = decimal_end
+                continue
+            if escaped.isascii() and escaped.isalpha():
+                if escaped not in _ECMASCRIPT_PASSTHROUGH_ESCAPES:
+                    raise ValueError("unsupported ECMA-262 regex escape")
+                result.extend((character, escaped))
+                index += 2
+                continue
+            identity_escapes = _ECMASCRIPT_CLASS_IDENTITY_ESCAPES if in_class else _ECMASCRIPT_IDENTITY_ESCAPES
+            if escaped not in identity_escapes:
+                raise ValueError("invalid ECMA-262 identity escape")
             result.extend((character, escaped))
             index += 2
             continue
@@ -394,8 +717,16 @@ def _ecmascript_pattern(source: str) -> str:
         elif not in_class and character == ")":
             if len(branch_stack) > 1 and quantified_group_stack:
                 branch_stack.pop()
-                group_result_index, captured_names = quantified_group_stack.pop()
-                result.append(character)
+                group_source_index, group_result_index, captured_names = quantified_group_stack.pop()
+                modifier_stack.pop()
+                extra_closes = extra_group_closes.pop()
+                result.append(")" * (1 + extra_closes))
+                if (
+                    captured_names
+                    and _group_quantifier_can_repeat(source, index)
+                    and group_minimums.get(group_source_index, 0) == 0
+                ):
+                    raise ValueError("nullable quantified capture groups are unsupported")
                 if captured_names and _is_group_quantified(source, index):
                     resets = "".join(f"(?P<{name}>)" for name in sorted(captured_names))
                     result.insert(group_result_index, f"(?:{resets}")
@@ -403,15 +734,29 @@ def _ecmascript_pattern(source: str) -> str:
             else:
                 result.append(character)
         elif not in_class and character == ".":
-            result.append(r"[^\n\r\u2028\u2029]")
+            if "s" in modifier_stack[-1]:
+                result.append(r"[\s\S]")
+            else:
+                result.append(f"[^{_ECMASCRIPT_LINE_TERMINATORS}]")
+        elif not in_class and character == "^":
+            if "m" in modifier_stack[-1]:
+                result.append(f"(?:\\A|(?<=[{_ECMASCRIPT_LINE_TERMINATORS}]))")
+            else:
+                result.append(r"\A")
         elif not in_class and character == "$":
-            result.append(r"\Z")
+            if "m" in modifier_stack[-1]:
+                result.append(f"(?:\\Z|(?=[{_ECMASCRIPT_LINE_TERMINATORS}]))")
+            else:
+                result.append(r"\Z")
         else:
             result.append(character)
         index += 1
     if in_class:
         raise ValueError("unterminated character class")
-    return "".join(result)
+    translated = "".join(result)
+    if len(translated) > MAX_REGEX_TRANSLATED_CHARACTERS:
+        raise ValueError("translated ECMA-262 pattern is too large")
+    return translated
 
 
 def is_supported_regex(value: object) -> bool:
