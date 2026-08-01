@@ -231,78 +231,85 @@ def _scan_filter(filter_text: str, *, deterministic: bool) -> None:
             index -= 1
         return filter_text[index] if index >= 0 else None
 
-    def scan_string(index: int) -> int:
-        while index < len(filter_text):
-            char = filter_text[index]
+    # ``None`` represents a string. ``-1`` represents top-level code, while a
+    # non-negative integer tracks unmatched parentheses inside an
+    # interpolation. An explicit stack keeps valid, deeply nested filters from
+    # consuming the Python call stack before jq sees them.
+    contexts: list[int | None] = [-1]
+    index = 0
+    while index < len(filter_text) and contexts:
+        parentheses = contexts[-1]
+        char = filter_text[index]
+
+        if parentheses is None:
             if char == '"':
-                return index + 1
+                contexts.pop()
+                index += 1
+                continue
             if char != "\\":
                 index += 1
                 continue
             if index + 1 >= len(filter_text):
-                return len(filter_text)
+                return
             if filter_text[index + 1] == "(":
-                index = scan_code(index + 2, interpolation=True)
+                contexts.append(0)
+                index += 2
             else:
                 index += 2
-        return index
+            continue
 
-    def scan_code(index: int, *, interpolation: bool) -> int:
-        parentheses = 0
-        while index < len(filter_text):
-            char = filter_text[index]
-            if char == "#":
-                newline = filter_text.find("\n", index + 1)
-                if newline < 0:
-                    return len(filter_text)
-                index = newline + 1
-                continue
-            if char == '"':
-                index = scan_string(index + 1)
-                continue
-            if char == "(":
-                parentheses += 1
-                index += 1
-                continue
-            if char == ")" and interpolation:
-                if parentheses == 0:
-                    return index + 1
-                parentheses -= 1
-                index += 1
-                continue
-            if char == "$":
-                end = index + 1
-                while end < len(filter_text) and (filter_text[end] == "_" or filter_text[end].isalnum()):
-                    end += 1
-                variable = filter_text[index + 1 : end]
-                if variable in _FORBIDDEN_VARIABLES:
-                    raise _rendering_error(
-                        "jq environment access is disabled",
-                        code="jq_filter_forbidden",
-                        token=f"${variable}",
-                    )
-                index = max(end, index + 1)
-                continue
-            if char == "_" or char.isalpha():
-                end = index + 1
-                while end < len(filter_text) and (filter_text[end] == "_" or filter_text[end].isalnum()):
-                    end += 1
-                identifier = filter_text[index:end]
-                forbidden = identifier in _FORBIDDEN_IDENTIFIERS or (
-                    deterministic and identifier in _NONDETERMINISTIC_IDENTIFIERS
-                )
-                if forbidden and previous_significant(index) != ".":
-                    raise _rendering_error(
-                        "jq host-dependent and nondeterministic builtins are disabled",
-                        code="jq_filter_forbidden",
-                        token=identifier,
-                    )
-                index = end
-                continue
+        if char == "#":
+            newline = filter_text.find("\n", index + 1)
+            if newline < 0:
+                return
+            index = newline + 1
+            continue
+        if char == '"':
+            contexts.append(None)
             index += 1
-        return index
-
-    scan_code(0, interpolation=False)
+            continue
+        if char == "(":
+            if parentheses >= 0:
+                contexts[-1] = parentheses + 1
+            index += 1
+            continue
+        if char == ")" and parentheses >= 0:
+            if parentheses == 0:
+                contexts.pop()
+            else:
+                contexts[-1] = parentheses - 1
+            index += 1
+            continue
+        if char == "$":
+            end = index + 1
+            while end < len(filter_text) and (filter_text[end] == "_" or filter_text[end].isalnum()):
+                end += 1
+            variable = filter_text[index + 1 : end]
+            if variable in _FORBIDDEN_VARIABLES:
+                raise _rendering_error(
+                    "jq environment access is disabled",
+                    code="jq_filter_forbidden",
+                    token=f"${variable}",
+                )
+            index = max(end, index + 1)
+            continue
+        if char == "_" or char.isalpha():
+            end = index + 1
+            while end < len(filter_text) and (filter_text[end] == "_" or filter_text[end].isalnum()):
+                end += 1
+            identifier = filter_text[index:end]
+            forbidden = identifier in _FORBIDDEN_IDENTIFIERS or (
+                deterministic and identifier in _NONDETERMINISTIC_IDENTIFIERS
+            )
+            if forbidden and previous_significant(index) != ".":
+                raise _rendering_error(
+                    "jq host-dependent and nondeterministic builtins are disabled",
+                    code="jq_filter_forbidden",
+                    token=identifier,
+                )
+            index = end
+            continue
+        index += 1
 
 
 def _protocol_error(reason: str, **details: object) -> RenderingError:

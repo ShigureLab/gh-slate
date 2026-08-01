@@ -120,6 +120,7 @@ _PUBLIC_FILTERS = frozenset({"compact_json", "md_list", "md_table"})
 _LOOP_GUARD_FILTER = "__gh_slate_loop_guard"
 _MAX_AST_DEPTH = 64
 _TARGET_CONTEXT_FIELDS = frozenset({"repository", "number", "url"})
+_RESERVED_CONTEXT_NAMES = frozenset({"data", "slate"})
 
 _FORBIDDEN_NODES = (
     nodes.Add,
@@ -380,6 +381,20 @@ def _validated_syntax_tree(
             "Jinja template uses a disabled construct",
             code="jinja_construct_forbidden",
             details={"node": "RecursiveFor"},
+        )
+    shadowed_context = next(
+        (
+            node
+            for node in all_nodes
+            if isinstance(node, nodes.Name) and node.ctx in {"param", "store"} and node.name in _RESERVED_CONTEXT_NAMES
+        ),
+        None,
+    )
+    if shadowed_context is not None:
+        raise RenderingError(
+            "Jinja template cannot shadow a reserved context name",
+            code="jinja_construct_forbidden",
+            details={"name": shadowed_context.name},
         )
     unknown_filter = next(
         (node.name for node in all_nodes if isinstance(node, nodes.Filter) and node.name not in _PUBLIC_FILTERS),

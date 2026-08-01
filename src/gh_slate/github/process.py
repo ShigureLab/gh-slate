@@ -136,6 +136,7 @@ class SubprocessRunner:
             environment["GH_HOST"] = hostname
         process, process_tree = _spawn_process(argv, environment=environment)
         deadline = time.monotonic() + timeout
+        operation_failed = False
         try:
             if process.stdout is None or process.stderr is None:  # pragma: no cover
                 _kill_process_tree(process, process_tree=process_tree)
@@ -223,7 +224,12 @@ class SubprocessRunner:
             except BaseException:
                 cleanup_after_failure()
                 raise
-            if not join_readers(deadline):
+            try:
+                readers_joined = join_readers(deadline)
+            except BaseException:
+                cleanup_after_failure()
+                raise
+            if not readers_joined:
                 kill()
                 reap()
                 join_readers(time.monotonic() + _PROCESS_CLEANUP_TIMEOUT_SECONDS)
@@ -240,9 +246,18 @@ class SubprocessRunner:
                 stdout=bytes(stdout),
                 stderr=stderr_bytes,
             )
+        except BaseException:
+            operation_failed = True
+            raise
         finally:
             if process_tree is not None:
-                process_tree.close()
+                try:
+                    process_tree.close()
+                except BaseException:
+                    # Teardown must not replace the timeout, interruption, or
+                    # output failure that already made the outcome relevant.
+                    if not operation_failed:
+                        raise
 
 
 def _error(message: str, *, code: str, **details: object) -> GhSlateError:

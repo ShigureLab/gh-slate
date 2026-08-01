@@ -299,62 +299,64 @@ def _require_jq_identity_roundtrip(
 
 def _jq_number_literals(filter_text: str) -> tuple[tuple[str, int], ...]:
     literals: list[tuple[str, int]] = []
+    contexts: list[int | None] = [-1]
+    index = 0
+    while index < len(filter_text) and contexts:
+        parentheses = contexts[-1]
+        char = filter_text[index]
 
-    def scan_string(index: int) -> int:
-        while index < len(filter_text):
-            char = filter_text[index]
+        if parentheses is None:
             if char == '"':
-                return index + 1
+                contexts.pop()
+                index += 1
+                continue
             if char != "\\":
                 index += 1
                 continue
             if index + 1 >= len(filter_text):
-                return len(filter_text)
+                break
             if filter_text[index + 1] == "(":
-                index = scan_code(index + 2, interpolation=True)
+                contexts.append(0)
+                index += 2
             else:
                 index += 2
-        return index
+            continue
 
-    def scan_code(index: int, *, interpolation: bool) -> int:
-        parentheses = 0
-        while index < len(filter_text):
-            char = filter_text[index]
-            if char == "#":
-                newline = filter_text.find("\n", index + 1)
-                if newline < 0:
-                    return len(filter_text)
-                index = newline + 1
-                continue
-            if char == '"':
-                index = scan_string(index + 1)
-                continue
-            if char == "(":
-                parentheses += 1
-                index += 1
-                continue
-            if char == ")" and interpolation:
-                if parentheses == 0:
-                    return index + 1
-                parentheses -= 1
-                index += 1
-                continue
-            if char == "$" or char == "_" or char.isalpha():
-                end = index + 1
-                while end < len(filter_text) and (filter_text[end] == "_" or filter_text[end].isalnum()):
-                    end += 1
-                index = end
-                continue
-            if char.isdigit() or (char == "-" and index + 1 < len(filter_text) and filter_text[index + 1].isdigit()):
-                matched = _JQ_NUMBER_LITERAL.match(filter_text, index)
-                if matched is not None:
-                    literals.append((matched.group(), index))
-                    index = matched.end()
-                    continue
+        if char == "#":
+            newline = filter_text.find("\n", index + 1)
+            if newline < 0:
+                break
+            index = newline + 1
+            continue
+        if char == '"':
+            contexts.append(None)
             index += 1
-        return index
-
-    scan_code(0, interpolation=False)
+            continue
+        if char == "(":
+            if parentheses >= 0:
+                contexts[-1] = parentheses + 1
+            index += 1
+            continue
+        if char == ")" and parentheses >= 0:
+            if parentheses == 0:
+                contexts.pop()
+            else:
+                contexts[-1] = parentheses - 1
+            index += 1
+            continue
+        if char == "$" or char == "_" or char.isalpha():
+            end = index + 1
+            while end < len(filter_text) and (filter_text[end] == "_" or filter_text[end].isalnum()):
+                end += 1
+            index = end
+            continue
+        if char.isdigit() or (char == "-" and index + 1 < len(filter_text) and filter_text[index + 1].isdigit()):
+            matched = _JQ_NUMBER_LITERAL.match(filter_text, index)
+            if matched is not None:
+                literals.append((matched.group(), index))
+                index = matched.end()
+                continue
+        index += 1
     return tuple(literals)
 
 

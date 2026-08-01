@@ -84,6 +84,47 @@ def test_detects_target_dependent_slate_context_access(
     assert jinja_target_fields(source) == expected
 
 
+@pytest.mark.parametrize(
+    ("source", "name"),
+    [
+        (
+            "{% for slate in data.rows %}{{ slate.repository }}{% endfor %}",
+            "slate",
+        ),
+        ("{% set slate = data.row %}{{ slate.repository }}", "slate"),
+        (
+            "{% for data in data.rows %}{{ data.repository }}{% endfor %}",
+            "data",
+        ),
+        ("{% set data = 1 %}{{ data }}", "data"),
+    ],
+)
+def test_rejects_shadowing_reserved_context_names(source: str, name: str) -> None:
+    with pytest.raises(RenderingError) as analysis_error:
+        jinja_target_fields(source)
+    assert analysis_error.value.code == "jinja_construct_forbidden"
+    assert analysis_error.value.details == {"name": name}
+
+    with pytest.raises(RenderingError) as rendering_error:
+        render_jinja(
+            source,
+            data={"row": {"repository": "local"}, "rows": []},
+            slate=slate(),
+        )
+    assert rendering_error.value.code == "jinja_construct_forbidden"
+    assert rendering_error.value.details == {"name": name}
+
+
+def test_allows_non_reserved_local_assignments() -> None:
+    rendered = render_jinja(
+        "{% set item = data.row %}{{ item.name }}",
+        data={"row": {"name": "linux"}},
+        slate=slate(),
+    )
+
+    assert rendered == "linux"
+
+
 def test_rendering_is_deterministic() -> None:
     source = "{{ data.metadata | compact_json }}"
     data = {"metadata": {"z": Decimal("1E+22"), "a": Decimal("-0.00")}}

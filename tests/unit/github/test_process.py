@@ -435,6 +435,189 @@ def test_default_runner_reaps_process_group_when_wait_is_interrupted(
     assert process.wait_calls == 2
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups are unavailable on Windows")
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt(), SystemExit(130)])
+def test_default_runner_reaps_process_group_when_reader_join_is_interrupted(
+    monkeypatch: pytest.MonkeyPatch,
+    interruption: BaseException,
+) -> None:
+    calls: list[tuple[int, signal.Signals]] = []
+
+    class Process:
+        pid = 654
+        stdout = io.BytesIO(b"{}")
+        stderr = io.BytesIO(b"")
+        wait_calls = 0
+        killed = 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.wait_calls += 1
+            return 0 if self.wait_calls == 1 else -signal.SIGKILL
+
+        def kill(self) -> None:
+            self.killed += 1
+
+    process = Process()
+    original_join = threading.Thread.join
+    join_calls = 0
+
+    def interrupt_first_join(
+        thread: threading.Thread,
+        timeout: float | None = None,
+    ) -> None:
+        nonlocal join_calls
+        join_calls += 1
+        if join_calls == 1:
+            raise interruption
+        original_join(thread, timeout=timeout)
+
+    monkeypatch.setattr(
+        process_module,
+        "_spawn_process",
+        lambda argv, *, environment: (
+            cast("subprocess.Popen[bytes]", process),
+            None,
+        ),
+    )
+    monkeypatch.setattr(threading.Thread, "join", interrupt_first_join)
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: calls.append((pid, sig)))
+
+    with pytest.raises(type(interruption)) as caught:
+        SubprocessRunner().run(
+            ("gh", "version"),
+            timeout=1,
+            hostname=None,
+            max_stdout_bytes=1024,
+            max_stderr_bytes=1024,
+        )
+
+    assert caught.value is interruption
+    assert calls == [(654, signal.SIGKILL)]
+    assert process.killed == 1
+    assert process.wait_calls == 2
+    assert join_calls == 3
+
+
+def test_default_runner_preserves_join_interruption_when_tree_close_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    interruption = KeyboardInterrupt()
+
+    class Process:
+        stdout = io.BytesIO(b"{}")
+        stderr = io.BytesIO(b"")
+        wait_calls = 0
+        killed = 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.wait_calls += 1
+            return 0
+
+        def kill(self) -> None:
+            self.killed += 1
+
+    class ProcessTree:
+        terminated = 0
+        closed = 0
+
+        def terminate(self) -> None:
+            self.terminated += 1
+
+        def close(self) -> None:
+            self.closed += 1
+            raise SystemExit(99)
+
+        def launch_error(self, stderr: bytes) -> OSError | None:
+            return None
+
+    process = Process()
+    process_tree = ProcessTree()
+    original_join = threading.Thread.join
+    join_calls = 0
+
+    def interrupt_first_join(
+        thread: threading.Thread,
+        timeout: float | None = None,
+    ) -> None:
+        nonlocal join_calls
+        join_calls += 1
+        if join_calls == 1:
+            raise interruption
+        original_join(thread, timeout=timeout)
+
+    monkeypatch.setattr(
+        process_module,
+        "_spawn_process",
+        lambda argv, *, environment: (
+            cast("subprocess.Popen[bytes]", process),
+            cast("process_module._ProcessTree", process_tree),
+        ),
+    )
+    monkeypatch.setattr(threading.Thread, "join", interrupt_first_join)
+
+    with pytest.raises(KeyboardInterrupt) as caught:
+        SubprocessRunner().run(
+            ("gh", "version"),
+            timeout=1,
+            hostname=None,
+            max_stdout_bytes=1024,
+            max_stderr_bytes=1024,
+        )
+
+    assert caught.value is interruption
+    assert process_tree.terminated == 1
+    assert process_tree.closed == 1
+    assert process.killed == 1
+    assert process.wait_calls == 2
+    assert join_calls == 3
+
+
+def test_default_runner_propagates_tree_close_failure_after_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    close_error = OSError("process tree close failed")
+
+    class Process:
+        stdout = io.BytesIO(b"{}")
+        stderr = io.BytesIO(b"")
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+        def kill(self) -> None:
+            pass
+
+    class ProcessTree:
+        def terminate(self) -> None:
+            pass
+
+        def close(self) -> None:
+            raise close_error
+
+        def launch_error(self, stderr: bytes) -> OSError | None:
+            return None
+
+    monkeypatch.setattr(
+        process_module,
+        "_spawn_process",
+        lambda argv, *, environment: (
+            cast("subprocess.Popen[bytes]", Process()),
+            cast("process_module._ProcessTree", ProcessTree()),
+        ),
+    )
+
+    with pytest.raises(OSError) as caught:
+        SubprocessRunner().run(
+            ("gh", "version"),
+            timeout=1,
+            hostname=None,
+            max_stdout_bytes=1024,
+            max_stderr_bytes=1024,
+        )
+
+    assert caught.value is close_error
+
+
 def test_process_tree_kill_uses_retained_windows_job_after_leader_exit() -> None:
     class Process:
         pid = 456
