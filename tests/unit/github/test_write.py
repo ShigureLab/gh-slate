@@ -805,7 +805,14 @@ def test_default_write_runner_wait_uses_budget_remaining_after_worker_setup(
         clock[0] += 0.1
         real_start(worker)
 
-    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(
+        write_module,
+        "_spawn_process",
+        lambda argv, *, environment, stdin: (
+            cast("subprocess.Popen[bytes]", process),
+            None,
+        ),
+    )
     monkeypatch.setattr(threading.Thread, "start", start)
     monkeypatch.setattr(time, "monotonic", lambda: clock[0])
 
