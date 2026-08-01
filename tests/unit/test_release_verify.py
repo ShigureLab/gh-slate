@@ -1421,7 +1421,10 @@ def test_all_repository_workflow_actions_use_immutable_commit_shas() -> None:
                 )
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="workflow shell validation requires Bash")
+@pytest.mark.skipif(
+    os.name == "nt" or shutil.which("bash") is None,
+    reason="workflow shell validation requires Unix Bash",
+)
 def test_release_workflow_shell_blocks_are_syntactically_valid() -> None:
     for workflow in (_candidate_workflow(), _workflow()):
         for job in workflow["jobs"].values():
