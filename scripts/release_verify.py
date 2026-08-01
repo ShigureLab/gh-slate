@@ -497,14 +497,23 @@ find_recovery_terminal() {{
 resolve_ready_recovery_target() {{
   local attempt
   local candidate
+  local recovery_root
   recovery_target=""
-  for (( attempt = 0; attempt < 4; attempt++ )); do
-    [[ -L "${{recovery_link}}" && -f "${{recovery_link}}/.ready" ]] || continue
-    candidate="$(cd -- "${{recovery_link}}" 2>/dev/null && pwd -P)" || continue
-    is_recovery_stage_path "${{candidate}}" || return 1
-    [[ -f "${{candidate}}/.ready" ]] || continue
-    recovery_target="${{candidate}}"
-    return 0
+  [[ -L "${{recovery_link}}" ]] || return 1
+  recovery_root="$(readlink "${{recovery_link}}")" || return 1
+  is_recovery_stage_path "${{recovery_root}}" || return 1
+  for (( attempt = 0; attempt < 500; attempt++ )); do
+    if [[ -L "${{recovery_link}}" && -f "${{recovery_link}}/.ready" ]]; then
+      candidate="$(cd -- "${{recovery_link}}" 2>/dev/null && pwd -P)" || candidate=""
+      if [[ -n "${{candidate}}" ]]; then
+        is_recovery_stage_path "${{candidate}}" || return 1
+        if [[ -f "${{candidate}}/.ready" ]]; then
+          recovery_target="${{candidate}}"
+          return 0
+        fi
+      fi
+    fi
+    sleep 0.01
   done
   return 1
 }}

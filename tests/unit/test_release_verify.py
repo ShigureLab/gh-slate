@@ -644,6 +644,33 @@ def test_extension_asset_re_elects_a_dangling_recovery_chain(
     assert install.is_symlink() and not install.exists()
     assert recovery.is_symlink() and not recovery.exists()
 
+    real_ln = shutil.which("ln")
+    assert real_ln is not None
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_ln = fake_bin / "ln"
+    fake_ln.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+destination="${@: -1}"
+if [[ "${destination}" == "${GH_SLATE_DELAYED_RECOVERY_TERMINAL}" ]]; then
+  if mkdir "${GH_SLATE_RECOVERY_CLAIM_GATE}" 2>/dev/null; then
+    sleep 0.25
+    exec "${GH_SLATE_REAL_LN}" "$@"
+  fi
+  exit 1
+fi
+exec "${GH_SLATE_REAL_LN}" "$@"
+""",
+        encoding="utf-8",
+    )
+    fake_ln.chmod(0o755)
+    original_path = environment["PATH"]
+    environment["PATH"] = f"{fake_bin}{os.pathsep}{original_path}"
+    environment["GH_SLATE_REAL_LN"] = real_ln
+    environment["GH_SLATE_DELAYED_RECOVERY_TERMINAL"] = str(first_stage)
+    environment["GH_SLATE_RECOVERY_CLAIM_GATE"] = str(tmp_path / "recovery-claim-gate")
+
     with ThreadPoolExecutor(max_workers=8) as executor:
         results = tuple(executor.map(lambda _index: invoke(), range(8)))
 
@@ -658,6 +685,11 @@ def test_extension_asset_re_elects_a_dangling_recovery_chain(
         path for path in install_root.iterdir() if path.name.startswith(f".{VERSION}-{digest}.stage.")
     )
     assert stage_entries == (second_stage,)
+
+    environment["PATH"] = original_path
+    environment.pop("GH_SLATE_REAL_LN")
+    environment.pop("GH_SLATE_DELAYED_RECOVERY_TERMINAL")
+    environment.pop("GH_SLATE_RECOVERY_CLAIM_GATE")
 
     current_stage = second_stage
     for _attempt in range(20):
