@@ -69,7 +69,8 @@ gh extension command    gh slate
 
 The bundled skill teaches an agent the safe inspect/dry-run/mutate/verify
 workflow. Installing the CLI does not install the skill, and installing the
-skill does not install the CLI:
+skill does not install the CLI. With Node.js/npm available, install it through
+the cross-agent `skills` CLI:
 
 ```bash
 npx skills add https://github.com/ShigureLab/gh-slate --skill gh-slate
