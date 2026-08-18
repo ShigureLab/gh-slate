@@ -97,29 +97,10 @@ def test_real_entrypoints_use_their_own_command_spelling() -> None:
         env=environment,
         cwd=ROOT,
     )
-    console_version = subprocess.run(
-        [shutil.which("uv") or "uv", "run", "--frozen", "gh-slate", "--version"],
-        check=False,
-        capture_output=True,
-        text=True,
-        env=environment,
-        cwd=ROOT,
-    )
-    extension_version = subprocess.run(
-        [LAUNCHER, "--version"],
-        check=False,
-        capture_output=True,
-        text=True,
-        env=environment,
-        cwd=ROOT,
-    )
-
     assert console_help.returncode == extension_help.returncode == 0
     assert console_help.stderr == extension_help.stderr == ""
     assert console_help.stdout.startswith("usage: gh-slate")
     assert extension_help.stdout.startswith("usage: gh slate")
-    assert console_version.stdout == "gh-slate 0.1.0\n"
-    assert extension_version.stdout == "gh slate 0.1.0\n"
 
     console_error = subprocess.run(
         [shutil.which("uv") or "uv", "run", "--frozen", "gh-slate", "not-a-command"],

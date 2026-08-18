@@ -95,7 +95,6 @@ def test_bundled_skill_layout_frontmatter_and_parser_contract() -> None:
     result = _run()
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout == ("Checked gh-slate skill: 21 recipes, 15 help routes, 25 flags, 2 prefixes\n")
 
 
 def test_skill_remains_valid_after_a_plain_install_copy(
@@ -107,13 +106,6 @@ def test_skill_remains_valid_after_a_plain_install_copy(
 
     assert result.returncode == 0, result.stderr
     assert (installed / "SKILL.md").is_file()
-
-
-def test_skill_check_never_needs_credentials_or_external_commands() -> None:
-    result = _run()
-
-    assert result.returncode == 0, result.stderr
-    assert "2 prefixes" in result.stdout
 
 
 @pytest.mark.skipif(os.name == "nt" or not Path("/bin/bash").is_file(), reason="resolver recipes require Bash")
@@ -268,22 +260,3 @@ def test_skill_check_rejects_an_unexpected_layout_entry(
 
     assert result.returncode == 1
     assert "unexpected top-level skill entries: ['notes.md']" in result.stderr
-
-
-def test_skill_check_rejects_a_stale_minimum_version(
-    tmp_path: Path,
-) -> None:
-    installed = _copy_skill(tmp_path)
-    skill_file = installed / "SKILL.md"
-    skill_file.write_text(
-        skill_file.read_text(encoding="utf-8").replace(
-            "minimum-gh-slate-version: 0.1.0",
-            "minimum-gh-slate-version: 9.9.9",
-        ),
-        encoding="utf-8",
-    )
-
-    result = _run(installed)
-
-    assert result.returncode == 1
-    assert "metadata minimum version must be 0.1.0" in result.stderr

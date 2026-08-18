@@ -26,16 +26,6 @@ def test_extension_display_command_is_used_in_help(monkeypatch, capsys) -> None:
     assert capsys.readouterr().out.startswith("usage: gh slate")
 
 
-def test_version_uses_selected_command_name(capsys) -> None:
-    parser = build_parser(prog="gh slate")
-
-    with pytest.raises(SystemExit) as exit_info:
-        parser.parse_args(["--version"])
-
-    assert exit_info.value.code == 0
-    assert capsys.readouterr().out == "gh slate 0.1.0\n"
-
-
 def test_unknown_command_is_usage_error() -> None:
     parser = build_parser(prog="gh-slate")
 

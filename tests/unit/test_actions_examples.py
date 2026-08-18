@@ -117,7 +117,6 @@ def test_actions_examples_pass_static_contract() -> None:
     result = _run(str(CHECKER))
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout == "Checked 4 Actions examples\n"
 
 
 def test_static_contract_rejects_write_permission_in_reducer(

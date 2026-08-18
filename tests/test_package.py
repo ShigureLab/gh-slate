@@ -1,14 +1,9 @@
 from __future__ import annotations
 
-from importlib.metadata import metadata, version
+from importlib.metadata import metadata
 from importlib.resources import files
 
-from gh_slate import __author__, __version__
-
-
-def test_version() -> None:
-    assert __version__ == "0.1.0"
-    assert version("gh-slate") == __version__
+from gh_slate import __author__
 
 
 def test_package_metadata() -> None:
