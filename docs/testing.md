@@ -19,6 +19,10 @@ succeed or produce the same structured `GhSlateError` on repeated attempts. A
 new decoder bug should be reduced to a small corpus entry with its stable error
 code.
 
+Pull requests run the complete deterministic suite on every supported Python
+version on Linux, plus lint, formatting, and package smoke checks. Superseded
+runs for the same pull request are cancelled.
+
 `tests/integration/test_recovery_e2e.py` runs the real `gh-slate` extension
 launcher in subprocesses. A persistent fake `gh` executable records every API
 read and write, supports faults before and after a request is committed, and
