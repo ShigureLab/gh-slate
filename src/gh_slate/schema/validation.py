@@ -558,7 +558,7 @@ def validate_data(
         _project_false_schemas(to_validator_value(snapshot.document)),
     )
     validator_data = to_validator_value(frozen)
-    registry: Registry[object] = Registry(retrieve=_deny_retrieve)
+    registry: Registry = Registry(retrieve=_deny_retrieve)
     schema_locations = _schema_locations(validator_schema)
     try:
         with evaluation_budget():

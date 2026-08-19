@@ -85,7 +85,7 @@ The release path separates unprivileged candidate execution from publishing:
    and every Action reference is a full commit SHA.
 2. Only a successful candidate run can trigger `release.yml`. Its read-only
    source-rebuild job checks out the exact candidate SHA and uses pinned
-   `uv 0.11.28`, offline mode, and a fixed source epoch to rebuild the wheel and
+   `uv 0.12.5`, offline mode, and a fixed source epoch to rebuild the wheel and
    sdist independently.
 3. The intake verifier is checked out at the immutable `workflow_sha`, not the
    moving default-branch tip. It fetches the canonical candidate workflow and

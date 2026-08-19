@@ -244,7 +244,7 @@ _NO_PROJECTION_INSTANCES = _ProjectionInstances()
 
 def _schema_matches(
     schema: bool | Mapping[str, object],
-    resolver: Resolver[object],
+    resolver: Resolver,
     instance: object,
 ) -> bool | None:
     if isinstance(schema, bool):
@@ -273,7 +273,7 @@ def _schema_matches(
 
 def _projects_for_instances(
     schema: bool | Mapping[str, object],
-    resolver: Resolver[object],
+    resolver: Resolver,
     instances: _ProjectionInstances,
 ) -> bool:
     if not instances.values:
@@ -292,11 +292,11 @@ class _SchemaProjection:
     def parts(
         self,
         schema: object,
-        resolver: Resolver[object],
+        resolver: Resolver,
         *,
         instances: _ProjectionInstances = _NO_PROJECTION_INSTANCES,
         active: frozenset[int] = frozenset(),
-    ) -> tuple[tuple[Mapping[str, object], Resolver[object]], ...]:
+    ) -> tuple[tuple[Mapping[str, object], Resolver], ...]:
         if not isinstance(schema, Mapping):
             return ()
         typed = cast("Mapping[str, object]", schema)
@@ -308,7 +308,7 @@ class _SchemaProjection:
             DRAFT202012.create_resource(typed),
         )
         next_active = active | {identity}
-        result: list[tuple[Mapping[str, object], Resolver[object]]] = []
+        result: list[tuple[Mapping[str, object], Resolver]] = []
 
         # Draft 2020-12 permits siblings next to references. Expand the
         # referenced base first, then retain this schema's own annotations.
@@ -421,16 +421,16 @@ def _project_table_item_schema(
 
     root = snapshot.document
     projection = _SchemaProjection()
-    resolver: Resolver[object] = Registry(
+    resolver: Resolver = Registry(
         retrieve=_deny_schema_retrieve,
     ).resolver_with_root(
         DRAFT202012.create_resource(root),
     )
-    candidates: tuple[tuple[object, Resolver[object], _ProjectionInstances], ...] = (
+    candidates: tuple[tuple[object, Resolver, _ProjectionInstances], ...] = (
         (root, resolver, _ProjectionInstances((data,))),
     )
     for key in path:
-        next_candidates: list[tuple[object, Resolver[object], _ProjectionInstances]] = []
+        next_candidates: list[tuple[object, Resolver, _ProjectionInstances]] = []
         for candidate, candidate_resolver, candidate_instances in candidates:
             for fragment, fragment_resolver in projection.parts(
                 candidate,
@@ -507,7 +507,7 @@ def _project_table_item_schema(
             return None
         candidates = tuple(next_candidates)
 
-    item_candidates: list[tuple[object, Resolver[object], _ProjectionInstances]] = []
+    item_candidates: list[tuple[object, Resolver, _ProjectionInstances]] = []
     for candidate, candidate_resolver, candidate_instances in candidates:
         for fragment, fragment_resolver in projection.parts(
             candidate,
