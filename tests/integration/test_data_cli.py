@@ -12,8 +12,7 @@ from gh_slate.commands import (
     data as data_commands,
     schema as schema_commands,
 )
-from gh_slate.github.apply import ApplyResult, ApplyTransaction
-from gh_slate.github.mutation import MutationRequest, MutationTransaction
+from gh_slate.github.apply import ApplyTransaction
 from gh_slate.github.process import GhProcess, ProcessResult
 from gh_slate.github.write import GhWriteProcess
 
@@ -165,72 +164,47 @@ class WriteRunner:
         )
 
 
-@dataclass(slots=True)
-class MutationSession:
-    reader: GhProcess
-    transaction: MutationTransaction
-
-    def mutate(self, request: MutationRequest) -> ApplyResult:
-        return self.transaction.mutate(request)
-
-
-def test_data_and_schema_cli_round_trip_through_fake_github(
+def test_snapshot_only_data_and_schema_round_trip_through_fake_github(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     backend = FakeGhBackend()
     reader = GhProcess(runner=ReadRunner(backend))
-    writer = GhWriteProcess(runner=WriteRunner(backend))
     applier = ApplyTransaction(
         reader=reader,
-        writer=writer,
+        writer=GhWriteProcess(runner=WriteRunner(backend)),
     )
-    session = MutationSession(
-        reader=reader,
-        transaction=MutationTransaction(
-            reader=reader,
-            applier=applier,
-        ),
-    )
-    monkeypatch.setattr(
-        apply_commands,
-        "_new_transaction",
-        lambda: applier,
-    )
-    monkeypatch.setattr(
-        data_commands,
-        "_new_process",
-        lambda: reader,
-    )
-    monkeypatch.setattr(
-        data_commands,
-        "_new_mutation_session",
-        lambda: session,
-    )
-    monkeypatch.setattr(
-        schema_commands,
-        "_new_process",
-        lambda: reader,
-    )
-    monkeypatch.setattr(
-        schema_commands,
-        "_new_mutation_session",
-        lambda: session,
-    )
+    monkeypatch.setattr(apply_commands, "_new_transaction", lambda: applier)
+    monkeypatch.setattr(data_commands, "_new_process", lambda: reader)
+    monkeypatch.setattr(schema_commands, "_new_process", lambda: reader)
 
     data_file = tmp_path / "data.json"
     data_file.write_text(
+        '{"items":[{"name":"linux"}],"metrics":{"count":1}}',
+        encoding="utf-8",
+    )
+    schema_file = tmp_path / "schema.json"
+    schema_file.write_text(
         json.dumps(
             {
-                "items": [{"name": "linux"}],
-                "keep": {"exact": 9007199254740991},
-                "metrics": {"count": 1, "label": "queued"},
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                    "items": {"type": "array"},
+                    "metrics": {
+                        "type": "object",
+                        "properties": {"count": {"type": "number"}},
+                        "required": ["count"],
+                    },
+                },
+                "required": ["items", "metrics"],
             },
             separators=(",", ":"),
         ),
         encoding="utf-8",
     )
+
     assert (
         run(
             [
@@ -242,6 +216,8 @@ def test_data_and_schema_cli_round_trip_through_fake_github(
                 "create",
                 "--data",
                 str(data_file),
+                "--schema",
+                str(schema_file),
                 "--table",
                 ".items",
                 "--columns",
@@ -255,329 +231,91 @@ def test_data_and_schema_cli_round_trip_through_fake_github(
     created = json.loads(capsys.readouterr().out)
     assert created["action"] == "created"
     assert created["revision"] == 1
-    revisions = [created["revision"]]
     assert backend.patch_count == 0
 
     assert (
         run(
-            [
-                "data",
-                "get",
-                "ci",
-                ".metrics",
-                "--target",
-                TARGET,
-                "--compact-output",
-            ],
+            ["data", "get", "ci", ".metrics", "--target", TARGET, "--compact-output"],
             prog="gh slate",
         )
         == 0
     )
-    assert json.loads(capsys.readouterr().out) == {
-        "count": 1,
-        "label": "queued",
-    }
+    assert json.loads(capsys.readouterr().out) == {"count": 1}
     assert backend.patch_count == 0
 
-    def assert_change(arguments: list[str], revision: int) -> None:
-        patches_before = backend.patch_count
-        assert run(arguments, prog="gh slate") == 0
-        result = json.loads(capsys.readouterr().out)
-        assert result["action"] == "updated"
-        assert result["revision"] == revision
-        assert backend.patch_count == patches_before + 1
-        revisions.append(result["revision"])
+    assert run(["schema", "infer", "ci", "--target", TARGET], prog="gh slate") == 0
+    assert json.loads(capsys.readouterr().out)["type"] == "object"
+    assert backend.patch_count == 0
 
-    assert_change(
-        [
-            "data",
-            "set",
-            "ci",
-            ".metrics.count",
-            "--target",
-            TARGET,
-            "--value",
-            "2",
-            "--json",
-        ],
-        2,
-    )
-    assert_change(
-        [
-            "data",
-            "set",
-            "ci",
-            ".metrics.label",
-            "--target",
-            TARGET,
-            "--value-string",
-            "ready",
-            "--json",
-        ],
-        3,
-    )
-    assert_change(
-        [
-            "data",
-            "update",
-            "ci",
-            ".metrics |= (.count += $increment | .label = $label)",
-            "--target",
-            TARGET,
-            "--arg",
-            "label",
-            "passed",
-            "--argjson",
-            "increment",
-            "3",
-            "--json",
-        ],
-        4,
-    )
-    assert_change(
-        [
-            "data",
-            "delete",
-            "ci",
-            ".metrics.label",
-            "--target",
-            TARGET,
-            "--json",
-        ],
-        5,
-    )
-
-    schema_file = tmp_path / "schema.json"
-    schema_file.write_text(
-        json.dumps(
-            {
-                "$schema": "https://json-schema.org/draft/2020-12/schema",
-                "type": "object",
-                "properties": {
-                    "items": {"type": "array"},
-                    "keep": {"type": "object"},
-                    "metrics": {
-                        "type": "object",
-                        "properties": {"count": {"type": "number"}},
-                        "required": ["count"],
-                        "additionalProperties": False,
-                    },
-                },
-                "required": ["items", "keep", "metrics"],
-                "additionalProperties": False,
-            },
-            separators=(",", ":"),
-        ),
+    next_data = tmp_path / "next.json"
+    next_data.write_text(
+        '{"items":[{"name":"linux"}],"metrics":{"count":2}}',
         encoding="utf-8",
     )
-    assert_change(
-        [
-            "schema",
-            "set",
-            "ci",
-            str(schema_file),
-            "--target",
-            TARGET,
-            "--json",
-        ],
-        6,
-    )
-
-    patches_before_read = backend.patch_count
     assert (
         run(
             [
-                "schema",
-                "get",
+                "apply",
                 "ci",
                 "--target",
                 TARGET,
-                "--compact-output",
-            ],
-            prog="gh slate",
-        )
-        == 0
-    )
-    stored_schema = json.loads(capsys.readouterr().out)
-    assert stored_schema["required"] == ["items", "keep", "metrics"]
-    assert backend.patch_count == patches_before_read
-
-    assert (
-        run(
-            [
-                "schema",
-                "validate",
-                "ci",
-                "--target",
-                TARGET,
+                "--data",
+                str(next_data),
+                "--if-revision",
+                "1",
                 "--json",
             ],
             prog="gh slate",
         )
         == 0
     )
-    validation = json.loads(capsys.readouterr().out)
-    assert validation == {
-        "name": "ci",
-        "revision": 6,
-        "source": "stored",
-        "valid": True,
-    }
-    assert backend.patch_count == patches_before_read
+    updated = json.loads(capsys.readouterr().out)
+    assert updated["action"] == "updated"
+    assert updated["revision"] == 2
+    assert backend.patch_count == 1
 
-    candidate_file = tmp_path / "invalid-candidate.json"
-    candidate_file.write_text(
-        '{"items":[],"keep":{},"metrics":{"count":"wrong"}}',
-        encoding="utf-8",
-    )
     assert (
         run(
-            [
-                "schema",
-                "validate",
-                "ci",
-                str(candidate_file),
-                "--target",
-                TARGET,
-            ],
+            ["schema", "validate", "ci", "--target", TARGET, "--json"],
             prog="gh slate",
         )
-        != 0
+        == 0
     )
-    assert "schema_validation_failed" in capsys.readouterr().err
-    assert backend.patch_count == patches_before_read
-
-    incompatible_schema = tmp_path / "incompatible-schema.json"
-    incompatible_schema.write_text(
-        '{"type":"object","required":["absent"]}',
-        encoding="utf-8",
-    )
-    assert (
-        run(
-            [
-                "schema",
-                "set",
-                "ci",
-                str(incompatible_schema),
-                "--target",
-                TARGET,
-                "--json",
-            ],
-            prog="gh slate",
-        )
-        != 0
-    )
-    assert "schema_validation_failed" in capsys.readouterr().err
-    assert backend.patch_count == patches_before_read
+    assert json.loads(capsys.readouterr().out)["valid"] is True
+    assert backend.patch_count == 1
 
     assert (
         run(
             [
-                "data",
-                "update",
+                "apply",
                 "ci",
-                ".metrics.count, .metrics.count",
                 "--target",
                 TARGET,
-                "--json",
-            ],
-            prog="gh slate",
-        )
-        != 0
-    )
-    assert "data_update_multiple_results" in capsys.readouterr().err
-    assert backend.patch_count == patches_before_read
-
-    assert_change(
-        [
-            "schema",
-            "infer",
-            "ci",
-            "--target",
-            TARGET,
-            "--apply",
-            "--json",
-        ],
-        7,
-    )
-
-    patches_before_unchanged = backend.patch_count
-    assert (
-        run(
-            [
-                "data",
-                "update",
-                "ci",
-                ".",
-                "--target",
-                TARGET,
+                "--clear-schema",
+                "--if-revision",
+                "2",
                 "--json",
             ],
             prog="gh slate",
         )
         == 0
     )
-    unchanged = json.loads(capsys.readouterr().out)
-    assert unchanged["action"] == "unchanged"
-    assert unchanged["revision"] == 7
-    assert backend.patch_count == patches_before_unchanged
+    cleared = json.loads(capsys.readouterr().out)
+    assert cleared["action"] == "updated"
+    assert cleared["revision"] == 3
+    assert backend.patch_count == 2
 
-    assert revisions == [1, 2, 3, 4, 5, 6, 7]
+    assert run(["schema", "get", "ci", "--target", TARGET], prog="gh slate") == 3
+    assert "schema_not_found" in capsys.readouterr().err
+    assert backend.patch_count == 2
+
     assert len(backend.comments) == 1
     body = cast("str", backend.comments[0]["body"])
     decoded = decode_comment(body)
     assert decoded.drifted is False
-    assert decoded.state.revision == 7
+    assert decoded.state.revision == 3
     assert decoded.state.data == {
         "items": ({"name": "linux"},),
-        "keep": {"exact": Decimal(9007199254740991)},
-        "metrics": {"count": Decimal(5)},
+        "metrics": {"count": Decimal(2)},
     }
-    assert decoded.state.data_schema is not None
-
-    final_patch_count = backend.patch_count
-    assert (
-        run(
-            [
-                "data",
-                "get",
-                "ci",
-                ".",
-                "--target",
-                TARGET,
-                "--compact-output",
-            ],
-            prog="gh slate",
-        )
-        == 0
-    )
-    assert json.loads(capsys.readouterr().out) == {
-        "items": [{"name": "linux"}],
-        "keep": {"exact": 9007199254740991},
-        "metrics": {"count": 5},
-    }
-    assert backend.patch_count == final_patch_count
-
-    writes = [event for event in backend.events if event[0] in {"POST", "PATCH"}]
-    assert [event[0] for event in writes] == [
-        "POST",
-        "PATCH",
-        "PATCH",
-        "PATCH",
-        "PATCH",
-        "PATCH",
-        "PATCH",
-    ]
-    assert all(event[2] == HOST for event in backend.events)
-    for index, event in enumerate(backend.events):
-        if event[0] in {"POST", "PATCH"}:
-            assert backend.events[index - 1] == (
-                "GET",
-                backend.comments_endpoint,
-                HOST,
-            )
-            assert backend.events[index + 1] == (
-                "GET",
-                backend.comments_endpoint,
-                HOST,
-            )
+    assert decoded.state.data_schema is None

@@ -136,17 +136,25 @@ def _add_snapshot_options(
     parser: argparse.ArgumentParser,
     *,
     data_defaults_empty: bool = False,
+    allow_clear_schema: bool = False,
 ) -> None:
     parser.add_argument(
         "--data",
         metavar="FILE",
         help=("strict JSON object input; use - for stdin" + (" (default: {})" if data_defaults_empty else "")),
     )
-    parser.add_argument(
+    schema_options = parser.add_mutually_exclusive_group() if allow_clear_schema else parser
+    schema_options.add_argument(
         "--schema",
         metavar="FILE",
         help="optional draft 2020-12 JSON Schema snapshot",
     )
+    if allow_clear_schema:
+        schema_options.add_argument(
+            "--clear-schema",
+            action="store_true",
+            help="remove the stored JSON Schema snapshot",
+        )
 
 
 def _add_renderer_options(parser: argparse.ArgumentParser) -> None:
@@ -265,7 +273,7 @@ def build_parser(*, prog: str | None = None) -> argparse.ArgumentParser:
         action="store_true",
         help="suppress successful output",
     )
-    _add_snapshot_options(apply_parser)
+    _add_snapshot_options(apply_parser, allow_clear_schema=True)
     _add_renderer_options(apply_parser)
     from gh_slate.commands.apply import run_apply
 
@@ -347,17 +355,11 @@ def build_parser(*, prog: str | None = None) -> argparse.ArgumentParser:
     )
     delete_parser.set_defaults(handler=run_delete)
 
-    from gh_slate.commands.data import (
-        run_data_delete,
-        run_data_edit,
-        run_data_get,
-        run_data_set,
-        run_data_update,
-    )
+    from gh_slate.commands.data import run_data_get
 
     data_parser = commands.add_parser(
         "data",
-        help="query or mutate a managed slate's typed JSON data",
+        help="query a managed slate's typed JSON data",
     )
     data_commands = data_parser.add_subparsers(dest="data_command")
 
@@ -393,97 +395,15 @@ def build_parser(*, prog: str | None = None) -> argparse.ArgumentParser:
     )
     data_get_parser.set_defaults(handler=run_data_get)
 
-    data_set_parser = data_commands.add_parser(
-        "set",
-        help="set one value using a static jq path",
-    )
-    data_set_parser.add_argument("name", help="stable lowercase slate name")
-    data_set_parser.add_argument("path", help="static jq path expression")
-    _add_target_options(data_set_parser)
-    _add_mutation_options(data_set_parser)
-    value_source = data_set_parser.add_mutually_exclusive_group(required=True)
-    value_source.add_argument(
-        "--value",
-        metavar="JSON",
-        help="one strict JSON value; use - for stdin",
-    )
-    value_source.add_argument(
-        "--value-string",
-        metavar="TEXT",
-        help="an exact string value",
-    )
-    value_source.add_argument(
-        "--value-file",
-        metavar="FILE",
-        help="one strict JSON document; use - for stdin",
-    )
-    data_set_parser.set_defaults(handler=run_data_set)
-
-    data_delete_parser = data_commands.add_parser(
-        "delete",
-        help="delete one or more static jq paths",
-    )
-    data_delete_parser.add_argument("name", help="stable lowercase slate name")
-    data_delete_parser.add_argument(
-        "paths",
-        nargs="+",
-        metavar="PATH",
-        help="static jq path expression",
-    )
-    _add_target_options(data_delete_parser)
-    _add_mutation_options(data_delete_parser)
-    data_delete_parser.add_argument(
-        "--ignore-missing",
-        action="store_true",
-        help="treat an absent path as unchanged",
-    )
-    data_delete_parser.set_defaults(handler=run_data_delete)
-
-    data_update_parser = data_commands.add_parser(
-        "update",
-        help="transform the complete data object with jq",
-    )
-    data_update_parser.add_argument("name", help="stable lowercase slate name")
-    data_update_parser.add_argument("filter", help="jq update filter")
-    _add_target_options(data_update_parser)
-    _add_mutation_options(data_update_parser)
-    data_update_parser.add_argument(
-        "--arg",
-        action="append",
-        default=[],
-        nargs=2,
-        metavar=("NAME", "VALUE"),
-        help="bind a jq string variable; repeatable",
-    )
-    data_update_parser.add_argument(
-        "--argjson",
-        action="append",
-        default=[],
-        nargs=2,
-        metavar=("NAME", "JSON"),
-        help="bind typed JSON or @FILE; repeatable",
-    )
-    data_update_parser.set_defaults(handler=run_data_update)
-
-    data_edit_parser = data_commands.add_parser(
-        "edit",
-        help="edit stored typed JSON in GH_EDITOR or EDITOR",
-    )
-    data_edit_parser.add_argument("name", help="stable lowercase slate name")
-    _add_target_options(data_edit_parser)
-    _add_mutation_options(data_edit_parser)
-    data_edit_parser.set_defaults(handler=run_data_edit)
-
     from gh_slate.commands.schema import (
         run_schema_get,
         run_schema_infer,
-        run_schema_set,
         run_schema_validate,
     )
 
     schema_parser = commands.add_parser(
         "schema",
-        help="inspect or change a slate's JSON Schema snapshot",
+        help="inspect or validate a slate's JSON Schema snapshot",
     )
     schema_commands = schema_parser.add_subparsers(dest="schema_command")
 
@@ -501,20 +421,6 @@ def build_parser(*, prog: str | None = None) -> argparse.ArgumentParser:
     )
     schema_get_parser.set_defaults(handler=run_schema_get)
 
-    schema_set_parser = schema_commands.add_parser(
-        "set",
-        help="replace and validate the stored JSON Schema",
-    )
-    schema_set_parser.add_argument("name", help="stable lowercase slate name")
-    schema_set_parser.add_argument(
-        "file",
-        metavar="FILE",
-        help="strict JSON Schema document; use - for stdin",
-    )
-    _add_target_options(schema_set_parser)
-    _add_mutation_options(schema_set_parser)
-    schema_set_parser.set_defaults(handler=run_schema_set)
-
     schema_infer_parser = schema_commands.add_parser(
         "infer",
         help="infer a permissive schema from current stored data",
@@ -522,11 +428,11 @@ def build_parser(*, prog: str | None = None) -> argparse.ArgumentParser:
     schema_infer_parser.add_argument("name", help="stable lowercase slate name")
     _add_target_options(schema_infer_parser)
     schema_infer_parser.add_argument(
-        "--apply",
+        "-c",
+        "--compact-output",
         action="store_true",
-        help="store the inferred schema after validation",
+        help="write compact canonical JSON",
     )
-    _add_mutation_options(schema_infer_parser)
     schema_infer_parser.set_defaults(handler=run_schema_infer)
 
     schema_validate_parser = schema_commands.add_parser(

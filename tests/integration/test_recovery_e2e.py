@@ -86,11 +86,7 @@ def _create(
     sandbox: LauncherSandbox,
     tmp_path: Path,
 ) -> dict[str, object]:
-    data = tmp_path / "data.json"
-    data.write_text(
-        '{"jobs":[{"name":"linux","status":"pass"}],"meta":{"attempt":1}}',
-        encoding="utf-8",
-    )
+    data = _snapshot(tmp_path, "data.json", status="pass", attempt=1)
     return _json_result(
         sandbox.run(
             "apply",
@@ -108,6 +104,27 @@ def _create(
             "--json",
         )
     )
+
+
+def _snapshot(
+    tmp_path: Path,
+    filename: str,
+    *,
+    status: str,
+    attempt: int,
+) -> Path:
+    data = tmp_path / filename
+    data.write_text(
+        json.dumps(
+            {
+                "jobs": [{"name": "linux", "status": status}],
+                "meta": {"attempt": attempt},
+            },
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+    return data
 
 
 @pytest.mark.skipif(
@@ -142,16 +159,17 @@ def test_real_launcher_issue_and_pr_recovery_lifecycle(
     assert viewed["revision"] == 1
     assert committed_write_methods(sandbox.state_path) == ["POST"]
 
+    updated_data = _snapshot(tmp_path, "updated.json", status="fail", attempt=1)
     updated = _json_result(
         sandbox.run(
-            "data",
-            "set",
+            "apply",
             "ci",
-            ".jobs[0].status",
             "--target",
             sandbox.target,
-            "--value-string",
-            "fail",
+            "--data",
+            str(updated_data),
+            "--if-revision",
+            "1",
             "--json",
         )
     )
@@ -179,14 +197,15 @@ def test_real_launcher_issue_and_pr_recovery_lifecycle(
     assert drifted["revision"] == 2
 
     writes_before_rejected_mutation = committed_write_methods(sandbox.state_path)
+    rejected_data = _snapshot(tmp_path, "rejected.json", status="fail", attempt=2)
     rejected = sandbox.run(
-        "data",
-        "set",
+        "apply",
         "ci",
-        ".meta.attempt",
         "--target",
         sandbox.target,
-        "--value",
+        "--data",
+        str(rejected_data),
+        "--if-revision",
         "2",
         "--json",
     )
@@ -312,16 +331,17 @@ def test_fake_github_faults_distinguish_recovered_and_unknown_writes(
         phase="after",
         mode="invalid_json",
     )
+    recovered_data = _snapshot(tmp_path, "recovered.json", status="pass", attempt=2)
     recovered = _json_result(
         sandbox.run(
-            "data",
-            "set",
+            "apply",
             "ci",
-            ".meta.attempt",
             "--target",
             sandbox.target,
-            "--value",
-            "2",
+            "--data",
+            str(recovered_data),
+            "--if-revision",
+            "1",
             "--json",
         )
     )
@@ -337,15 +357,16 @@ def test_fake_github_faults_distinguish_recovered_and_unknown_writes(
         phase="before",
         mode="invalid_json",
     )
+    unknown_data = _snapshot(tmp_path, "unknown.json", status="pass", attempt=3)
     unknown = sandbox.run(
-        "data",
-        "set",
+        "apply",
         "ci",
-        ".meta.attempt",
         "--target",
         sandbox.target,
-        "--value",
-        "3",
+        "--data",
+        str(unknown_data),
+        "--if-revision",
+        "2",
         "--json",
     )
     assert unknown.returncode != 0

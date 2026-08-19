@@ -4,7 +4,7 @@ description: >-
    Create and safely maintain named, data-backed dashboard comments on GitHub
    Issues and Pull Requests with gh-slate. Use this skill whenever the user asks
    for a sticky or Codecov/Codspeed-style report, CI or benchmark dashboard,
-   Markdown table/list comment, structured comment data query or update, slate
+   Markdown table/list comment, structured comment data query or snapshot, slate
    verification, drift repair, or managed-comment cleanup, even if they do not
    say "gh-slate".
 compatibility: Requires gh, authenticated GitHub access, and gh-slate >=0.1.0. Dual-prefix recipes use Bash; on Windows use the gh-slate Python CLI directly.
@@ -18,8 +18,8 @@ metadata:
 
 # gh-slate
 
-Coordinate the CLI; do not recreate its state codec, jq path semantics,
-renderer, schema validator, or GitHub client.
+Coordinate the CLI; do not recreate its state codec, renderer, schema
+validator, or GitHub client.
 
 ## Resolve one command prefix
 
@@ -94,7 +94,7 @@ On Windows/PowerShell, install the Python CLI, verify `gh-slate --version`, and
 replace `"${GH_SLATE[@]}"` in the recipes with the direct `gh-slate` command.
 
 When authentication or runtime state is uncertain, preflight before inspecting
-or mutating a target:
+or writing a target:
 
 ```bash
 gh auth status
@@ -105,18 +105,17 @@ gh auth status
 
 1. Resolve an explicit `OWNER_REPO`, Issue/PR `TARGET`, and stable lowercase
    `NAME`. Keep one name for one producer and purpose.
-2. Inspect an existing slate before mutation. Read its revision, state hash,
+2. Inspect an existing slate before writing. Read its revision, state hash,
    drift status, renderer, and URL.
 3. Validate candidate data against the stored schema when one exists. Preview a
    new renderer or material layout change locally and with `apply --dry-run`.
-4. Prefer one complete `apply --data FILE` snapshot, especially in CI.
-   Incremental jq mutations are for a single writer and should pin the revision
-   read in step 2.
+4. Write data, schema, and renderer changes through one `apply` snapshot. Pin
+   updates to the revision read in step 2.
 5. Treat the returned JSON as the write evidence. Distinguish `created`,
    `updated`, `repaired`, `deleted`, and `unchanged`; do not claim success
    before the command returns a confirmed result.
 6. On conflict or unknown outcome, refetch and report what is observed. Do not
-   blindly replay any mutation. In particular, one missing read after an
+   blindly replay any write. In particular, one missing read after an
    unknown create is not proof that GitHub rejected the POST.
 
 Inspect and validate:
@@ -152,7 +151,7 @@ Inspect and validate:
   revisions, or an unknown remote outcome. There is no generic force path.
 - GitHub comment updates do not provide server-side compare-and-swap.
   Revision checks and second reads reduce risk but do not make concurrent
-  incremental writes atomic.
+  writes atomic.
 - GitHub Actions concurrency groups serialize matching jobs but do not promise
   FIFO event order. Treat webhook payloads as wake-ups and target identity, not
   as current Issue or Pull Request state. When the slate mirrors GitHub fields,
@@ -233,35 +232,37 @@ Queries read the embedded typed state, not the visible Markdown:
   --exit-status
 ```
 
-### Perform a revision-pinned typed update
+### Apply a revision-pinned typed snapshot
 
-Set `REVISION` from the preceding `view --json` result. Keep identifiers or
-large integers that jq must preserve exactly as strings.
+Set `REVISION` from the preceding `view --json` result. Build the complete next
+JSON object outside gh-slate, then preview and apply that file.
 
 ```bash
-"${GH_SLATE[@]}" data update "$NAME" \
-  '.jobs |= map(if .name == $name then . + $result else . end)' \
-  --arg name linux \
-  --argjson result @linux-result.json \
+"${GH_SLATE[@]}" apply "$NAME" \
+  --data next.json \
+  --target "$TARGET" \
+  --repo "$OWNER_REPO" \
+  --if-revision "$REVISION" \
+  --dry-run
+
+"${GH_SLATE[@]}" apply "$NAME" \
+  --data next.json \
   --target "$TARGET" \
   --repo "$OWNER_REPO" \
   --if-revision "$REVISION" \
   --json
 ```
 
-For static paths, retain JSON types explicitly. Use `data update` when path
-selection itself must be computed from current data:
+Infer a schema read-only, then apply the reviewed snapshot or explicitly clear
+the stored schema:
 
 ```bash
-"${GH_SLATE[@]}" data set "$NAME" '.coverage' \
-  --value-file coverage.json \
+"${GH_SLATE[@]}" schema infer "$NAME" \
   --target "$TARGET" \
-  --repo "$OWNER_REPO" \
-  --if-revision "$REVISION" \
-  --json
+  --repo "$OWNER_REPO"
 
-"${GH_SLATE[@]}" data delete "$NAME" '.legacy' \
-  --ignore-missing \
+"${GH_SLATE[@]}" apply "$NAME" \
+  --schema inferred.schema.json \
   --target "$TARGET" \
   --repo "$OWNER_REPO" \
   --if-revision "$REVISION" \
@@ -319,11 +320,16 @@ and rerenders canonical state:
   --json
 ```
 
-Edit canonical data when the visible change represented an intended data
-change:
+When the visible change represented an intended data change, export the
+canonical state, build a reviewed next data snapshot, and apply it instead:
 
 ```bash
-"${GH_SLATE[@]}" data edit "$NAME" \
+"${GH_SLATE[@]}" state export "$NAME" \
+  --target "$TARGET" \
+  --repo "$OWNER_REPO"
+
+"${GH_SLATE[@]}" apply "$NAME" \
+  --data next.json \
   --target "$TARGET" \
   --repo "$OWNER_REPO" \
   --if-revision "$REVISION" \
@@ -357,7 +363,7 @@ errors. Perform only read operations first:
 ```
 
 Stop when the intended state is present. For an existing slate whose outcome
-is now unambiguous, refetch and pin any later mutation to the newly observed
+is now unambiguous, refetch and pin any later write to the newly observed
 revision. If a slate was missing before an unknown create and is still missing
 on the first refetch, do not create or upsert it again: keep observing the
 target's comments/API until the original managed comment can be identified.

@@ -164,6 +164,35 @@ def test_apply_builds_a_validated_create_transaction_request(
     assert transaction.reader.calls == []
 
 
+def test_apply_can_clear_the_stored_schema(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    transaction = _install_transaction(monkeypatch)
+
+    assert (
+        run(
+            [
+                "apply",
+                "ci",
+                "--target",
+                TARGET_URL,
+                "--mode",
+                "update",
+                "--clear-schema",
+            ]
+        )
+        == 0
+    )
+
+    request = transaction.requests[0]
+    assert request.data_schema is None
+    assert request.replace_schema is True
+    output = capsys.readouterr()
+    assert output.out == f"created ci -> {TARGET_URL}#issuecomment-101\n"
+    assert output.err == ""
+
+
 def test_apply_create_without_a_renderer_fails_before_transaction_setup(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

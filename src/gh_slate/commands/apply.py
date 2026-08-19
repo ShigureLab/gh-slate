@@ -199,7 +199,7 @@ def run_apply(args: Namespace) -> int:
         data=data,
         renderer=renderer,
         data_schema=schema,
-        replace_schema=args.schema is not None,
+        replace_schema=args.schema is not None or args.clear_schema,
         controller=args.controller,
         if_revision=args.if_revision,
         dry_run=args.dry_run,

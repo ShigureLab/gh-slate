@@ -129,14 +129,9 @@ gh slate
 ├── repair NAME --from-state   restore visible Markdown from stored state
 ├── delete NAME                delete the entire managed comment
 ├── data
-│   ├── get NAME [FILTER]      query data with jq
-│   ├── set NAME PATH          set one value using a static jq path
-│   ├── delete NAME PATH...    delete values using static jq paths
-│   ├── update NAME FILTER     transform the full data object with jq
-│   └── edit NAME              edit typed JSON in $GH_EDITOR/$EDITOR
+│   └── get NAME [FILTER]      query data with jq
 ├── schema
 │   ├── get NAME               print the stored JSON Schema
-│   ├── set NAME FILE          replace and validate the JSON Schema
 │   ├── infer NAME             infer a permissive schema from current data
 │   └── validate NAME [FILE]   validate current or supplied data
 ├── state
@@ -156,7 +151,7 @@ are modes instead of separate top-level commands:
 
 ## 3. Common target and output options
 
-All remote commands accept:
+All remote commands accept target and controller selection:
 
 ```text
 -t, --target TARGET       Issue/PR number, URL, @event, or @pr
@@ -164,10 +159,11 @@ All remote commands accept:
     --controller LOGIN    resolve a controller login to its stable host-local ID;
                           defaults to the current token actor
     --host HOST           normally inherited from gh/GH_HOST
-    --if-revision REV     reject a stale read before attempting a write
-    --json                emit an operation result object
--q, --quiet               suppress successful mutation output
 ```
+
+`apply`, `repair`, and `delete` also accept `--if-revision REV` and mutually
+exclusive `--json`/`--quiet` output modes. Individual read commands expose only
+the output flags relevant to their result.
 
 Resolution rules are deliberately conservative:
 
@@ -276,7 +272,7 @@ gh slate apply test-matrix \
 
 `--table FILTER` is a jq selector evaluated against the data root. It must
 produce exactly one value. It is stored in the renderer specification and is
-reevaluated after every data update.
+reevaluated after every data snapshot update.
 
 Renderer selectors run in an isolated Python subprocess with isolated-mode
 imports, an empty environment, and an empty temporary working directory.
@@ -398,6 +394,7 @@ For an existing slate:
 
 - `--data` replaces the complete data object;
 - `--schema` replaces the declared schema;
+- `--clear-schema` removes the declared schema;
 - a renderer option replaces the renderer;
 - omitted components keep their stored values.
 
@@ -415,7 +412,7 @@ Every mutation follows one transaction-like client pipeline:
 ```mermaid
 flowchart LR
     A["Fetch and identify comment"] --> B["Decode and verify envelope"]
-    B --> C["Transform typed data"]
+    B --> C["Select complete snapshot components"]
     C --> D["Validate JSON Schema"]
     D --> E["Render Markdown"]
     E --> F["Reject reserved markers; check hashes and size"]
@@ -470,8 +467,8 @@ user chooses an explicit resolution:
 # Discard the manual visible edit and restore the canonical projection.
 gh slate repair ci-summary --from-state --target 42
 
-# Edit canonical typed data instead, then validate and rerender.
-gh slate data edit ci-summary --target 42
+# Apply a reviewed complete data snapshot instead.
+gh slate apply ci-summary --target 42 --data next.json --if-revision 7
 ```
 
 `repair --from-state` never imports or interprets the manually edited
@@ -506,16 +503,15 @@ marker authored by the current controller. Because its state cannot be trusted,
 the successful JSON result reports `revision` and `state_sha256` as `null`.
 Repair still requires a fully decodable renderer and state.
 
-## 5. jq-style data CRUD
+## 5. Read-only jq data queries
 
-The embedded jq engine operates only on `envelope.data`. It cannot modify the
-slate name, controller, renderer, schema, revision, or hashes.
+The embedded jq engine reads only `envelope.data`. It cannot modify the slate
+name, controller, renderer, schema, revision, hashes, or stored data. Remote
+data changes use `apply --data FILE`, which replaces the complete JSON object.
 
-The implementation should use the maintained Python `jq` binding so expressions
-have real jq semantics. It should not require a separate `jq` executable and
-should not call a home-grown expression language “jq”.
-
-### 5.1 Read
+The implementation uses the maintained Python `jq` binding so expressions have
+real jq semantics. It does not require a separate `jq` executable and does not
+call a home-grown expression language “jq”.
 
 ```bash
 gh slate data get ci-summary '.' --target 42
@@ -531,102 +527,18 @@ supports jq-like `--raw-output`, `--compact-output`, and `--exit-status`.
 One invocation returns at most 1,024 results by default; crossing the bounded
 result limit is a validation error rather than an unbounded allocation.
 
-### 5.2 Set
+For a write, produce one complete strict JSON object with the caller's own
+tooling, preview it, and pin the update to the observed revision:
 
 ```bash
-# JSON number
-gh slate data set ci-summary '.coverage.lines' \
-  --value 91.7 \
-  --target 42
-
-# JSON string, without shell-level JSON quoting
-gh slate data set ci-summary '.status' \
-  --value-string passing \
-  --target 42
-
-# JSON object loaded from a file
-gh slate data set ci-summary '.jobs.linux' \
-  --value-file linux-result.json \
-  --target 42
-
-# A key that itself contains a dot
-gh slate data set ci-summary '.["key.with.dot"]' \
-  --value-string preserved \
-  --target 42
+gh slate view ci-summary --target 42 --json
+gh slate apply ci-summary --target 42 --data next.json --if-revision 7 --dry-run
+gh slate apply ci-summary --target 42 --data next.json --if-revision 7 --json
 ```
 
-`PATH` must be a static jq-compatible path composed from `.field`,
-`["exact.key"]`, and non-negative `[0]` segments. It is validated with jq
-against `null`, never resolved from the stored data; arithmetic, pipes,
-interpolation, and other computed paths belong in `data update`.
-Missing containers are created according to the next typed path segment, and
-arrays are padded with JSON nulls when a static non-negative index extends
-them. The final mutation runs in Python so untouched arbitrary-precision
-integers are not round-tripped through libjq.
-
-Value sources are mutually exclusive and never guessed:
-
-- `--value JSON` parses one JSON value;
-- `--value-string TEXT` stores an exact string;
-- `--value-file FILE` parses one JSON document;
-- `-` may explicitly mean stdin where a value/file option permits it.
-
-This keeps `"91"`, `91`, `true`, `"true"`, and `null` distinct.
-
-### 5.3 Delete
-
-```bash
-gh slate data delete ci-summary \
-  '.jobs.experimental' \
-  '.legacy' \
-  --target 42
-```
-
-Deleting an absent path is an error by default and can be made idempotent with
-`--ignore-missing`.
-
-### 5.4 Arbitrary update
-
-```bash
-gh slate data update ci-summary \
-  '.jobs[$job] = $result | .updated_at = $now' \
-  --arg job linux \
-  --argjson result @linux-result.json \
-  --arg now "$NOW" \
-  --target 42
-```
-
-- `--arg NAME VALUE` passes a string.
-- `--argjson NAME JSON` passes typed JSON; `@FILE` loads a JSON file.
-- The filter receives one data object and must emit exactly one data object.
-- Zero results, multiple results, or a scalar/array result are validation
-  errors with no remote write.
-- A result identical to the current data returns `unchanged`.
-
-### 5.5 Interactive edit
-
-```bash
-gh slate data edit ci-summary --target 42
-```
-
-This opens pretty-printed JSON in `GH_EDITOR`, then `GIT_EDITOR`, `VISUAL`, or
-`EDITOR`. On editor exit, the command parses JSON, validates the schema,
-rerenders, shows a summary, and performs one update. Invalid JSON or schema
-violations reopen the editor interactively or fail without writing in
-non-interactive mode.
-
-### 5.6 Batch patching
-
-RFC 6902 JSON Patch is a useful machine/batch interface, including its `test`
-operation, but it introduces a second path language (JSON Pointer). It should be
-added after the jq/set/delete surface is stable:
-
-```bash
-gh slate data patch ci-summary patch.json --target 42
-```
-
-RFC 7396 Merge Patch may be a later `--type merge` option. Its `null` means
-delete and arrays replace wholesale, so it must not be the only patch format.
+Keeping transforms outside gh-slate leaves one remote state-transition API and
+one validation/render/write pipeline. It also avoids a second path language,
+interactive editor policy, and jq numeric semantics at the storage boundary.
 
 ## 6. Schema and type rules
 
@@ -637,14 +549,14 @@ the data.
 Schemas use JSON Schema draft 2020-12:
 
 ```bash
-gh slate schema set ci-summary report.schema.json --target 42
 gh slate schema get ci-summary --target 42
 gh slate schema validate ci-summary candidate.json --target 42
 gh slate schema infer ci-summary --target 42 > inferred.schema.json
-gh slate schema infer ci-summary --target 42 --apply
+gh slate apply ci-summary --target 42 --schema inferred.schema.json --if-revision 7
+gh slate apply ci-summary --target 42 --clear-schema --if-revision 8
 ```
 
-Every later mutation validates before rendering and writing.
+Every later apply validates before rendering and writing.
 
 Schemas are snapshots in the envelope. Remote `$ref` loading is disabled:
 validation must not depend on the network or create an SSRF/file-read surface.
@@ -682,9 +594,8 @@ gh-slate execution profile, not changes to the stored JSON Schema document.
 - it does not invent semantic formats.
 
 Users can edit and apply the inferred schema when stricter validation is wanted.
-`schema infer` is read-only by default and prints the inferred document.
-`--apply` explicitly stores that exact snapshot through the same
-revision-pinned mutation pipeline as `schema set`.
+`schema infer` is always read-only and prints the inferred document. A reviewed
+schema is stored with `apply --schema`; `apply --clear-schema` removes it.
 Standard schema annotations such as `title`, `description`, and `format` may
 inform built-in rendering. Presentation details such as selected rows and
 column order remain in the renderer specification so schema validation and
@@ -692,19 +603,11 @@ layout do not become entangled.
 
 Round-trip guarantees follow JSON semantics. They do not promise to preserve
 whitespace, object key spelling order, or a number's original textual lexeme.
-Renderer projections inherit libjq's IEEE-754 numeric semantics and may round
-an otherwise valid canonical JSON integer in visible Markdown. A full
-`data update` fails closed before writing when either its input or result
-contains an integer outside jq's exact range
-`[-9007199254740991, 9007199254740991]`; `data set` and `data delete` keep
-untouched arbitrary-precision integers in Python. Before running a full update,
-identity preflights also reject any stored value or `--argjson` binding that
-libjq would round merely by reading it, and numeric filter literals must
-round-trip through the same runtime. These are storage-boundary checks, not an
-arbitrary-precision arithmetic engine: jq calculations retain libjq's
-IEEE-754 semantics. IDs or numbers that must participate in arithmetic outside
-those guarantees should be stored as strings and described as strings in the
-schema.
+Renderer projections and `data get` inherit libjq's IEEE-754 numeric semantics
+and may round an otherwise valid canonical JSON integer in their output. The
+canonical state remains parsed and stored by the strict JSON pipeline without a
+jq write round-trip. IDs or numbers that must pass through jq without rounding
+should be stored as strings and described as strings in the schema.
 
 JSON ingestion rejects duplicate object keys, NaN, and Infinity.
 
@@ -1058,7 +961,7 @@ The skill should activate when an agent needs to:
   Request;
 - publish CI, coverage, benchmark, test-matrix, deployment, or release status
   as a named slate;
-- query or modify a slate's structured data;
+- query or replace a slate's structured data snapshot;
 - render structured data as a Markdown table/list or through Jinja;
 - inspect, verify, or repair a managed slate.
 
@@ -1076,8 +979,7 @@ The skill must teach agents to follow this order:
    `data get`.
 4. Validate input JSON and the stored schema before rendering.
 5. Use `--dry-run` for a new renderer/template or a material layout change.
-6. Prefer a complete `apply --data FILE` snapshot in CI. Use incremental
-   `data set/update/delete` only with a single writer.
+6. Use a complete `apply --data FILE` snapshot for every data write.
 7. Read the returned action, revision, state hash, and comment URL before
    claiming that a write succeeded.
 8. Treat `created`, `updated`, and `unchanged` as distinct outcomes even though
@@ -1093,13 +995,13 @@ The skill must never:
 - claim remote success before the command returns a confirmed result;
 - run a Jinja template or jq filter from an untrusted fork in a privileged
   workflow;
-- present incremental comment updates as atomic or safe for concurrent writers.
+- present GitHub comment updates as atomic or safe for concurrent writers.
 
 When drift is detected, it should offer the two explicit paths:
 
 ```bash
 gh slate repair NAME --from-state --target TARGET --repo OWNER/REPO
-gh slate data edit NAME --target TARGET --repo OWNER/REPO
+gh slate apply NAME --data next.json --target TARGET --repo OWNER/REPO --if-revision REV
 ```
 
 ### 13.3 Skill command recipes
@@ -1129,15 +1031,14 @@ gh slate data get ci \
   --repo OWNER/REPO
 ```
 
-Perform a typed update:
+Perform a typed snapshot update:
 
 ```bash
-gh slate data update ci \
-  '.jobs |= map(if .name == $name then . + $result else . end)' \
-  --arg name linux \
-  --argjson result @linux-result.json \
+gh slate apply ci \
+  --data next.json \
   --target TARGET \
   --repo OWNER/REPO \
+  --if-revision REV \
   --json
 ```
 
@@ -1471,50 +1372,33 @@ Acceptance gates:
 Not included: incremental data commands, repair, comment deletion, controller
 adoption, or any claim of linearizable concurrent writes.
 
-### 14.8 Batch 7: jq data CRUD and remote schema commands
+### 14.8 Batch 7: read-only data and schema inspection
 
-Branch: `codex/data-crud`
+Branch: `codex/data-crud` (implemented historically), followed by the v0.1
+surface contraction.
 
-Status: complete with unit, command-contract, and fake-GitHub CLI integration
-coverage. Every mutation is revision-pinned to its first read, executes its
-local transform once, and delegates at most one write to batch 6. Credentialed
-live testing remains part of the later operational gate.
-
-Goal: expose the structured state as the jq-like query and mutation interface
-described in this document.
+Status: the read-only portion remains public. Incremental data mutations and
+remote schema mutation commands were removed from the v0.1 interface so
+`apply` is the single normal state-transition command.
 
 Deliverables:
 
 - `data get`, including zero/one/many jq results and raw, compact, and exit
   status modes;
-- `data set` and `data delete` using static jq path semantics and unambiguous
-  JSON, string, and file value sources;
-- full `data update` with real jq filters, `--arg`, `--argjson`, and `@FILE`;
-- `data edit` with the documented editor precedence and parse/validation loop;
-- remote `schema get`, `set`, `infer`, and `validate`;
-- reuse of the apply transaction so every successful mutation validates,
-  rerenders, hashes, and performs no more than one PATCH.
+- `schema get`, read-only `schema infer`, and `schema validate`;
+- schema replacement and removal through `apply --schema` and
+  `apply --clear-schema`;
+- complete data replacement through `apply --data`.
 
 Acceptance gates:
 
-- `"91"`, `91`, `true`, `"true"`, and `null` remain distinct through every
-  command and typed-state encode/decode round-trip;
-- paths work for keys containing dots and other special characters;
-- missing deletes, `--ignore-missing`, jq zero/multiple results, and
-  scalar/array update results have explicit tested behavior;
-- the jq worker protocol reserves two depth levels for its object/array
-  envelope, so a value at the full JSON depth limit still round-trips while one
-  level beyond it fails closed;
-- mutations carry the resolved controller ID through the apply transaction
-  instead of reverting to login-based ownership;
-- a failed jq transform, schema validation, editor parse, render, revision
-  check, or size check performs zero writes;
-- unchanged transforms perform zero writes and successful transforms perform
-  exactly one PATCH;
-- stale `--if-revision` and visible drift fail without replaying the filter.
+- queries cannot mutate the typed state or any remote comment;
+- jq worker depth, result-count, timeout, and output-size limits remain tested;
+- schema inspection never performs network reference resolution;
+- all remote state changes reuse the full-snapshot apply transaction.
 
-Not included: RFC 6902/7396 patch, automatic retry of non-idempotent jq,
-Markdown import, or concurrency CAS.
+Deferred: incremental path updates, interactive editing, JSON Patch, Merge
+Patch, and any claim of concurrency CAS.
 
 ### 14.9 Batch 8: recovery, operational hardening, and Actions
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from decimal import Decimal
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
 import pytest
@@ -12,15 +11,12 @@ from gh_slate.cli import run
 from gh_slate.codec import (
     ControllerV1,
     StateV1,
-    canonical_json_bytes,
-    freeze_json,
 )
 from gh_slate.codec.model import (
     JSON_SCHEMA_DIALECT_2020_12,
     SchemaSnapshotV1,
 )
 from gh_slate.commands import schema as schema_commands
-from gh_slate.github.apply import ApplyResult
 from gh_slate.github.models import GitHubActor
 from gh_slate.rendering import ListRendererV1, SlateContext, materialize_comment
 from gh_slate.schema import validate_schema
@@ -29,11 +25,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from gh_slate.codec import JsonValue
-    from gh_slate.github.mutation import (
-        MutationDraft,
-        MutationRequest,
-        MutationSnapshot,
-    )
 
 
 HOST = "github.example"
@@ -41,7 +32,6 @@ REPOSITORY = "owner/repo"
 NUMBER = 42
 TARGET_URL = f"https://{HOST}/{REPOSITORY}/pull/42"
 COMMENT_URL = f"{TARGET_URL}#issuecomment-7"
-STATE_HASH = "b" * 64
 ACTOR_ID = 101
 
 
@@ -138,39 +128,6 @@ class FakeReadProcess:
         raise AssertionError("a full target URL must not look up a pull request")
 
 
-@dataclass(slots=True)
-class FakeMutationSession:
-    data: object
-    schema: SchemaSnapshotV1 | None
-    reader: FakeReadProcess = field(
-        default_factory=lambda: FakeReadProcess(
-            data={"unused": True},
-            schema=None,
-        )
-    )
-    requests: list[MutationRequest] = field(default_factory=list)
-    drafts: list[MutationDraft] = field(default_factory=list)
-
-    def mutate(self, request: MutationRequest) -> ApplyResult:
-        self.requests.append(request)
-        snapshot = SimpleNamespace(
-            data=freeze_json(self.data),
-            data_schema=self.schema,
-        )
-        draft = request.transform(cast("MutationSnapshot", snapshot))
-        self.drafts.append(draft)
-        return ApplyResult(
-            action="updated",
-            name=request.name,
-            repository=request.target.repository,
-            number=request.target.number,
-            comment_id=7,
-            url=COMMENT_URL,
-            revision=4,
-            state_sha256=STATE_HASH,
-        )
-
-
 def _install_read(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -185,17 +142,6 @@ def _install_read(
     )
     monkeypatch.setattr(schema_commands, "_new_process", lambda: process)
     return process
-
-
-def _install_session(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    data: object,
-    schema: SchemaSnapshotV1 | None,
-) -> FakeMutationSession:
-    session = FakeMutationSession(data=data, schema=schema)
-    monkeypatch.setattr(schema_commands, "_new_mutation_session", lambda: session)
-    return session
 
 
 def test_schema_get_reports_a_missing_snapshot(
@@ -266,101 +212,7 @@ def test_schema_get_prints_the_stored_snapshot_in_compact_form(
     assert output.err == ""
 
 
-def test_schema_set_parses_locally_before_constructing_a_remote_session(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    schema_path = tmp_path / "invalid-schema.json"
-    schema_path.write_text('{"type":', encoding="utf-8")
-    factory_called = False
-
-    def unexpected_factory() -> FakeMutationSession:
-        nonlocal factory_called
-        factory_called = True
-        raise AssertionError("remote session setup must follow local schema parsing")
-
-    monkeypatch.setattr(
-        schema_commands,
-        "_new_mutation_session",
-        unexpected_factory,
-    )
-
-    assert (
-        run(
-            [
-                "schema",
-                "set",
-                "ci",
-                str(schema_path),
-                "--target",
-                TARGET_URL,
-            ]
-        )
-        == 2
-    )
-
-    output = capsys.readouterr()
-    assert output.out == ""
-    assert "error[schema_invalid]" in output.err
-    assert factory_called is False
-
-
-def test_schema_set_replaces_the_schema_and_forwards_mutation_options(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    schema_path = tmp_path / "schema.json"
-    document = {
-        "$schema": JSON_SCHEMA_DIALECT_2020_12,
-        "type": "object",
-        "additionalProperties": True,
-    }
-    schema_path.write_text(json.dumps(document), encoding="utf-8")
-    session = _install_session(
-        monkeypatch,
-        data={"status": "ready"},
-        schema=None,
-    )
-
-    assert (
-        run(
-            [
-                "schema",
-                "set",
-                "ci",
-                str(schema_path),
-                "--target",
-                TARGET_URL,
-                "--controller",
-                "ci-bot",
-                "--if-revision",
-                "3",
-                "--json",
-            ]
-        )
-        == 0
-    )
-
-    assert len(session.requests) == 1
-    request = session.requests[0]
-    assert request.target.host == HOST
-    assert request.target.repository == REPOSITORY
-    assert request.target.number == NUMBER
-    assert request.controller == "ci-bot"
-    assert request.if_revision == 3
-    assert len(session.drafts) == 1
-    assert session.drafts[0].data == {"status": "ready"}
-    replacement = session.drafts[0].schema
-    assert isinstance(replacement, SchemaSnapshotV1)
-    assert replacement.document == document
-    output = capsys.readouterr()
-    assert json.loads(output.out)["action"] == "updated"
-    assert output.err == ""
-
-
-def test_schema_infer_previews_without_constructing_a_mutation_session(
+def test_schema_infer_prints_a_read_only_snapshot(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -370,19 +222,6 @@ def test_schema_infer_previews_without_constructing_a_mutation_session(
         schema=None,
         revision=9,
     )
-    mutation_factory_called = False
-
-    def unexpected_factory() -> FakeMutationSession:
-        nonlocal mutation_factory_called
-        mutation_factory_called = True
-        raise AssertionError("preview must remain read-only")
-
-    monkeypatch.setattr(
-        schema_commands,
-        "_new_mutation_session",
-        unexpected_factory,
-    )
-
     assert (
         run(
             [
@@ -391,9 +230,7 @@ def test_schema_infer_previews_without_constructing_a_mutation_session(
                 "ci",
                 "--target",
                 TARGET_URL,
-                "--if-revision",
-                "9",
-                "--json",
+                "--compact-output",
             ]
         )
         == 0
@@ -402,62 +239,13 @@ def test_schema_infer_previews_without_constructing_a_mutation_session(
     output = capsys.readouterr()
     payload = json.loads(output.out)
     assert payload == {
-        "applied": False,
-        "name": "ci",
-        "revision": 9,
-        "schema": {
-            "$schema": JSON_SCHEMA_DIALECT_2020_12,
-            "properties": {
-                "count": {"type": "integer"},
-                "status": {"type": "string"},
-            },
-            "type": "object",
-        },
-    }
-    assert output.err == ""
-    assert mutation_factory_called is False
-
-
-def test_schema_infer_apply_stores_the_inferred_snapshot(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    session = _install_session(
-        monkeypatch,
-        data={"status": "ready", "values": [1, "two"]},
-        schema=None,
-    )
-
-    assert (
-        run(
-            [
-                "schema",
-                "infer",
-                "ci",
-                "--target",
-                TARGET_URL,
-                "--apply",
-                "--quiet",
-            ]
-        )
-        == 0
-    )
-
-    assert len(session.drafts) == 1
-    inferred = cast("SchemaSnapshotV1", session.drafts[0].schema)
-    assert json.loads(canonical_json_bytes(inferred.document)) == {
         "$schema": JSON_SCHEMA_DIALECT_2020_12,
         "properties": {
+            "count": {"type": "integer"},
             "status": {"type": "string"},
-            "values": {
-                "items": {"type": ["integer", "string"]},
-                "type": "array",
-            },
         },
         "type": "object",
     }
-    output = capsys.readouterr()
-    assert output.out == ""
     assert output.err == ""
 
 
@@ -505,7 +293,7 @@ def test_schema_validate_accepts_stored_and_candidate_data(
     assert output.err == ""
 
 
-def test_schema_validation_failure_never_constructs_a_mutation_session(
+def test_schema_validation_failure_is_reported(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -517,19 +305,6 @@ def test_schema_validation_failure_never_constructs_a_mutation_session(
     )
     candidate_path = tmp_path / "candidate.json"
     candidate_path.write_text('{"status": 9}', encoding="utf-8")
-    mutation_factory_called = False
-
-    def unexpected_factory() -> FakeMutationSession:
-        nonlocal mutation_factory_called
-        mutation_factory_called = True
-        raise AssertionError("schema validation is read-only")
-
-    monkeypatch.setattr(
-        schema_commands,
-        "_new_mutation_session",
-        unexpected_factory,
-    )
-
     assert (
         run(
             [
@@ -547,4 +322,3 @@ def test_schema_validation_failure_never_constructs_a_mutation_session(
     output = capsys.readouterr()
     assert output.out == ""
     assert "error[schema_validation_failed]" in output.err
-    assert mutation_factory_called is False

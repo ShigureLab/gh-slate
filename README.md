@@ -67,7 +67,7 @@ gh extension command    gh slate
 
 ### Install the agent skill separately
 
-The bundled skill teaches an agent the safe inspect/dry-run/mutate/verify
+The bundled skill teaches an agent the safe inspect/dry-run/apply/verify
 workflow. Installing the CLI does not install the skill, and installing the
 skill does not install the CLI. With Node.js/npm available, install it through
 the cross-agent `skills` CLI:
@@ -100,16 +100,16 @@ accept `--repo OWNER/REPO`, while Actions may use `@event`.
 
 ## Command map
 
-| What you want to do                           | Command family                    |
-| --------------------------------------------- | --------------------------------- |
-| Preview local data as Markdown                | `render`                          |
-| Create or replace one complete slate snapshot | `apply`                           |
-| Read one slate or list all names on a target  | `view`, `list`                    |
-| Query or mutate embedded typed JSON           | `data get/set/delete/update/edit` |
-| Inspect, infer, validate, or replace a schema | `schema get/infer/validate/set`   |
-| Export or integrity-check the hidden state    | `state export/verify`             |
-| Restore drifted Markdown or remove a comment  | `repair`, `delete`                |
-| Check the local runtime and GitHub access     | `doctor`                          |
+| What you want to do                           | Command family              |
+| --------------------------------------------- | --------------------------- |
+| Preview local data as Markdown                | `render`                    |
+| Create or replace one complete slate snapshot | `apply`                     |
+| Read one slate or list all names on a target  | `view`, `list`              |
+| Query embedded typed JSON                     | `data get`                  |
+| Inspect, infer, or validate a schema          | `schema get/infer/validate` |
+| Export or integrity-check the hidden state    | `state export/verify`       |
+| Restore drifted Markdown or remove a comment  | `repair`, `delete`          |
+| Check the local runtime and GitHub access     | `doctor`                    |
 
 Run `gh slate COMMAND --help` for every flag. The examples below use the
 extension spelling; replace `gh slate` with `gh-slate` when using the Python
@@ -243,26 +243,30 @@ for example, untrusted backticks can break a code span. `md_table` and
 directly into links, code spans, headings, or raw prose, validate or escape them
 for that exact context in the trusted template.
 
-### Add or change a JSON Schema
+### Inspect or change a JSON Schema
 
 Schemas use JSON Schema draft 2020-12 and are stored with the data. `$ref`
 and `$dynamicRef` may only point to an empty or same-document `#...`
 fragment; remote URLs, files, and relative registry references are rejected
-without I/O. Validate a candidate against the current schema, infer a
-permissive starting point, or replace the schema explicitly:
+without I/O. Validate a candidate against the current schema or infer a
+permissive starting point:
 
 ```bash
 gh slate schema validate ci-summary report.json --target https://github.com/OWNER/REPO/issues/42 --json
 gh slate schema infer ci-summary --target https://github.com/OWNER/REPO/issues/42
-gh slate schema set ci-summary report.schema.json --target https://github.com/OWNER/REPO/issues/42 --if-revision 1 --json
 ```
 
-`schema infer` only prints by default; add `--apply` and an observed
-`--if-revision` to store the inferred schema. The `schema set` example
-assumes you edited `report.schema.json` after the initial apply; setting an
-identical schema is intentionally reported as `unchanged`.
+`schema infer` is always read-only. Edit its output, then store the new schema
+through the same snapshot boundary as data and renderer changes. Use
+`--clear-schema` when the next snapshot should have no schema:
 
-### Query and update typed data
+```bash
+gh slate schema infer ci-summary --target https://github.com/OWNER/REPO/issues/42
+gh slate apply ci-summary --target https://github.com/OWNER/REPO/issues/42 --schema inferred.schema.json --if-revision 1 --json
+gh slate apply ci-summary --target https://github.com/OWNER/REPO/issues/42 --clear-schema --if-revision 2 --json
+```
+
+### Query and replace typed data
 
 Queries use jq syntax and never scrape the visible table:
 
@@ -270,54 +274,22 @@ Queries use jq syntax and never scrape the visible table:
 gh slate data get ci-summary '.jobs[] | select(.status != "passed") | .name' --target https://github.com/OWNER/REPO/issues/42 --raw-output
 ```
 
-First inspect the slate with `view --json`. If it reports revision `1`, choose
-one of these writes: mutate one static path, delete paths, or transform the
-complete data object with jq. Each example below is an alternative write from
-revision `1`; all pin that observation and reject an already-stale read:
+Data changes use the same complete-snapshot `apply` path as creation. Produce
+the next JSON object in your own tool, inspect the current revision, preview
+the exact replacement, then write it with that observed revision:
 
 ```bash
-gh slate data set ci-summary '.jobs[1].status' --target https://github.com/OWNER/REPO/issues/42 --value-string passed --if-revision 1 --json
-gh slate data set ci-summary '.coverage' --target https://github.com/OWNER/REPO/issues/42 --value 91.7 --if-revision 1 --json
-gh slate data set ci-summary '.jobs[1]' --target https://github.com/OWNER/REPO/issues/42 --value-file windows-result.json --if-revision 1 --json
-gh slate data delete ci-summary '.jobs[1]' --target https://github.com/OWNER/REPO/issues/42 --if-revision 1 --json
-gh slate data update ci-summary '.jobs |= map(if .name == $name then .status = "passed" else . end)' --target https://github.com/OWNER/REPO/issues/42 --arg name windows --if-revision 1 --json
-gh slate data update ci-summary '.jobs[$index] = $result' --target https://github.com/OWNER/REPO/issues/42 --argjson index 1 --argjson result @windows-result.json --if-revision 1 --json
+gh slate view ci-summary --target https://github.com/OWNER/REPO/issues/42 --json
+gh slate apply ci-summary --target https://github.com/OWNER/REPO/issues/42 --data report.next.json --if-revision 1 --dry-run
+gh slate apply ci-summary --target https://github.com/OWNER/REPO/issues/42 --data report.next.json --if-revision 1 --json
 ```
 
-`data set` and `data delete` accept static jq-compatible paths such as
-`.status`, `.jobs[1].status`, and `.["key.with.dot"]`. A path cannot depend on
-the current data, arithmetic, a pipe, or interpolation; use `data update` for
-computed transforms. This keeps path selection independent of jq's IEEE-754
-number projection while untouched JSON numbers remain exact.
-
-Value sources are explicit and mutually exclusive: `--value` parses one strict
-JSON value, `--value-string` stores exact text, and `--value-file` parses one
-JSON document, so `91`, `"91"`, `true`, and `"true"` remain distinct. For
-`data update`, `--arg` binds text while `--argjson` binds typed JSON; prefix its
-value with `@` to load a JSON file. Deleting an absent path is an error unless
-`--ignore-missing` is requested.
-
-jq runs in a bounded isolated subprocess. Environment access, extra inputs,
-imports/includes/modules, and host-introspection builtins are unavailable;
-deterministic renderer selectors additionally reject time/date and
-platform-dependent math builtins. libjq projects numbers through IEEE-754, so
-`data get` and renderer selectors can round integers outside the exact range.
-Store precision-sensitive IDs and large integers as strings when they must pass
+The data root remains one strict JSON object. Complete replacement keeps the
+write path observable and avoids embedding a second mutation language in the
+dashboard tool. jq still runs in a bounded isolated subprocess for `data get`
+and built-in renderer selectors. libjq projects numbers through IEEE-754, so
+store precision-sensitive IDs and large integers as strings when they pass
 through jq.
-
-`data update` is stricter because it writes canonical state. Its input,
-`--argjson` values, numeric filter literals, and output must preserve identity
-through jq's number model, otherwise the command fails before writing. The
-filter must produce exactly one JSON object; zero results, multiple results,
-scalars, and arrays are errors. Use `data set` or `data delete` when exact
-large numbers must remain numeric.
-
-For an interactive typed edit, set `GH_EDITOR`, `GIT_EDITOR`, `VISUAL`, or
-`EDITOR`, then run:
-
-```bash
-gh slate data edit ci-summary --target https://github.com/OWNER/REPO/issues/42 --if-revision 1 --json
-```
 
 Refetch before any subsequent write. Inspect and verify the result:
 
@@ -328,7 +300,7 @@ gh slate state verify ci-summary --target https://github.com/OWNER/REPO/issues/4
 
 ### Repair visible drift and delete a slate
 
-A manual edit to visible Markdown is drift, not new canonical data. Mutations
+A manual edit to visible Markdown is drift, not new canonical data. Writes
 fail closed until the projection is explicitly restored:
 
 ```bash
@@ -366,7 +338,7 @@ gh slate state verify ci-summary --target https://github.com/OWNER/REPO/issues/4
 If the intended state is already present, stop. For an update, repair, or
 delete whose current outcome is now unambiguous, choose any next operation from
 the newly observed revision and pin that revision with `--if-revision`; never
-replay a mutation pinned to the old observation.
+replay a write pinned to the old observation.
 
 An unknown `create` or `upsert` needs extra care. If the slate was missing
 before the write and remains absent on the first refetch, that absence does not
@@ -403,8 +375,7 @@ Important operational boundaries:
   workflows. Never evaluate a template supplied by an untrusted fork under
   `pull_request_target`.
 - Prefer a complete `apply --data FILE` snapshot and one writer in CI.
-  Repository workflow `concurrency` prevents more races than incremental
-  updates from multiple jobs.
+  Repository workflow `concurrency` prevents races between multiple jobs.
 - Actions concurrency does not guarantee FIFO event ordering. If a dashboard
   mirrors Issue or Pull Request fields, use the webhook only to identify the
   target and refetch the current resource inside the serialized job immediately

@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 from gh_slate.codec import (
     SchemaSnapshotV1,
@@ -11,30 +10,18 @@ from gh_slate.codec import (
     validate_slate_name,
 )
 from gh_slate.codec.json import DEFAULT_JSON_LIMITS
-from gh_slate.commands.apply import _write_result
 from gh_slate.commands.render import _read_bytes
 from gh_slate.data import format_json_results
 from gh_slate.errors import ExitCode
-from gh_slate.github.apply import ApplyResult, ApplyTransaction
 from gh_slate.github.errors import GitHubReadError
 from gh_slate.github.lookup import ProcessTargetLookup
-from gh_slate.github.mutation import (
-    MutationDraft,
-    MutationError,
-    MutationRequest,
-    MutationSnapshot,
-    MutationTransaction,
-    MutationTransform,
-)
 from gh_slate.github.process import GhProcess
 from gh_slate.github.store import CommentStore
 from gh_slate.github.target import ResolvedTarget, resolve_target
-from gh_slate.github.write import GhWriteProcess
 from gh_slate.schema import (
     infer_schema,
     validate_data,
     validate_data_json,
-    validate_schema_json,
 )
 
 if TYPE_CHECKING:
@@ -43,38 +30,8 @@ if TYPE_CHECKING:
     from gh_slate.github.models import ManagedSlate
 
 
-class SchemaMutationSession(Protocol):
-    @property
-    def reader(self) -> GhProcess: ...
-
-    def mutate(self, request: MutationRequest) -> ApplyResult: ...
-
-
-@dataclass(slots=True)
-class _CoreMutationSession:
-    reader: GhProcess
-    transaction: MutationTransaction
-
-    def mutate(self, request: MutationRequest) -> ApplyResult:
-        return self.transaction.mutate(request)
-
-
 def _new_process() -> GhProcess:
     return GhProcess()
-
-
-def _new_mutation_session() -> SchemaMutationSession:
-    reader = GhProcess()
-    return _CoreMutationSession(
-        reader=reader,
-        transaction=MutationTransaction(
-            reader=reader,
-            applier=ApplyTransaction(
-                reader=reader,
-                writer=GhWriteProcess(),
-            ),
-        ),
-    )
 
 
 def _target(
@@ -123,22 +80,6 @@ def _stored_schema(
     return schema
 
 
-def _mutation_request(
-    args: Namespace,
-    session: SchemaMutationSession,
-    transform: MutationTransform,
-) -> MutationRequest:
-    name = validate_slate_name(args.name)
-    target = _target(args, session.reader)
-    return MutationRequest(
-        target=target,
-        name=name,
-        transform=transform,
-        controller=args.controller,
-        if_revision=args.if_revision,
-    )
-
-
 def _write_schema(
     schema: SchemaSnapshotV1,
     *,
@@ -162,89 +103,10 @@ def run_schema_get(args: Namespace) -> int:
     return 0
 
 
-def run_schema_set(args: Namespace) -> int:
-    schema = validate_schema_json(
-        _read_bytes(
-            args.file,
-            subject="schema",
-            max_bytes=DEFAULT_JSON_LIMITS.max_input_bytes,
-        )
-    )
-    session = _new_mutation_session()
-
-    def transform(snapshot: MutationSnapshot) -> MutationDraft:
-        return MutationDraft(
-            snapshot.data,
-            schema=schema,
-        )
-
-    result = session.mutate(_mutation_request(args, session, transform))
-    _write_result(
-        result,
-        dry_run=False,
-        as_json=args.json,
-        quiet=args.quiet,
-    )
-    return 0
-
-
-def _revision_check(
-    expected: int | None,
-    actual: int,
-) -> None:
-    if expected is not None and expected != actual:
-        raise MutationError(
-            "stored revision does not match if_revision",
-            code="revision_conflict",
-            exit_code=ExitCode.CONFLICT,
-            details={
-                "expected": expected,
-                "actual": actual,
-            },
-        )
-
-
 def run_schema_infer(args: Namespace) -> int:
-    if args.apply:
-        session = _new_mutation_session()
-
-        def transform(snapshot: MutationSnapshot) -> MutationDraft:
-            return MutationDraft(
-                snapshot.data,
-                schema=infer_schema(snapshot.data),
-            )
-
-        result = session.mutate(_mutation_request(args, session, transform))
-        _write_result(
-            result,
-            dry_run=False,
-            as_json=args.json,
-            quiet=args.quiet,
-        )
-        return 0
-
     _target_value, slate = _read_slate(args)
-    _revision_check(
-        args.if_revision,
-        slate.decoded.state.revision,
-    )
     schema = infer_schema(slate.decoded.state.data)
-    if args.quiet:
-        return 0
-    if args.json:
-        sys.stdout.write(
-            canonical_json_bytes(
-                {
-                    "applied": False,
-                    "name": slate.name,
-                    "revision": slate.decoded.state.revision,
-                    "schema": schema.document,
-                }
-            ).decode("utf-8")
-            + "\n"
-        )
-    else:
-        _write_schema(schema, compact=False)
+    _write_schema(schema, compact=args.compact_output)
     return 0
 
 
@@ -284,9 +146,7 @@ def run_schema_validate(args: Namespace) -> int:
 
 
 __all__ = [
-    "SchemaMutationSession",
     "run_schema_get",
     "run_schema_infer",
-    "run_schema_set",
     "run_schema_validate",
 ]

@@ -252,6 +252,7 @@ def test_apply_command_surface_parses_full_snapshot_options() -> None:
     assert parsed.quiet is False
     assert parsed.data == "data.json"
     assert parsed.schema == "schema.json"
+    assert parsed.clear_schema is False
     assert parsed.template is None
     assert parsed.table == ".jobs"
     assert parsed.list is None
@@ -277,6 +278,7 @@ def test_apply_if_revision_must_be_a_positive_integer(revision: str) -> None:
     [
         ["--template", "slate.j2", "--table", ".jobs"],
         ["--table", ".jobs", "--list", ".notes"],
+        ["--schema", "schema.json", "--clear-schema"],
         ["--json", "--quiet"],
     ],
 )
@@ -402,57 +404,8 @@ def test_view_json_and_web_are_mutually_exclusive() -> None:
             "--compact-output",
             "--exit-status",
         ],
-        [
-            "data",
-            "set",
-            "ci",
-            '.["key.with.dot"]',
-            "--value-string",
-            "91",
-            "--target",
-            "42",
-            "--if-revision",
-            "7",
-            "--json",
-        ],
-        [
-            "data",
-            "delete",
-            "ci",
-            ".old",
-            ".jobs.experimental",
-            "--ignore-missing",
-            "--target",
-            "42",
-            "--quiet",
-        ],
-        [
-            "data",
-            "update",
-            "ci",
-            ".jobs[$job] = $result",
-            "--arg",
-            "job",
-            "linux",
-            "--argjson",
-            "result",
-            "@result.json",
-            "--target",
-            "42",
-        ],
-        ["data", "edit", "ci", "--target", "42"],
         ["schema", "get", "ci", "--target", "42", "--compact-output"],
-        [
-            "schema",
-            "set",
-            "ci",
-            "schema.json",
-            "--target",
-            "42",
-            "--if-revision",
-            "7",
-        ],
-        ["schema", "infer", "ci", "--target", "42", "--apply", "--json"],
+        ["schema", "infer", "ci", "--target", "42", "--compact-output"],
         [
             "schema",
             "validate",
@@ -473,41 +426,22 @@ def test_data_and_schema_command_surfaces_are_registered(
 
 
 @pytest.mark.parametrize(
-    "options",
+    ("group", "command"),
     [
-        ["--value", "91", "--value-string", "91"],
-        ["--value-file", "value.json", "--value", "{}"],
-        [],
+        ("data", "set"),
+        ("data", "delete"),
+        ("data", "update"),
+        ("data", "edit"),
+        ("schema", "set"),
     ],
 )
-def test_data_set_requires_one_unambiguous_value_source(
-    options: list[str],
+def test_incremental_mutation_commands_are_not_registered(
+    group: str,
+    command: str,
 ) -> None:
     parser = build_parser(prog="gh slate")
 
     with pytest.raises(SystemExit) as exit_info:
-        parser.parse_args(["data", "set", "ci", ".status", *options])
-
-    assert exit_info.value.code == 2
-
-
-@pytest.mark.parametrize(
-    "argv",
-    [
-        ["data", "set", "ci", ".x", "--value", "1", "--json", "--quiet"],
-        ["data", "delete", "ci", ".x", "--json", "--quiet"],
-        ["data", "update", "ci", ".", "--json", "--quiet"],
-        ["data", "edit", "ci", "--json", "--quiet"],
-        ["schema", "set", "ci", "schema.json", "--json", "--quiet"],
-        ["schema", "infer", "ci", "--apply", "--json", "--quiet"],
-    ],
-)
-def test_structured_and_quiet_mutation_output_are_mutually_exclusive(
-    argv: list[str],
-) -> None:
-    parser = build_parser(prog="gh slate")
-
-    with pytest.raises(SystemExit) as exit_info:
-        parser.parse_args(argv)
+        parser.parse_args([group, command])
 
     assert exit_info.value.code == 2
