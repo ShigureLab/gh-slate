@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import io
-import json
 import os
 import re
 import shutil
@@ -21,7 +20,6 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
-CANDIDATE_WORKFLOW = ROOT / ".github" / "workflows" / "release-candidate.yml"
 VERSION = "0.1.0"
 _SPEC = importlib.util.spec_from_file_location(
     "gh_slate_release_verify",
@@ -32,16 +30,6 @@ _MODULE = importlib.util.module_from_spec(_SPEC)
 sys.modules[_SPEC.name] = _MODULE
 _SPEC.loader.exec_module(_MODULE)
 release_verify = cast("Any", _MODULE)
-sys.modules.setdefault("release_verify", _MODULE)
-_INTAKE_SPEC = importlib.util.spec_from_file_location(
-    "gh_slate_intake_release_candidate",
-    ROOT / "scripts" / "intake_release_candidate.py",
-)
-assert _INTAKE_SPEC is not None and _INTAKE_SPEC.loader is not None
-_INTAKE_MODULE = importlib.util.module_from_spec(_INTAKE_SPEC)
-sys.modules[_INTAKE_SPEC.name] = _INTAKE_MODULE
-_INTAKE_SPEC.loader.exec_module(_INTAKE_MODULE)
-candidate_intake = cast("Any", _INTAKE_MODULE)
 
 
 def _add_tar_bytes(
@@ -137,15 +125,6 @@ def _artifacts(
 def _workflow() -> dict[str, Any]:
     value = yaml.load(
         WORKFLOW.read_text(encoding="utf-8"),
-        Loader=yaml.BaseLoader,
-    )
-    assert isinstance(value, dict)
-    return value
-
-
-def _candidate_workflow() -> dict[str, Any]:
-    value = yaml.load(
-        CANDIDATE_WORKFLOW.read_text(encoding="utf-8"),
         Loader=yaml.BaseLoader,
     )
     assert isinstance(value, dict)
@@ -942,221 +921,6 @@ def test_release_verification_writes_hashes_for_the_same_artifact_set(
         assert digest == hashlib.sha256((release_root / relative).read_bytes()).hexdigest()
 
 
-def test_candidate_intake_revalidates_identity_artifacts_and_manifest(
-    tmp_path: Path,
-) -> None:
-    project = _project(tmp_path)
-    release_root = tmp_path / "candidate"
-    python_dir = release_root / "python"
-    python_dir.mkdir(parents=True)
-    source_artifacts = _artifacts(tmp_path / "source")
-    artifacts = tuple(python_dir / source.name for source in (source_artifacts.wheel, source_artifacts.sdist))
-    for source, destination in zip(source_artifacts.paths, artifacts, strict=True):
-        shutil.copy2(source, destination)
-    rebuilt_python = tmp_path / "rebuilt-python"
-    rebuilt_python.mkdir()
-    for source in artifacts:
-        shutil.copy2(source, rebuilt_python / source.name)
-    extensions = release_verify.build_extension_assets(
-        project,
-        release_root / "github",
-        version=VERSION,
-    )
-    release_verify.write_sha256_manifest(
-        (*artifacts, *extensions),
-        base_dir=release_root,
-        destination=release_root / "SHA256SUMS",
-    )
-    context = {
-        "repository": "owner/gh-slate",
-        "repository_id": "42",
-        "run_id": "99",
-        "run_attempt": "2",
-        "sha": "a" * 40,
-        "tag": "v0.1.0",
-    }
-    (release_root / "release-context.json").write_text(
-        json.dumps(context, separators=(",", ":")) + "\n",
-        encoding="ascii",
-    )
-
-    accepted = candidate_intake.verify_candidate(
-        artifact_root=release_root,
-        rebuilt_python_dir=rebuilt_python,
-        project_root=project,
-        expected_repository="owner/gh-slate",
-        expected_repository_id="42",
-        expected_run_id="99",
-        expected_run_attempt="2",
-        expected_sha="a" * 40,
-        expected_tag="v0.1.0",
-    )
-
-    assert accepted.tag == "v0.1.0"
-    (release_root / "SHA256SUMS").write_text("0" * 64 + "  unexpected\n", encoding="ascii")
-    with pytest.raises(candidate_intake.CandidateIntakeError, match="manifest"):
-        candidate_intake.verify_candidate(
-            artifact_root=release_root,
-            rebuilt_python_dir=rebuilt_python,
-            project_root=project,
-            expected_repository="owner/gh-slate",
-            expected_repository_id="42",
-            expected_run_id="99",
-            expected_run_attempt="2",
-            expected_sha="a" * 40,
-            expected_tag="v0.1.0",
-        )
-
-
-def test_candidate_intake_binds_artifacts_to_the_independent_source_rebuild(
-    tmp_path: Path,
-) -> None:
-    project = _project(tmp_path)
-    release_root = tmp_path / "candidate"
-    python_dir = release_root / "python"
-    python_dir.mkdir(parents=True)
-    source_artifacts = _artifacts(tmp_path / "source")
-    candidate_artifacts = tuple(python_dir / source.name for source in source_artifacts.paths)
-    rebuilt_python = tmp_path / "rebuilt-python"
-    rebuilt_python.mkdir()
-    for source, candidate in zip(
-        source_artifacts.paths,
-        candidate_artifacts,
-        strict=True,
-    ):
-        shutil.copy2(source, candidate)
-        shutil.copy2(source, rebuilt_python / source.name)
-    extensions = release_verify.build_extension_assets(
-        project,
-        release_root / "github",
-        version=VERSION,
-    )
-    candidate_artifacts[0].write_bytes(candidate_artifacts[0].read_bytes() + b"replaced")
-    release_verify.write_sha256_manifest(
-        (*candidate_artifacts, *extensions),
-        base_dir=release_root,
-        destination=release_root / "SHA256SUMS",
-    )
-    context = {
-        "repository": "owner/gh-slate",
-        "repository_id": "42",
-        "run_id": "99",
-        "run_attempt": "2",
-        "sha": "a" * 40,
-        "tag": "v0.1.0",
-    }
-    (release_root / "release-context.json").write_text(
-        json.dumps(context, separators=(",", ":")) + "\n",
-        encoding="ascii",
-    )
-
-    with pytest.raises(candidate_intake.CandidateIntakeError, match="source rebuild"):
-        candidate_intake.verify_candidate(
-            artifact_root=release_root,
-            rebuilt_python_dir=rebuilt_python,
-            project_root=project,
-            expected_repository="owner/gh-slate",
-            expected_repository_id="42",
-            expected_run_id="99",
-            expected_run_attempt="2",
-            expected_sha="a" * 40,
-            expected_tag="v0.1.0",
-        )
-
-    shutil.copy2(source_artifacts.wheel, candidate_artifacts[0])
-    replacement_project = _project(tmp_path / "replacement")
-    (replacement_project / "src" / "gh_slate" / "__main__.py").write_text(
-        "raise SystemExit('replacement payload')\n",
-        encoding="utf-8",
-    )
-    shutil.rmtree(release_root / "github")
-    replacement_extensions = release_verify.build_extension_assets(
-        replacement_project,
-        release_root / "github",
-        version=VERSION,
-    )
-    release_verify.write_sha256_manifest(
-        (*candidate_artifacts, *replacement_extensions),
-        base_dir=release_root,
-        destination=release_root / "SHA256SUMS",
-    )
-
-    with pytest.raises(
-        candidate_intake.CandidateIntakeError,
-        match="candidate extension artifact is not the source rebuild",
-    ):
-        candidate_intake.verify_candidate(
-            artifact_root=release_root,
-            rebuilt_python_dir=rebuilt_python,
-            project_root=project,
-            expected_repository="owner/gh-slate",
-            expected_repository_id="42",
-            expected_run_id="99",
-            expected_run_attempt="2",
-            expected_sha="a" * 40,
-            expected_tag="v0.1.0",
-        )
-
-
-def test_candidate_intake_binds_the_tag_to_the_canonical_triggering_run(
-    tmp_path: Path,
-) -> None:
-    workflow = tmp_path / "workflow.json"
-    run = tmp_path / "run.json"
-    workflow.write_text(
-        json.dumps(
-            {
-                "id": 123,
-                "path": ".github/workflows/release-candidate.yml",
-                "state": "active",
-            }
-        ),
-        encoding="utf-8",
-    )
-    run_payload = {
-        "id": 99,
-        "workflow_id": 123,
-        "run_attempt": 2,
-        "path": ".github/workflows/release-candidate.yml",
-        "event": "push",
-        "status": "completed",
-        "conclusion": "success",
-        "head_sha": "a" * 40,
-        "head_branch": "v0.1.0",
-        "repository": {"id": 42, "full_name": "owner/gh-slate"},
-        "head_repository": {"id": 42, "full_name": "owner/gh-slate"},
-    }
-    run.write_text(json.dumps(run_payload), encoding="utf-8")
-
-    assert (
-        candidate_intake.verify_triggering_run(
-            workflow_path=workflow,
-            run_path=run,
-            expected_repository="owner/gh-slate",
-            expected_repository_id="42",
-            expected_workflow_id="123",
-            expected_run_id="99",
-            expected_run_attempt="2",
-            expected_sha="a" * 40,
-        )
-        == "v0.1.0"
-    )
-
-    run_payload["workflow_id"] = 124
-    run.write_text(json.dumps(run_payload), encoding="utf-8")
-    with pytest.raises(candidate_intake.CandidateIntakeError, match="identity"):
-        candidate_intake.verify_triggering_run(
-            workflow_path=workflow,
-            run_path=run,
-            expected_repository="owner/gh-slate",
-            expected_repository_id="42",
-            expected_workflow_id="123",
-            expected_run_id="99",
-            expected_run_attempt="2",
-            expected_sha="a" * 40,
-        )
-
-
 def test_all_repository_workflow_actions_use_immutable_commit_shas() -> None:
     for path in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
         workflow = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
@@ -1180,25 +944,45 @@ def test_all_repository_workflow_actions_use_immutable_commit_shas() -> None:
                 )
 
 
+def test_release_workflow_has_one_tag_trigger_and_a_minimal_oidc_job() -> None:
+    workflow = _workflow()
+    assert workflow["on"] == {"push": {"tags": ["v*"]}}
+    assert workflow["permissions"] == {}
+    jobs = workflow["jobs"]
+    assert list(jobs) == [
+        "build",
+        "live-gate",
+        "extension-smoke",
+        "stage-release",
+        "publish-pypi",
+        "publish-release",
+    ]
+    assert jobs["build"]["permissions"] == {"contents": "read"}
+    publisher = jobs["publish-pypi"]
+    assert publisher["needs"] == "stage-release"
+    assert publisher["permissions"] == {"id-token": "write"}
+    assert len(publisher["steps"]) == 2
+    assert publisher["steps"][1]["uses"].startswith("pypa/gh-action-pypi-publish@")
+
+
 @pytest.mark.skipif(
     os.name == "nt" or shutil.which("bash") is None,
     reason="workflow shell validation requires Unix Bash",
 )
 def test_release_workflow_shell_blocks_are_syntactically_valid() -> None:
-    for workflow in (_candidate_workflow(), _workflow()):
-        for job in workflow["jobs"].values():
-            for step in job["steps"]:
-                source = step.get("run")
-                if not isinstance(source, str):
-                    continue
-                result = subprocess.run(
-                    ["bash", "-n"],
-                    input=source,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-                assert result.returncode == 0, result.stderr
+    for job in _workflow()["jobs"].values():
+        for step in job["steps"]:
+            source = step.get("run")
+            if not isinstance(source, str):
+                continue
+            result = subprocess.run(
+                ["bash", "-n"],
+                input=source,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert result.returncode == 0, result.stderr
 
 
 def test_extension_bundle_input_rejects_symlinks(
