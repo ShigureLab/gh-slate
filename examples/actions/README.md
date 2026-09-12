@@ -44,6 +44,3 @@ All writers also use `cancel-in-progress: false`. GitHub concurrency groups do
 not promise FIFO ordering, and the comment endpoint has no documented
 compare-and-swap update. Serializing one writer per target and slate, then
 reading current state inside that serialized job, is part of the safety model.
-
-The examples pin the Python package to `gh-slate==0.1.0`. Update that exact
-version intentionally when adopting a later release.
