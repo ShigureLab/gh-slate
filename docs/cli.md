@@ -1740,3 +1740,37 @@ reservation. PyPI may reserve names for security reasons, and another valid
 project can publish first. The only practical confirmation is a successful
 upload of a real, functional release. An empty placeholder should not be
 published because PyPI's name-retention policy treats name squatting as invalid.
+
+## JSON Patch through apply
+
+`apply NAME --patch FILE --if-revision N` applies an RFC 6902 array to the
+stored **data root**. It requires an existing slate and is mutually exclusive
+with `--data` and `--mode create`. Use `-` for stdin; only one input may use
+stdin. All six operations are supported: `add`, `remove`, `replace`, `move`,
+`copy`, and `test`. Paths use JSON Pointer (`~0` for `~`, `~1` for `/`); array
+indices follow RFC 6902, including `-` for append. Prefer stable object keys
+for independently updated findings or jobs.
+
+```sh
+gh slate view review --target owner/repo#42 --json
+gh slate apply review --target owner/repo#42 \
+  --patch examples/profiles/resolve-finding.patch.json --if-revision 3 \
+  --dry-run --json
+```
+
+The patch touches only business data. It cannot change the stored controller,
+revision, renderer, or metadata. All operations run on a private candidate;
+only the final object is validated against the selected schema and routed to
+a view. An explicit `--profile` or `--template` may replace the definition in
+the same transaction. Intermediate business-schema violations are allowed,
+but JSON resource limits still apply. Failed `test` or stale revision returns
+conflict (exit 4); malformed operations and final validation failures return
+validation (exit 2). Each error includes the failing operation index where
+available. Failure performs no write.
+
+With `--dry-run --json`, output includes candidate `data`, `meta`, `markdown`,
+and `changes`: an RFC 6902 data diff, definition/meta change flags, and views
+before and after. Plain dry-run prints Markdown. No-op preserves revision.
+The normal single-comment writer handles the final candidate; an uncertain
+response triggers readback, never patch replay. GitHub offers no atomic
+compare-and-swap for comments: serialize publishers externally.

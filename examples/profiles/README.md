@@ -34,3 +34,8 @@ Findings have stable keys such as `F17`. Resolving a finding changes its status;
 the producer still decides whether the complete review can be approved. The
 analyzed revision in `data.source.head_sha` is supplied by the producer and is
 never replaced with a current head by gh-slate.
+
+局部更新使用标准 JSON Patch，例如 `resolve-finding.patch.json` 只修改 F17，
+保留其他 finding。先用 `view --json` 读取 revision，再运行
+`apply review --patch resolve-finding.patch.json --if-revision N`。加上
+`--dry-run --json` 可检查候选差异、最终数据和视图切换。

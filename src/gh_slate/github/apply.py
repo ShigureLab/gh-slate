@@ -12,6 +12,7 @@ from gh_slate.codec import (
     SchemaSnapshotV1,
     State,
     StateDraft,
+    canonical_json_bytes,
     encode_comment,
     resolve_revision,
     validate_slate_name,
@@ -26,6 +27,7 @@ from gh_slate.github.target import (
     target_from_comment_url,
 )
 from gh_slate.github.write import GhWriteOutcomeUnknown, GhWriteTimeout
+from gh_slate.patching import apply_data_patch, data_diff, prepare_patch
 from gh_slate.rendering import SlateContext, render
 from gh_slate.rendering.routing import selected_view
 
@@ -107,6 +109,7 @@ class ApplyRequest:
     name: str
     mode: ApplyMode = "upsert"
     data: object | None = None
+    patch: object | None = None
     data_schema: SchemaInput = None
     replace_schema: bool = False
     renderer: RendererDescriptorV1 | None = None
@@ -169,6 +172,20 @@ class ApplyRequest:
                 code="apply_request_invalid",
                 exit_code=ExitCode.VALIDATION,
             )
+        if self.patch is not None:
+            if self.data is not None:
+                raise ApplyError(
+                    "data and patch are mutually exclusive", code="patch_input_conflict", exit_code=ExitCode.VALIDATION
+                )
+            if self.if_revision is None:
+                raise ApplyError(
+                    "patch requires if_revision", code="patch_revision_required", exit_code=ExitCode.VALIDATION
+                )
+            if self.mode == "create":
+                raise ApplyError(
+                    "patch requires an existing slate", code="patch_existing_required", exit_code=ExitCode.VALIDATION
+                )
+            object.__setattr__(self, "patch", prepare_patch(self.patch))
         if self.renderer is not None and not isinstance(
             self.renderer,
             RendererDescriptorV1,
@@ -195,6 +212,7 @@ class ApplyResult:
     markdown: str | None = None
     meta_source: str | None = None
     view: str | None = None
+    preview: Mapping[str, object] | None = None
 
     def to_json(self) -> dict[str, object]:
         value: dict[str, object] = {
@@ -214,6 +232,8 @@ class ApplyResult:
                     "markdown": self.markdown,
                 }
             )
+        if self.dry_run and self.preview is not None:
+            value.update(self.preview)
         if self.view is not None:
             value["view"] = self.view
         if self.meta_source is not None:
@@ -361,6 +381,10 @@ def _check_mode_and_revision(
             exit_code=ExitCode.NOT_FOUND,
             details={"name": request.name},
         )
+    if request.patch is not None and existing is None:
+        raise ApplyError(
+            "patch requires an existing slate", code="patch_existing_required", exit_code=ExitCode.NOT_FOUND
+        )
     if request.if_revision is None:
         return
     if existing is None or existing.state.revision != request.if_revision:
@@ -494,6 +518,9 @@ def _desired_state(
         reuse_renderer = request.renderer is None
         reuse_schema = not replacing_schema
 
+    if request.patch is not None:
+        assert previous is not None
+        data = apply_data_patch(previous.data, request.patch)
     assert renderer is not None
     if previous is not None and previous.meta is not None and meta is None:
         raise ApplyError("a V2 slate requires a jinja@2 template", code="renderer_unsupported")
@@ -793,6 +820,34 @@ def _result(
     recovered: bool = False,
     markdown: str | None = None,
 ) -> ApplyResult:
+    preview = None
+    if dry_run:
+        previous = None if existing is None else existing.state
+        previous_view = None if previous is None else selected_view(previous.renderer, previous.data)
+        definition = {
+            "renderer": state.renderer.to_json(),
+            "schema": None if state.data_schema is None else state.data_schema.to_json(),
+        }
+        old_definition = (
+            None
+            if previous is None
+            else {
+                "renderer": previous.renderer.to_json(),
+                "schema": None if previous.data_schema is None else previous.data_schema.to_json(),
+            }
+        )
+        preview = {
+            "data": state.data,
+            "meta": None if state.meta is None else state.meta.to_json(),
+            "changes": {
+                "data": [{"op": "add", "path": "", "value": state.data}]
+                if previous is None
+                else data_diff(previous.data, state.data),
+                "definition": canonical_json_bytes(definition) != canonical_json_bytes(old_definition),
+                "meta": previous is None or previous.meta != state.meta,
+                "view": {"before": previous_view, "after": selected_view(state.renderer, state.data)},
+            },
+        }
     return ApplyResult(
         action=action,
         name=request.name,
@@ -807,6 +862,7 @@ def _result(
         markdown=markdown if dry_run else None,
         meta_source="github" if state.meta is not None else None,
         view=selected_view(state.renderer, state.data),
+        preview=preview,
     )
 
 

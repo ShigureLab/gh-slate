@@ -1,0 +1,4 @@
+[
+  { "op": "test", "path": "/findings/F17/status", "value": "open" },
+  { "op": "replace", "path": "/findings/F17/status", "value": "resolved" }
+]

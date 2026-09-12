@@ -412,3 +412,68 @@ def test_multi_view_updates_switch_one_comment_without_local_files(tmp_path, mon
         assert run(base) == 2
         capsys.readouterr()
     assert len([event for event in backend.events if event[0] in {"POST", "PATCH"}]) == len(writes)
+
+
+def test_patch_cli_cross_view_final_validation_and_stdin(tmp_path, monkeypatch, capsys):
+    from io import StringIO
+    from pathlib import Path
+    from shutil import copytree
+
+    backend = FakeGhBackend(page_url=f"https://{HOST}/{REPOSITORY}/pull/{NUMBER}")
+    transaction = apply_commands._CoreTransaction(
+        reader=GhProcess(runner=ReadRunner(backend)), writer=GhWriteProcess(runner=WriteRunner(backend))
+    )
+    monkeypatch.setattr(apply_commands, "_new_transaction", lambda: transaction)
+    profiles = tmp_path / "definitions"
+    copytree(Path(__file__).parents[2] / "examples/profiles", profiles)
+    base = ["apply", "review", "--target", backend.page_url, "--json"]
+    assert (
+        run(
+            [
+                *base,
+                "--config",
+                str(profiles / "boards.toml"),
+                "--profile",
+                "review",
+                "--data",
+                str(profiles / "review-changes.json"),
+            ]
+        )
+        == 0
+    )
+    created = json.loads(capsys.readouterr().out)
+    operations = [
+        {"op": "replace", "path": "/outcome", "value": "approved"},
+        {"op": "remove", "path": "/findings"},
+        {"op": "add", "path": "/summary", "value": "All findings resolved"},
+    ]
+    patch = tmp_path / "patch.json"
+    patch.write_text(json.dumps(operations))
+    update = [*base, "--patch", str(patch), "--if-revision", "1"]
+    assert run([*update, "--dry-run"]) == 0
+    preview = json.loads(capsys.readouterr().out)
+    assert preview["changes"]["view"] == {"before": "changes_requested", "after": "approved"}
+    assert preview["data"] == {
+        "source": json.loads((profiles / "review-changes.json").read_text())["source"],
+        "outcome": "approved",
+        "summary": "All findings resolved",
+    }
+    assert len(backend.comments) == 1
+    assert run(update) == 0
+    updated = json.loads(capsys.readouterr().out)
+    assert updated["comment_id"] == created["comment_id"]
+    assert updated["revision"] == 2
+    assert [event[0] for event in backend.events if event[0] in {"POST", "PATCH"}] == ["POST", "PATCH"]
+    assert run([*base, "--patch", str(patch)]) == 2
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as error:
+        run([*update, "--data", str(patch)])
+    assert error.value.code == 2
+    capsys.readouterr()
+    monkeypatch.setattr("sys.stdin", StringIO('[{"op":"test","path":"/outcome","value":"approved"}]'))
+    assert run([*base, "--patch", "-", "--if-revision", "2"]) == 0
+    assert json.loads(capsys.readouterr().out)["action"] == "unchanged"
+    monkeypatch.setattr("sys.stdin", StringIO('[{"op":"test","op":"add","path":"/outcome","value":"approved"}]'))
+    assert run([*base, "--patch", "-", "--if-revision", "2"]) == 2
+    capsys.readouterr()
+    assert [event[0] for event in backend.events if event[0] in {"POST", "PATCH"}] == ["POST", "PATCH"]

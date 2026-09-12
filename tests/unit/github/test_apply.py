@@ -1145,3 +1145,114 @@ def test_v2_snapshot_reproduction_does_not_need_live_metadata() -> None:
     stored = decode_comment(cast("str", github.comments[0]["body"]))
     assert render_state(stored.state, slate=SlateContext(name="ci", number=99)).markdown == "42\n"
     assert render_state(replace(stored.state, revision=99)).render_sha256 == stored.state.render_sha256
+
+
+def _stored(remote):
+    return decode_comment(cast("str", remote.comments[0]["body"])).state
+
+
+def _create(remote):
+    _apply(
+        remote,
+        renderer=jinja_descriptor("{{ data | compact_json }}", version=2),
+        data={"findings": {"F17": {"status": "open"}, "F18": {"status": "open"}}},
+    )
+    remote.write_calls.clear()
+
+
+def test_patch_changes_stable_key_and_preserves_envelope():
+    remote = FakeGitHub()
+    _create(remote)
+    before = _stored(remote)
+    operations = [{"op": "replace", "path": "/findings/F17/status", "value": "resolved"}]
+    preview = _apply(remote, patch=operations, if_revision=1, dry_run=True).to_json()
+    changes = cast("dict[str, object]", preview["changes"])
+    assert changes["data"] == operations
+    assert changes["definition"] is False
+    assert remote.write_calls == []
+    result = _apply(remote, patch=operations, if_revision=1)
+    after = _stored(remote)
+    assert result.revision == 2
+    assert after.data["findings"]["F17"]["status"] == "resolved"
+    assert after.data["findings"]["F18"] == before.data["findings"]["F18"]
+    assert (after.meta, after.controller, after.renderer) == (before.meta, before.controller, before.renderer)
+    assert len(remote.write_calls) == 1
+    assert _apply(remote, patch=operations, if_revision=2).action == "unchanged"
+    assert _stored(remote).revision == 2
+    assert len(remote.write_calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("arguments", "code"),
+    [
+        ({"patch": []}, "patch_revision_required"),
+        ({"patch": [], "if_revision": 1, "data": {}}, "patch_input_conflict"),
+        ({"patch": [], "if_revision": 1, "mode": "create"}, "patch_existing_required"),
+        ({"patch": [], "if_revision": 2}, "revision_conflict"),
+        (
+            {"patch": [{"op": "test", "path": "/findings/F17/status", "value": "resolved"}], "if_revision": 1},
+            "patch_test_failed",
+        ),
+    ],
+)
+def test_patch_preconditions_fail_without_writing(arguments, code):
+    remote = FakeGitHub()
+    _create(remote)
+    before = remote.comments[0]["body"]
+    with pytest.raises(GhSlateError) as error:
+        _apply(remote, **arguments)
+    assert error.value.code == code
+    assert remote.write_calls == []
+    assert remote.comments[0]["body"] == before
+
+
+def test_patch_cannot_create_instance():
+    remote = FakeGitHub()
+    with pytest.raises(GhSlateError) as error:
+        _apply(remote, patch=[], if_revision=1, renderer=jinja_descriptor("ok", version=2))
+    assert error.value.code == "patch_existing_required"
+    assert remote.write_calls == []
+
+
+def test_patch_validates_only_final_data_with_new_definition():
+    remote = FakeGitHub()
+    _apply(
+        remote,
+        data={"old": "value"},
+        data_schema={"required": ["old"]},
+        renderer=jinja_descriptor("{{ data.old }}", version=2),
+    )
+    remote.write_calls.clear()
+    patch = [{"op": "remove", "path": "/old"}, {"op": "add", "path": "/new", "value": "value"}]
+    with pytest.raises(GhSlateError) as error:
+        _apply(remote, patch=patch, if_revision=1)
+    assert error.value.exit_code == ExitCode.VALIDATION
+    assert remote.write_calls == []
+    result = _apply(
+        remote,
+        patch=patch,
+        if_revision=1,
+        renderer=jinja_descriptor("{{ data.new }}", version=2),
+        data_schema={"required": ["new"]},
+    )
+    assert result.revision == 2
+    assert _stored(remote).data == {"new": "value"}
+    assert len(remote.write_calls) == 1
+
+
+@pytest.mark.parametrize(
+    "behavior", ["ambiguous-applied", "timeout-applied", "ambiguous-unapplied", "timeout-unapplied"]
+)
+def test_patch_uncertain_write_is_never_replayed(behavior):
+    remote = FakeGitHub()
+    _create(remote)
+    remote.write_behavior = behavior
+    args = {"patch": [{"op": "remove", "path": "/findings/F17"}], "if_revision": 1}
+    if behavior.endswith("-unapplied"):
+        with pytest.raises(GhSlateError):
+            _apply(remote, **args)
+        assert _stored(remote).revision == 1
+    else:
+        assert _apply(remote, **args).recovered is True
+        assert _stored(remote).revision == 2
+    assert len(remote.write_calls) == 1

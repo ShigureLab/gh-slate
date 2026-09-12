@@ -136,12 +136,18 @@ def _add_snapshot_options(
     parser: argparse.ArgumentParser,
     *,
     data_defaults_empty: bool = False,
+    allow_patch: bool = False,
 ) -> None:
-    parser.add_argument(
+    data_input = parser.add_mutually_exclusive_group() if allow_patch else parser
+    data_input.add_argument(
         "--data",
         metavar="FILE",
         help=("strict JSON object input; use - for stdin" + (" (default: {})" if data_defaults_empty else "")),
     )
+    if allow_patch:
+        data_input.add_argument(
+            "--patch", metavar="FILE", help="RFC 6902 JSON Patch of existing data; requires --if-revision"
+        )
     parser.add_argument(
         "--schema",
         metavar="FILE",
@@ -269,7 +275,7 @@ def build_parser(*, prog: str | None = None) -> argparse.ArgumentParser:
         action="store_true",
         help="suppress successful output",
     )
-    _add_snapshot_options(apply_parser)
+    _add_snapshot_options(apply_parser, allow_patch=True)
     _add_renderer_options(apply_parser)
     from gh_slate.commands.apply import run_apply
 
