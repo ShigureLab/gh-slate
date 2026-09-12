@@ -4,17 +4,16 @@ from collections.abc import Mapping
 
 import pytest
 
-from gh_slate.codec import CodecError, RendererDescriptorV1
+from gh_slate.codec import CodecError, RendererDescriptor
+from gh_slate.codec.meta import MetaSnapshot
 from gh_slate.configuration import load_profile
-from gh_slate.rendering import RenderingError, SlateContext, render
+from gh_slate.rendering import RenderingError, render
 from gh_slate.rendering.routing import selected_view
 from gh_slate.schema import SchemaError
 
 
 def _renderer(pointer="/outcome", views=None):
-    return RendererDescriptorV1(
-        kind="jinja",
-        version=2,
+    return RendererDescriptor(
         config={
             "profile": "review",
             "view_by": pointer,
@@ -37,10 +36,10 @@ def _renderer(pointer="/outcome", views=None):
     ],
 )
 def test_only_the_selected_view_is_rendered(data, view, prefix):
-    result = render(data, _renderer(), slate=SlateContext(name="ci"))
+    result = render(data, _renderer(), meta=MetaSnapshot.local("ci"))
     assert result.view == view
     assert result.markdown.startswith(prefix)
-    views = result.renderer.configuration["views"]
+    views = result.renderer.config["views"]
     assert isinstance(views, Mapping)
     assert views["error"] == "Failed: {{ data.error.message }}"
 
@@ -56,7 +55,7 @@ def test_only_the_selected_view_is_rendered(data, view, prefix):
 )
 def test_route_failure_is_explicit_without_a_fallback(data, code):
     with pytest.raises(RenderingError) as error:
-        render(data, _renderer(), slate=SlateContext(name="ci"))
+        render(data, _renderer(), meta=MetaSnapshot.local("ci"))
     assert error.value.code == code
 
 
@@ -66,7 +65,7 @@ def test_json_pointer_escaping_and_array_access_are_standard():
         render(
             {"a/b": {"~outcome": ["approved"]}},
             _renderer("/a~1b/~0outcome/0", {"approved": "ok"}),
-            slate=SlateContext(name="ci"),
+            meta=MetaSnapshot.local("ci"),
         ).view
         == "approved"
     )
@@ -81,7 +80,7 @@ def test_schema_checks_the_candidate_before_route_selection():
         render(
             {"outcome": "unknown", "summary": 42},
             _renderer(),
-            slate=SlateContext(name="ci"),
+            meta=MetaSnapshot.local("ci"),
             schema={"properties": {"summary": {"type": "string"}}},
         )
     assert error.value.code == "schema_validation_failed"
@@ -91,9 +90,7 @@ def test_schema_checks_the_candidate_before_route_selection():
 def test_multi_view_profile_rejects_conflicting_or_unknown_fields(tmp_path, extra):
     config = tmp_path / "boards.toml"
     config.write_text(
-        'version = 1\n[profiles.review]\nview_by = "/outcome"\n'
-        + extra
-        + '\n[profiles.review.views]\napproved = "approved.j2"\n'
+        '[profiles.review]\nview_by = "/outcome"\n' + extra + '\n[profiles.review.views]\napproved = "approved.j2"\n'
     )
     with pytest.raises(RenderingError):
         load_profile("review", config=str(config))
@@ -102,7 +99,7 @@ def test_multi_view_profile_rejects_conflicting_or_unknown_fields(tmp_path, extr
 def test_loading_checks_all_views_even_an_unselected_branch(tmp_path):
     config = tmp_path / "boards.toml"
     config.write_text(
-        'version = 1\n[profiles.review]\nview_by = "/outcome"\n[profiles.review.views]\napproved = "approved.j2"\nerror = "error.j2"\n'
+        '[profiles.review]\nview_by = "/outcome"\n[profiles.review.views]\napproved = "approved.j2"\nerror = "error.j2"\n'
     )
     (tmp_path / "approved.j2").write_text("Approved")
     (tmp_path / "error.j2").write_text("{% if %}")
@@ -114,7 +111,7 @@ def test_loading_checks_all_views_even_an_unselected_branch(tmp_path):
 def test_views_share_the_existing_renderer_component_budget(tmp_path):
     config = tmp_path / "boards.toml"
     config.write_text(
-        'version = 1\n[profiles.review]\nview_by = "/mode"\n[profiles.review.views]\ncompact = "compact.j2"\ndetailed = "detailed.j2"\n'
+        '[profiles.review]\nview_by = "/mode"\n[profiles.review.views]\ncompact = "compact.j2"\ndetailed = "detailed.j2"\n'
     )
     for name in ("compact", "detailed"):
         (tmp_path / f"{name}.j2").write_text("x" * 40_000)
@@ -127,7 +124,7 @@ def test_router_has_no_builtin_business_outcomes():
     result = render(
         {"presentation": {"style": "compact"}},
         _renderer("/presentation/style", {"compact": "Summary"}),
-        slate=SlateContext(name="benchmark"),
+        meta=MetaSnapshot.local("benchmark"),
     )
     assert result.view == "compact"
     assert result.markdown == "Summary\n"

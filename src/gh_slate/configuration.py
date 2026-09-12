@@ -12,7 +12,7 @@ if sys.version_info >= (3, 11):
 else:
     import tomli as tomllib
 
-from gh_slate.codec import RendererDescriptorV1, SchemaSnapshotV1, canonical_json_bytes
+from gh_slate.codec import RendererDescriptor, SchemaSnapshot, canonical_json_bytes
 from gh_slate.codec.json import DEFAULT_JSON_LIMITS
 from gh_slate.codec.limits import SizeReport, enforce_size_limits
 from gh_slate.inputs import read_bytes, template_source
@@ -26,8 +26,8 @@ MAX_CONFIG_BYTES = 64 * 1024
 
 @dataclass(frozen=True, slots=True)
 class ProfileDefinition:
-    renderer: RendererDescriptorV1
-    schema: SchemaSnapshotV1 | None
+    renderer: RendererDescriptor
+    schema: SchemaSnapshot | None
 
 
 def _path(value: object, *, base: Path, field: str) -> Path:
@@ -57,8 +57,8 @@ def load_profile(
         document = tomllib.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise RenderingError("configuration must be valid UTF-8 TOML", code="config_invalid") from error
-    if set(document) != {"version", "profiles"} or type(document.get("version")) is not int or document["version"] != 1:
-        raise RenderingError("configuration requires version = 1 and profiles", code="config_invalid")
+    if set(document) != {"profiles"}:
+        raise RenderingError("configuration requires profiles", code="config_invalid")
     profiles = document["profiles"]
     if not isinstance(profiles, Mapping) or name not in profiles:
         raise RenderingError("profile was not found", code="profile_not_found", details={"profile": name})
@@ -95,7 +95,7 @@ def load_profile(
                 max_bytes=DEFAULT_JSON_LIMITS.max_input_bytes,
             )
         )
-    renderer = RendererDescriptorV1(kind="jinja", version=2, config=definition)
+    renderer = RendererDescriptor(config=definition)
     enforce_size_limits(
         SizeReport(
             renderer_bytes=len(canonical_json_bytes(renderer.to_json())),

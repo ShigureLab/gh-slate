@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 ROOT = Path(__file__).resolve().parents[2]
 CORPUS = ROOT / "tests" / "fixtures" / "codec" / "fuzz" / "corpus.json"
-VALID_COMMENT = ROOT / "tests" / "fixtures" / "wire" / "state-v1" / "minimal" / "comment.md"
+VALID_COMMENT = ROOT / "tests" / "fixtures" / "wire" / "state" / "minimal" / "comment.md"
 
 
 def _outcome(source: str | bytes) -> tuple[object, ...]:

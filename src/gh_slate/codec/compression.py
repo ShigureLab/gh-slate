@@ -35,7 +35,7 @@ def compress_bytes(
     *,
     limits: CodecLimits = DEFAULT_CODEC_LIMITS,
 ) -> bytes:
-    """Compress canonical state bytes with the frozen state-v1 zlib profile."""
+    """Compress canonical state bytes with the frozen state zlib profile."""
 
     state = _require_bytes(state, field="state")
     enforce_size_limits(SizeReport(state_bytes=len(state)), limits)

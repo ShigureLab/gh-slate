@@ -5,11 +5,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from gh_slate.codec.meta import MetaSnapshot
 from gh_slate.rendering import (
-    ListRendererV1,
-    SlateContext,
-    TableColumn,
-    TableRendererV1,
     jinja_descriptor,
     render,
 )
@@ -17,13 +14,13 @@ from gh_slate.rendering import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from gh_slate.codec import RendererDescriptorV1
+    from gh_slate.codec import RendererDescriptor
 
 _FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "rendering"
-_CONTEXT = SlateContext(name="golden")
+_CONTEXT = MetaSnapshot.local("golden")
 
 
-def _table_case() -> tuple[object, RendererDescriptorV1]:
+def _table_case() -> tuple[object, RendererDescriptor]:
     data = {
         "jobs": [
             {
@@ -41,16 +38,13 @@ def _table_case() -> tuple[object, RendererDescriptorV1]:
             },
         ]
     }
-    columns = tuple(TableColumn(path=(name,), header=name) for name in ("name", "status", "empty", "nested", "path"))
-    descriptor = TableRendererV1(
-        selector=".jobs",
-        title="Matrix <main>",
-        columns=columns,
-    ).to_descriptor()
+    descriptor = jinja_descriptor(
+        '## Matrix &#60;main&#62;\n\n{{ data.jobs | md_table(columns=["name", "status", "empty", "nested", "path"]) }}'
+    )
     return data, descriptor
 
 
-def _list_case() -> tuple[object, RendererDescriptorV1]:
+def _list_case() -> tuple[object, RendererDescriptor]:
     data = {
         "changes": {
             "z": "last",
@@ -59,20 +53,15 @@ def _list_case() -> tuple[object, RendererDescriptorV1]:
             "blank": "",
         }
     }
-    return data, ListRendererV1(
-        selector=".changes",
-        title="Release | notes",
-    ).to_descriptor()
+    return data, jinja_descriptor("## Release &#124; notes\n\n{{ data.changes | md_list }}")
 
 
-def _jinja_case() -> tuple[object, RendererDescriptorV1]:
+def _jinja_case() -> tuple[object, RendererDescriptor]:
     data = {
         "jobs": [{"name": "linux|x64", "ok": True}],
         "meta": {"z": None, "a": 1},
     }
-    source = (
-        '# {{ slate.name }}\n\n{{ data.jobs | md_table(columns=["name", "ok"]) }}\n\n{{ data.meta | compact_json }}'
-    )
+    source = '# {{ meta.slate.name }}\n\n{{ data.jobs | md_table(columns=["name", "ok"]) }}\n\n{{ data.meta | compact_json }}'
     return data, jinja_descriptor(source)
 
 
@@ -86,12 +75,12 @@ def _jinja_case() -> tuple[object, RendererDescriptorV1]:
 )
 def test_renderer_golden_is_byte_stable(
     fixture_name: str,
-    case: Callable[[], tuple[object, RendererDescriptorV1]],
+    case: Callable[[], tuple[object, RendererDescriptor]],
 ) -> None:
     data, descriptor = case()
     expected = (_FIXTURES / fixture_name).read_text(encoding="utf-8")
 
-    first = render(data, descriptor, slate=_CONTEXT).markdown
-    second = render(data, descriptor, slate=_CONTEXT).markdown
+    first = render(data, descriptor, meta=_CONTEXT).markdown
+    second = render(data, descriptor, meta=_CONTEXT).markdown
 
     assert first == second == expected

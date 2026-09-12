@@ -8,7 +8,7 @@ from jsonpointer import JsonPointer, JsonPointerException
 from gh_slate.rendering.errors import RenderingError
 
 if TYPE_CHECKING:
-    from gh_slate.codec import RendererDescriptorV1
+    from gh_slate.codec import RendererDescriptor
 
 
 def validate_views(pointer: object, views: object) -> tuple[JsonPointer, Mapping[str, str]]:
@@ -30,10 +30,10 @@ def validate_views(pointer: object, views: object) -> tuple[JsonPointer, Mapping
     return parsed, cast("Mapping[str, str]", views)
 
 
-def selected_view(renderer: RendererDescriptorV1, data: object) -> str | None:
-    if renderer.kind != "jinja" or renderer.version != 2 or "views" not in renderer.configuration:
+def selected_view(renderer: RendererDescriptor, data: object) -> str | None:
+    if "views" not in renderer.config:
         return None
-    configuration = renderer.configuration
+    configuration = renderer.config
     pointer, views = validate_views(configuration.get("view_by"), configuration["views"])
     try:
         value = pointer.resolve(data)

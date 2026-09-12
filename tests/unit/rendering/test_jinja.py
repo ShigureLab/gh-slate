@@ -2,26 +2,22 @@ from __future__ import annotations
 
 from dataclasses import replace
 from decimal import ROUND_DOWN, ROUND_UP, Decimal, Inexact, getcontext, localcontext
+from html import unescape
 
 import pytest
 
+from gh_slate.codec.meta import MetaSnapshot
 from gh_slate.rendering.errors import RenderingError
 from gh_slate.rendering.jinja import (
     DEFAULT_JINJA_LIMITS,
     JinjaLimits,
-    SlateContext,
-    jinja_target_fields,
     render_jinja,
+    validate_jinja_source,
 )
 
 
-def slate() -> SlateContext:
-    return SlateContext(
-        name="ci-summary",
-        repository="owner/repo",
-        number=42,
-        url="https://github.example/owner/repo/issues/42",
-    )
+def slate() -> MetaSnapshot:
+    return MetaSnapshot.local("ci-summary")
 
 
 def _decimal_context_state() -> tuple[object, ...]:
@@ -40,58 +36,35 @@ def _decimal_context_state() -> tuple[object, ...]:
 
 def test_renders_only_canonical_data_and_slate_context() -> None:
     rendered = render_jinja(
-        "{{ data.summary.passed }}/{{ data.ratio }}/{{ slate.name }}/{{ slate.number }}",
+        "{{ data.summary.passed }}/{{ data.ratio }}/{{ meta.slate.name }}/{{ meta.target }}",
         data={
             "summary": {"passed": 3},
             "ratio": Decimal("1.2300"),
         },
-        slate=slate(),
+        meta=slate(),
     )
 
-    assert rendered == "3/1.23/ci-summary/42"
+    assert rendered == "3/1.23/ci&#45;summary/null"
 
 
 def test_optional_slate_context_fields_are_explicit_nulls() -> None:
     rendered = render_jinja(
-        "{{ slate.repository }}/{{ slate.number }}/{{ slate.url }}",
+        "{{ meta.host }}/{{ meta.repository }}/{{ meta.target }}",
         data={},
-        slate=SlateContext(name="local"),
+        meta=MetaSnapshot.local("local"),
     )
 
     assert rendered == "null/null/null"
 
 
 @pytest.mark.parametrize(
-    ("source", "expected"),
-    [
-        ("{{ slate.name }}", frozenset()),
-        ("{{ slate.url }}", frozenset({"url"})),
-        ('{{ slate["repository"] }}', frozenset({"repository"})),
-        (
-            "{% if slate[data.field] %}yes{% endif %}",
-            frozenset({"repository", "number", "url"}),
-        ),
-        (
-            "{{ slate | compact_json }}",
-            frozenset({"repository", "number", "url"}),
-        ),
-    ],
-)
-def test_detects_target_dependent_slate_context_access(
-    source: str,
-    expected: frozenset[str],
-) -> None:
-    assert jinja_target_fields(source) == expected
-
-
-@pytest.mark.parametrize(
     ("source", "name"),
     [
         (
-            "{% for slate in data.rows %}{{ slate.repository }}{% endfor %}",
-            "slate",
+            "{% for meta in data.rows %}{{ meta.repository.full_name }}{% endfor %}",
+            "meta",
         ),
-        ("{% set slate = data.row %}{{ slate.repository }}", "slate"),
+        ("{% set meta = data.row %}{{ meta.repository.full_name }}", "meta"),
         (
             "{% for data in data.rows %}{{ data.repository }}{% endfor %}",
             "data",
@@ -101,7 +74,7 @@ def test_detects_target_dependent_slate_context_access(
 )
 def test_rejects_shadowing_reserved_context_names(source: str, name: str) -> None:
     with pytest.raises(RenderingError) as analysis_error:
-        jinja_target_fields(source)
+        validate_jinja_source(source)
     assert analysis_error.value.code == "jinja_construct_forbidden"
     assert analysis_error.value.details == {"name": name}
 
@@ -109,7 +82,7 @@ def test_rejects_shadowing_reserved_context_names(source: str, name: str) -> Non
         render_jinja(
             source,
             data={"row": {"repository": "local"}, "rows": []},
-            slate=slate(),
+            meta=slate(),
         )
     assert rendering_error.value.code == "jinja_construct_forbidden"
     assert rendering_error.value.details == {"name": name}
@@ -119,7 +92,7 @@ def test_allows_non_reserved_local_assignments() -> None:
     rendered = render_jinja(
         "{% set item = data.row %}{{ item.name }}",
         data={"row": {"name": "linux"}},
-        slate=slate(),
+        meta=slate(),
     )
 
     assert rendered == "linux"
@@ -129,10 +102,10 @@ def test_rendering_is_deterministic() -> None:
     source = "{{ data.metadata | compact_json }}"
     data = {"metadata": {"z": Decimal("1E+22"), "a": Decimal("-0.00")}}
 
-    first = render_jinja(source, data=data, slate=slate())
-    second = render_jinja(source, data=data, slate=slate())
+    first = render_jinja(source, data=data, meta=slate())
+    second = render_jinja(source, data=data, meta=slate())
 
-    assert first == second == '{"a":0,"z":1e+22}'
+    assert unescape(first) == unescape(second) == '{"a":0,"z":1e+22}'
 
 
 @pytest.mark.parametrize(
@@ -153,7 +126,7 @@ def test_decimal_arithmetic_uses_a_fixed_isolated_context(
         caller.traps[Inexact] = True
         before = _decimal_context_state()
 
-        assert render_jinja(source, data=data, slate=slate()) == expected
+        assert render_jinja(source, data=data, meta=slate()) == expected
         assert _decimal_context_state() == before
 
 
@@ -168,7 +141,7 @@ def test_decimal_context_is_restored_after_a_rendering_error() -> None:
             render_jinja(
                 "{{ data.one / data.zero }}",
                 data={"one": Decimal(1), "zero": Decimal(0)},
-                slate=slate(),
+                meta=slate(),
             )
 
         assert caught.value.code == "jinja_render_error"
@@ -194,7 +167,7 @@ def test_decimal_context_is_restored_after_a_rendering_error() -> None:
 )
 def test_rejects_unsafe_or_amplifying_constructs(source: str) -> None:
     with pytest.raises(RenderingError) as caught:
-        render_jinja(source, data={"text": "x"}, slate=slate())
+        render_jinja(source, data={"text": "x"}, meta=slate())
 
     assert caught.value.code in {
         "jinja_construct_forbidden",
@@ -204,21 +177,21 @@ def test_rejects_unsafe_or_amplifying_constructs(source: str) -> None:
 
 def test_strict_undefined_has_a_stable_error() -> None:
     with pytest.raises(RenderingError) as caught:
-        render_jinja("{{ data.missing }}", data={}, slate=slate())
+        render_jinja("{{ data.missing }}", data={}, meta=slate())
 
     assert caught.value.code == "jinja_undefined"
 
 
 def test_default_jinja_globals_are_not_exposed() -> None:
     with pytest.raises(RenderingError) as caught:
-        render_jinja("{{ cycler }}", data={}, slate=slate())
+        render_jinja("{{ cycler }}", data={}, meta=slate())
 
     assert caught.value.code == "jinja_undefined"
 
 
 def test_direct_container_interpolation_requires_an_explicit_filter() -> None:
     with pytest.raises(RenderingError) as caught:
-        render_jinja('{{ data["items"] }}', data={"items": [1, 2]}, slate=slate())
+        render_jinja('{{ data["items"] }}', data={"items": [1, 2]}, meta=slate())
 
     assert caught.value.code == "jinja_container_interpolation"
 
@@ -227,17 +200,17 @@ def test_compact_json_is_the_only_generic_container_projection() -> None:
     rendered = render_jinja(
         '{{ data["items"] | compact_json }}',
         data={"items": [Decimal("1.00"), {"ok": True}]},
-        slate=slate(),
+        meta=slate(),
     )
 
-    assert rendered == '[1,{"ok":true}]'
+    assert unescape(rendered) == '[1,{"ok":true}]'
 
 
 def test_md_table_uses_the_builtin_markdown_renderer() -> None:
     rendered = render_jinja(
         '{{ data.rows | md_table(columns=["name", "ok"]) }}',
         data={"rows": [{"name": "linux|x64", "ok": True}]},
-        slate=slate(),
+        meta=slate(),
     )
 
     assert rendered == "| name | ok |\n| --- | --- |\n| linux&#124;x64 | true |"
@@ -247,7 +220,7 @@ def test_md_list_uses_the_builtin_markdown_renderer() -> None:
     rendered = render_jinja(
         "{{ data.values | md_list }}",
         data={"values": ["ready", None]},
-        slate=slate(),
+        meta=slate(),
     )
 
     assert rendered == ("- <code>&#91;0&#93;</code>: ready\n- <code>&#91;1&#93;</code>: null")
@@ -257,7 +230,7 @@ def test_source_limit_is_checked_before_parsing() -> None:
     limits = replace(DEFAULT_JINJA_LIMITS, max_source_bytes=4)
 
     with pytest.raises(RenderingError) as caught:
-        render_jinja("12345", data={}, slate=slate(), limits=limits)
+        render_jinja("12345", data={}, meta=slate(), limits=limits)
 
     assert caught.value.code == "jinja_source_limit"
 
@@ -266,7 +239,7 @@ def test_ast_node_limit_is_checked_before_compilation() -> None:
     limits = replace(DEFAULT_JINJA_LIMITS, max_ast_nodes=3)
 
     with pytest.raises(RenderingError) as caught:
-        render_jinja("{{ data.a }}", data={"a": 1}, slate=slate(), limits=limits)
+        render_jinja("{{ data.a }}", data={"a": 1}, meta=slate(), limits=limits)
 
     assert caught.value.code == "jinja_ast_limit"
 
@@ -278,7 +251,7 @@ def test_loop_limit_counts_actual_iterations_even_without_output() -> None:
         render_jinja(
             '{% for item in data["items"] %}{% endfor %}',
             data={"items": [1, 2, 3]},
-            slate=slate(),
+            meta=slate(),
             limits=limits,
         )
 
@@ -292,7 +265,7 @@ def test_loop_budget_is_shared_by_nested_and_sequential_loops() -> None:
         render_jinja(
             ('{% for item in data["items"] %}{% endfor %}{% for item in data["items"] %}{% endfor %}'),
             data={"items": [1, 2]},
-            slate=slate(),
+            meta=slate(),
             limits=limits,
         )
 
@@ -306,7 +279,7 @@ def test_output_limit_is_checked_while_streaming() -> None:
         render_jinja(
             "{{ data.text }}",
             data={"text": "12345"},
-            slate=slate(),
+            meta=slate(),
             limits=limits,
         )
 
@@ -325,7 +298,7 @@ def test_arithmetic_failures_are_wrapped(source: str) -> None:
         render_jinja(
             source,
             data={"one": Decimal(1), "zero": Decimal(0)},
-            slate=slate(),
+            meta=slate(),
         )
 
     assert caught.value.code == "jinja_render_error"
@@ -337,7 +310,7 @@ def test_arithmetic_failures_are_wrapped(source: str) -> None:
 
 def test_invalid_unicode_generated_by_a_literal_is_wrapped() -> None:
     with pytest.raises(RenderingError) as caught:
-        render_jinja(r'{{ "\ud800" }}', data={}, slate=slate())
+        render_jinja(r'{{ "\ud800" }}', data={}, meta=slate())
 
     assert caught.value.code == "jinja_output_invalid"
 
@@ -346,7 +319,7 @@ def test_pathological_integer_literal_is_wrapped_as_a_resource_error() -> None:
     source = "{{ " + ("9" * 5_000) + " }}"
 
     with pytest.raises(RenderingError) as caught:
-        render_jinja(source, data={}, slate=slate())
+        render_jinja(source, data={}, meta=slate())
 
     assert caught.value.code == "jinja_resource_limit"
 

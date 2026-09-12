@@ -1,4 +1,4 @@
-"""Versioned, deterministic state codec for managed gh-slate comments."""
+"""Deterministic state codec for managed gh-slate comments."""
 
 from __future__ import annotations
 
@@ -28,13 +28,11 @@ from gh_slate.codec.json import (
 from gh_slate.codec.limits import CodecLimits, SizeReport
 from gh_slate.codec.meta import MetaSnapshot
 from gh_slate.codec.model import (
-    ControllerV1,
-    RendererDescriptorV1,
-    SchemaSnapshotV1,
+    Controller,
+    RendererDescriptor,
+    SchemaSnapshot,
     State,
     StateDraft,
-    StateDraftV1,
-    StateV1,
     validate_slate_name,
 )
 from gh_slate.codec.revision import RevisionResult, resolve_revision
@@ -42,19 +40,17 @@ from gh_slate.codec.revision import RevisionResult, resolve_revision
 __all__ = [
     "CodecError",
     "CodecLimits",
-    "ControllerV1",
+    "Controller",
     "DecodedComment",
     "EncodedComment",
     "JsonLimits",
     "JsonValue",
-    "RendererDescriptorV1",
+    "RendererDescriptor",
     "RevisionResult",
-    "SchemaSnapshotV1",
+    "SchemaSnapshot",
     "SizeReport",
     "StateDraft",
     "State",
-    "StateV1",
-    "StateDraftV1",
     "MetaSnapshot",
     "canonical_json_bytes",
     "canonical_number",

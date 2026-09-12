@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 from gh_slate.codec import (
     JsonValue,
-    RendererDescriptorV1,
-    SchemaSnapshotV1,
+    RendererDescriptor,
+    SchemaSnapshot,
     canonical_json_bytes,
     strict_loads,
     validate_slate_name,
@@ -18,7 +18,6 @@ from gh_slate.commands.render import (
     _ensure_single_stdin,
     _read_bytes,
     _selected_profile,
-    _table_columns,
     _template_source,
 )
 from gh_slate.errors import GhSlateError
@@ -34,9 +33,7 @@ from gh_slate.github.target import resolve_target
 from gh_slate.github.write import GhWriteProcess
 from gh_slate.patching import prepare_patch
 from gh_slate.rendering import (
-    ListRendererV1,
     RenderingError,
-    TableRendererV1,
     jinja_descriptor,
 )
 from gh_slate.schema import validate_data_json, validate_schema_json
@@ -79,31 +76,8 @@ def _new_transaction() -> ApplyTransaction:
     )
 
 
-def _renderer(args: Namespace) -> RendererDescriptorV1 | None:
-    if args.columns is not None and args.table is None:
-        raise RenderingError(
-            "--columns requires --table",
-            code="renderer_option_conflict",
-        )
-    if args.title is not None and args.table is None and args.list is None:
-        raise RenderingError(
-            "--title is available only with --table or --list",
-            code="renderer_option_conflict",
-        )
-    if args.template is not None:
-        return jinja_descriptor(_template_source(args.template), version=2)
-    if args.table is not None:
-        return TableRendererV1(
-            selector=args.table,
-            title=args.title,
-            columns=_table_columns(args.columns),
-        ).to_descriptor()
-    if args.list is not None:
-        return ListRendererV1(
-            selector=args.list,
-            title=args.title,
-        ).to_descriptor()
-    return None
+def _renderer(args: Namespace) -> RendererDescriptor | None:
+    return None if args.template is None else jinja_descriptor(_template_source(args.template))
 
 
 def _prepare_request_parts(
@@ -111,8 +85,8 @@ def _prepare_request_parts(
 ) -> tuple[
     str,
     Mapping[str, JsonValue] | None,
-    SchemaSnapshotV1 | None,
-    RendererDescriptorV1 | None,
+    SchemaSnapshot | None,
+    RendererDescriptor | None,
 ]:
     name = validate_slate_name(args.name)
     profile = _selected_profile(args)
@@ -121,13 +95,11 @@ def _prepare_request_parts(
         for value in (
             args.template,
             getattr(args, "profile", None),
-            args.table,
-            args.list,
         )
     )
     if args.mode == "create" and not renderer_selected:
         raise RenderingError(
-            "creating a slate requires --profile, --template, --table, or --list",
+            "creating a slate requires --profile or --template",
             code="renderer_required",
         )
     _ensure_single_stdin(args)

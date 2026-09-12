@@ -1,0 +1,79 @@
+{
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "properties": {
+      "summary": {
+         "type": "string",
+         "minLength": 1
+      },
+      "source": {
+         "type": "object",
+         "properties": {
+            "head_sha": {
+               "type": "string",
+               "minLength": 1
+            },
+            "run_id": {
+               "type": "string",
+               "minLength": 1
+            },
+            "run_url": {
+               "type": "string",
+               "pattern": "^https?://"
+            }
+         },
+         "required": [
+            "head_sha",
+            "run_id",
+            "run_url"
+         ],
+         "additionalProperties": false
+      },
+      "jobs": {
+         "type": "object",
+         "minProperties": 1,
+         "additionalProperties": {
+            "type": "object",
+            "properties": {
+               "status": {
+                  "enum": [
+                     "passed",
+                     "failed",
+                     "running",
+                     "cancelled",
+                     "skipped",
+                     "error"
+                  ]
+               },
+               "analysis": {
+                  "type": "string",
+                  "minLength": 1
+               },
+               "log_url": {
+                  "type": "string",
+                  "pattern": "^https?://"
+               }
+            },
+            "required": [
+               "status",
+               "analysis",
+               "log_url"
+            ],
+            "additionalProperties": false
+         }
+      },
+      "next_steps": {
+         "type": "array",
+         "items": {
+            "type": "string",
+            "minLength": 1
+         }
+      }
+   },
+   "required": [
+      "summary",
+      "source",
+      "jobs"
+   ],
+   "additionalProperties": false
+}

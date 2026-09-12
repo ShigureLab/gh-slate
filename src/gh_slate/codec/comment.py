@@ -194,7 +194,7 @@ def decode_comment(
     canonical_bytes = canonical_json_bytes(parsed, limits=json_limits)
     if canonical_bytes != state_bytes:
         raise CodecError(
-            "stored state is valid JSON but is not canonical state-v1 JSON",
+            "stored state is valid JSON but is not canonical state JSON",
             code="non_canonical_state",
             details={
                 "stored_sha256": hashlib.sha256(state_bytes).hexdigest(),

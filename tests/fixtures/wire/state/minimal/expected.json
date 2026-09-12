@@ -1,0 +1,14 @@
+{
+  "state_sha256": "5c0e6fb8c6a6be01ad0dd504bb29a57b17db875e7df06095b8d6babcca467c06",
+  "render_sha256": "3f8f3d3da73a52981f63fe37c3ba0409b2577700438b5be4bd6a94a3eb7e9a6d",
+  "sizes": {
+    "body_bytes": 903,
+    "visible_bytes": 274,
+    "state_bytes": 465,
+    "compressed_bytes": 374,
+    "encoded_bytes": 500,
+    "data_bytes": 108,
+    "schema_bytes": 0,
+    "renderer_bytes": 33
+  }
+}

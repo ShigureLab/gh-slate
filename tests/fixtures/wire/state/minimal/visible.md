@@ -1,0 +1,8 @@
+- <code>empty</code>: <code>&#123;&#125;</code>
+- <code>jobs</code>:
+  - <code>&#91;0&#93;</code>:
+    - <code>duration&#95;ms</code>: 12.5
+    - <code>name</code>: linux
+    - <code>note</code>: 你好 👋
+    - <code>optional</code>: null
+    - <code>passed</code>: true

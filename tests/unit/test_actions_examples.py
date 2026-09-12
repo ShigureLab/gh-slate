@@ -338,7 +338,6 @@ def test_trusted_consumer_validates_artifact_before_exporting_target(
         json.dumps(
             {
                 "repository": "octo/example",
-                "schema_version": 1,
                 "target_number": 42,
             }
         ),
@@ -371,7 +370,6 @@ def test_trusted_consumer_rejects_schema_mismatch_without_export(
         json.dumps(
             {
                 "repository": "other/repository",
-                "schema_version": 1,
                 "target_number": 42,
                 "unexpected": "field",
             }

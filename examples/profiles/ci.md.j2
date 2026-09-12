@@ -1,0 +1,18 @@
+## CI analysis
+
+{{ data.summary }}
+
+Analyzed commit: {{ data.source.head_sha | md_code }}
+Run: {{ data.source.run_id | md_link(data.source.run_url) }}
+{% if meta.target is not none %}
+Target: {{ meta.repository.full_name | md_link(meta.target.url) }} #{{ meta.target.number }}
+{% endif %}
+| Job | Status | Analysis | Evidence |
+| --- | --- | --- | --- |
+{% for key, job in data.jobs | dictsort %}| {{ key | md_code }} | {{ job.status }} | {{ job.analysis }} | {{ "Logs" | md_link(job.log_url) }} |
+{% endfor %}
+{% if data.next_steps is defined %}
+### Next steps
+
+{{ data.next_steps | md_list }}
+{% endif %}

@@ -1,0 +1,24 @@
+{
+   "summary": "One passed, one failed; failure diagnosis is based on the linked logs.",
+   "source": {
+      "head_sha": "example-head-123",
+      "run_id": "987654",
+      "run_url": "https://github.com/example/project/actions/runs/987654"
+   },
+   "jobs": {
+      "linux-py312": {
+         "status": "passed",
+         "analysis": "All tests passed.",
+         "log_url": "https://github.com/example/project/actions/runs/987654/job/1"
+      },
+      "windows-py310": {
+         "status": "failed",
+         "analysis": "Artifact download returned HTTP 503 before tests started; retry needed to confirm.",
+         "log_url": "https://github.com/example/project/actions/runs/987654/job/2"
+      }
+   },
+   "next_steps": [
+      "Retry the failed download.",
+      "Do not label this run successful until the Windows tests complete."
+   ]
+}

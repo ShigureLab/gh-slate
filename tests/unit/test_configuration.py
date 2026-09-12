@@ -19,9 +19,7 @@ def _config(tmp_path: Path, *, template: str = "{{ data.message }}", schema: boo
     (directory / "layout.j2").write_text(template)
     (directory / "schema.json").write_text(json.dumps({"type": "object", "required": ["message"]}))
     path = directory / "boards.toml"
-    path.write_text(
-        'version = 1\n[profiles.summary]\ntemplate = "layout.j2"\n' + ('schema = "schema.json"\n' if schema else "")
-    )
+    path.write_text('[profiles.summary]\ntemplate = "layout.j2"\n' + ('schema = "schema.json"\n' if schema else ""))
     return path
 
 
@@ -32,7 +30,7 @@ def test_profile_paths_are_relative_to_explicit_configuration(tmp_path, monkeypa
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
     assert load_profile("summary", config=str(path)) == initial
-    assert initial.renderer.configuration == {"profile": "summary", "source": "{{ data.message }}"}
+    assert initial.renderer.config == {"profile": "summary", "source": "{{ data.message }}"}
     assert str(path) not in str(initial)
     assert initial.schema is not None
 
@@ -55,9 +53,9 @@ def test_profile_accepts_absolute_and_parent_paths_without_expansion(tmp_path):
     outer = tmp_path / "parent.j2"
     outer.write_text("parent")
     for location in ("../parent.j2", str(outer)):
-        path.write_text(f'version = 1\n[profiles.summary]\ntemplate = "{location}"\n')
-        assert load_profile("summary", config=str(path)).renderer.configuration["source"] == "parent"
-    path.write_text('version = 1\n[profiles.summary]\ntemplate = "$HOME/layout.j2"\n')
+        path.write_text(f'[profiles.summary]\ntemplate = "{location}"\n')
+        assert load_profile("summary", config=str(path)).renderer.config["source"] == "parent"
+    path.write_text('[profiles.summary]\ntemplate = "$HOME/layout.j2"\n')
     with pytest.raises(RenderingError) as error:
         load_profile("summary", config=str(path))
     assert error.value.code == "input_read_failed"
@@ -66,14 +64,14 @@ def test_profile_accepts_absolute_and_parent_paths_without_expansion(tmp_path):
 @pytest.mark.parametrize(
     "document",
     [
-        "version = true\n[profiles.summary]\ntemplate = 'x'",
-        "version = 2\n[profiles.summary]\ntemplate = 'x'",
-        "version = 1\nunknown = true\n[profiles.summary]\ntemplate = 'x'",
-        "version = 1\n[profiles.summary]\ntemplate = 7",
-        "version = 1\n[profiles.summary]\ntemplate = 'https://example.com/x'",
-        "version = 1\n[profiles.summary]\nschema = 'schema.json'",
-        "version = 1\n[profiles.summary]\ntemplate = 'layout.j2'\nunknown = true",
-        "version = 1\nversion = 1",
+        "profiles = []",
+        "profiles = 2\n[profiles.summary]\ntemplate = 'x'",
+        "unknown = true\n[profiles.summary]\ntemplate = 'x'",
+        "[profiles.summary]\ntemplate = 7",
+        "[profiles.summary]\ntemplate = 'https://example.com/x'",
+        "[profiles.summary]\nschema = 'schema.json'",
+        "[profiles.summary]\ntemplate = 'layout.j2'\nunknown = true",
+        "[profiles.summary]\n[profiles.summary]",
     ],
 )
 def test_configuration_rejects_invalid_definitions(tmp_path, document):
@@ -100,7 +98,7 @@ def test_profile_option_conflicts_are_rejected_before_target_access(tmp_path, ca
     assert "renderer_option_conflict" in capsys.readouterr().err
     assert run(["apply", "ci", "--config", str(path), "--profile", "summary", "--schema", "missing"]) == 2
     assert "renderer_option_conflict" in capsys.readouterr().err
-    assert run(["render", "ci", "--config", str(path), "--profile", "summary", "--title", "override"]) == 2
+    assert run(["render", "ci", "--config", str(path), "--profile", "summary", "--schema", "override"]) == 2
     assert "renderer_option_conflict" in capsys.readouterr().err
 
 

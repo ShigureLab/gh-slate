@@ -10,7 +10,7 @@ from gh_slate.rendering.limits import DEFAULT_RENDER_LIMITS, RenderLimits
 from gh_slate.rendering.markdown import code, escape_markdown_text, render_value
 
 if TYPE_CHECKING:
-    from gh_slate.rendering.model import ListRendererV1
+    from gh_slate.rendering.model import ListOptions
 
 
 def _item_count(value: object, *, depth: int, max_depth: int) -> int:
@@ -97,7 +97,7 @@ def _append(
 
 def render_list(
     value: object,
-    renderer: ListRendererV1,
+    renderer: ListOptions,
     limits: RenderLimits = DEFAULT_RENDER_LIMITS,
 ) -> str:
     item_limit = min(renderer.max_items, limits.max_list_items)

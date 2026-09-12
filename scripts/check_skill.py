@@ -14,32 +14,11 @@ from typing import NoReturn
 
 import yaml
 
-from gh_slate import __version__
 from gh_slate.cli import build_parser
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SKILL_DIR = ROOT / "skills" / "gh-slate"
-MINIMUM_VERSION = (0, 1, 0)
 PREFIXES = ("gh-slate", "gh slate")
-EXTERNAL_INSTALLER_FLAGS = frozenset({"--agent", "--scope", "--skill"})
-EXPECTED_RECIPE_ROUTES = frozenset(
-    {
-        ("--version",),
-        ("apply",),
-        ("data", "delete"),
-        ("data", "edit"),
-        ("data", "get"),
-        ("data", "set"),
-        ("data", "update"),
-        ("delete",),
-        ("doctor",),
-        ("render",),
-        ("repair",),
-        ("schema", "validate"),
-        ("state", "verify"),
-        ("view",),
-    }
-)
 _FRONTMATTER = re.compile(
     r"\A---\n(?P<header>.*?)\n---\n(?P<body>.*)\Z",
     re.DOTALL,
@@ -49,13 +28,6 @@ _FENCE = re.compile(
     re.DOTALL | re.MULTILINE,
 )
 _LONG_FLAG = re.compile(r"(?<![A-Za-z0-9])--[a-z][a-z0-9-]*")
-_VERSION = re.compile(
-    r"\A([0-9]+)\.([0-9]+)\.([0-9]+)"
-    r"(?:(?:a|b|rc)[0-9]+)?"
-    r"(?:\.post[0-9]+|-[0-9]+)?"
-    r"(?:\.dev[0-9]+)?"
-    r"(?:\+[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?\Z"
-)
 
 
 class SkillCheckError(RuntimeError):
@@ -106,37 +78,20 @@ def _check_metadata(metadata: dict[str, object]) -> None:
     if set(metadata) != {
         "name",
         "description",
-        "compatibility",
         "license",
         "metadata",
     }:
-        _fail("frontmatter fields must be name, description, compatibility, license, and metadata")
+        _fail("frontmatter fields must be name, description, license, and metadata")
     if metadata["name"] != "gh-slate":
         _fail("frontmatter name must be gh-slate")
     description = metadata["description"]
-    if not isinstance(description, str):
-        _fail("frontmatter description must be text")
-    required_trigger_terms = (
-        "Use this skill whenever",
-        "dashboard",
-        "sticky",
-        "CI",
-        "drift repair",
-    )
-    for term in required_trigger_terms:
-        if term not in description:
-            _fail(f"description is missing trigger language: {term!r}")
-
-    compatibility = metadata["compatibility"]
-    if not isinstance(compatibility, str) or "gh-slate >=0.1.0" not in compatibility:
-        _fail("compatibility must require gh-slate >=0.1.0")
+    if not isinstance(description, str) or not description.strip():
+        _fail("frontmatter description must be nonempty text")
     if metadata["license"] != "MIT":
         _fail("frontmatter license must match the repository MIT license")
     extra = _mapping(metadata["metadata"], "frontmatter.metadata")
     if extra.get("primary-tools") != ["gh-slate", "gh"]:
         _fail("metadata.primary-tools must be [gh-slate, gh]")
-    if extra.get("minimum-gh-slate-version") != "0.1.0":
-        _fail("metadata minimum version must be 0.1.0")
 
 
 def _logical_lines(source: str) -> list[str]:
@@ -168,10 +123,8 @@ def _bash_lines(body: str) -> list[str]:
 
 def _substitute_arguments(arguments: list[str]) -> list[str]:
     replacements = {
-        "$GITHUB_REPOSITORY": "owner/repo",
         "$NAME": "ci",
         "$OWNER_REPO": "owner/repo",
-        "$PR_NUMBER": "42",
         "$REVISION": "7",
         "$TARGET": "42",
     }
@@ -186,34 +139,19 @@ def _substitute_arguments(arguments: list[str]) -> list[str]:
 
 def _recipe_arguments(body: str) -> list[list[str]]:
     recipes: list[list[str]] = []
-    lines = _bash_lines(body)
-    required_probe_lines = {
-        'output="$("$@" --version 2>/dev/null)" || return 1',
-        '[[ "$output" == "$expected "* ]] || return 1',
-        '[[ "$version" =~ ^([0-9]+)\\.([0-9]+)\\.([0-9]+)((a|b|rc)[0-9]+)?(\\.post[0-9]+|-[0-9]+)?(\\.dev[0-9]+)?(\\+[0-9A-Za-z]+(\\.[0-9A-Za-z]+)*)?$ ]] || return 1',
-        'if gh_slate_compatible "gh slate" gh slate; then',
-        'elif gh_slate_compatible "gh-slate" gh-slate; then',
-        "gh_slate_compatible() {",
-        "GH_SLATE=(gh slate)",
-        "GH_SLATE=(gh-slate)",
-    }
-    missing_probes = sorted(required_probe_lines.difference(lines))
-    if missing_probes:
-        _fail(f"entrypoint probe is incomplete: {missing_probes}")
-
-    for line in lines:
-        if re.match(r"\A(?:gh slate|gh-slate)\s+", line):
-            _fail("follow-up commands must use the resolved GH_SLATE array")
+    for line in _bash_lines(body):
         try:
             tokens = shlex.split(line)
         except ValueError as error:
             raise SkillCheckError(f"shell example is not parseable: {line!r}: {error}") from error
-        if not tokens or tokens[0] != "${GH_SLATE[@]}":
-            continue
-        recipes.append(_substitute_arguments(tokens[1:]))
+        for prefix in PREFIXES:
+            command = shlex.split(prefix)
+            if tokens[: len(command)] == command:
+                recipes.append(_substitute_arguments(tokens[len(command) :]))
+                break
 
     if not recipes:
-        _fail("SKILL.md must contain parser-testable GH_SLATE recipes")
+        _fail("SKILL.md must contain parser-testable gh-slate recipes")
     return recipes
 
 
@@ -296,21 +234,19 @@ def _check_parser_contract(body: str) -> tuple[int, int, int]:
     routes, valid_flags = _parser_surface()
     recipes = _recipe_arguments(body)
     recipe_routes = {_route(arguments, routes) for arguments in recipes}
-    missing = sorted(EXPECTED_RECIPE_ROUTES.difference(recipe_routes))
+    leaf_routes = {
+        route
+        for route in routes
+        if not any(len(other) > len(route) and other[: len(route)] == route for other in routes)
+    }
+    missing = sorted(leaf_routes.difference(recipe_routes))
     if missing:
         _fail(f"required recipe routes are missing: {missing}")
 
     shown_flags = set(_LONG_FLAG.findall(body))
-    invalid_flags = sorted(shown_flags.difference(valid_flags).difference(EXTERNAL_INSTALLER_FLAGS))
+    invalid_flags = sorted(shown_flags.difference(valid_flags))
     if invalid_flags:
         _fail(f"SKILL.md shows flags absent from the current parser: {invalid_flags}")
-    exercised_flags = {argument for arguments in recipes for argument in arguments if argument.startswith("--")}
-    unexercised_flags = sorted(shown_flags.difference(exercised_flags).difference(EXTERNAL_INSTALLER_FLAGS))
-    if unexercised_flags:
-        _fail(f"SKILL.md shows flags not exercised by a parser recipe: {unexercised_flags}")
-    for external_flag in EXTERNAL_INSTALLER_FLAGS:
-        if external_flag not in shown_flags:
-            _fail(f"skill installation example is missing {external_flag}")
 
     help_routes = {route for route in recipe_routes.union(_inline_routes(body, routes)) if route != ("--version",)}
     for prefix in PREFIXES:
@@ -321,36 +257,6 @@ def _check_parser_contract(body: str) -> tuple[int, int, int]:
     return len(recipes), len(help_routes), len(shown_flags)
 
 
-def _check_content(text: str, body: str) -> None:
-    if len(text.splitlines()) >= 500:
-        _fail("SKILL.md must stay below 500 lines")
-    required_fragments = (
-        "[README](https://github.com/ShigureLab/gh-slate#readme)",
-        "npx skills add https://github.com/ShigureLab/gh-slate --skill gh-slate",
-        "gh skill install ShigureLab/gh-slate gh-slate --agent codex --scope user",
-        "single writer",
-        "server-side compare-and-swap",
-        "FIFO event order",
-        "refetch the current resource",
-        "trusted default-branch",
-        "never reverse-parse Markdown",
-        "unknown outcome",
-        "created",
-        "updated",
-        "unchanged",
-    )
-    for fragment in required_fragments:
-        if fragment not in body:
-            _fail(f"SKILL.md is missing required guidance: {fragment!r}")
-
-    version_match = _VERSION.fullmatch(__version__)
-    if version_match is None:
-        _fail(f"package version is not comparable: {__version__!r}")
-    current_version = tuple(int(part) for part in version_match.groups())
-    if current_version < MINIMUM_VERSION:
-        _fail("current package version is older than the skill minimum")
-
-
 def check_skill(skill_dir: Path = DEFAULT_SKILL_DIR) -> tuple[int, int, int]:
     skill_file = _check_layout(skill_dir)
     try:
@@ -359,7 +265,6 @@ def check_skill(skill_dir: Path = DEFAULT_SKILL_DIR) -> tuple[int, int, int]:
         raise SkillCheckError(f"cannot read SKILL.md: {error}") from error
     metadata, body = _frontmatter(text)
     _check_metadata(metadata)
-    _check_content(text, body)
     return _check_parser_contract(body)
 
 

@@ -6,8 +6,9 @@ from typing import TYPE_CHECKING, Literal
 import pytest
 
 from gh_slate.codec import (
-    ControllerV1,
-    StateV1,
+    Controller,
+    MetaSnapshot,
+    State,
     decode_comment,
 )
 from gh_slate.codec.marker import encode_marker, parse_marker
@@ -23,7 +24,7 @@ from gh_slate.github.recovery import (
 )
 from gh_slate.github.target import ResolvedTarget
 from gh_slate.github.write import GhWriteOutcomeUnknown
-from gh_slate.rendering import ListRendererV1, SlateContext, materialize_comment
+from gh_slate.rendering import jinja_descriptor, materialize_comment
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -54,28 +55,24 @@ def _body(
     revision: int = 3,
     drifted: bool = False,
     controller_login: str = "ci-bot",
-    controller_id: int | None = ACTOR_ID,
+    controller_id: int = ACTOR_ID,
 ) -> str:
-    state = StateV1(
+    state = State(
         name="ci",
+        format="gh-slate/state",
+        meta=MetaSnapshot.local("ci"),
         revision=revision,
-        controller=ControllerV1(
+        controller=Controller(
             login=controller_login,
             id=controller_id,
         ),
         data={"status": "ready"},
         data_schema=None,
-        renderer=ListRendererV1(selector=".").to_descriptor(),
+        renderer=jinja_descriptor("{{ data | md_list }}"),
         render_sha256="0" * 64,
     )
     body = materialize_comment(
         state,
-        slate=SlateContext(
-            name="ci",
-            repository=REPOSITORY,
-            number=NUMBER,
-            url=TARGET_URL,
-        ),
     ).encoded.body
     if not drifted:
         return body
@@ -299,7 +296,7 @@ def test_repair_selects_a_renamed_controller_by_stable_id() -> None:
     assert result.action == "repaired"
     assert [call[0] for call in remote.write_calls] == ["PATCH"]
     assert decode_comment(str(remote.comments[0]["body"])).state.controller == (
-        ControllerV1(login="old-login", id=ACTOR_ID)
+        Controller(login="old-login", id=ACTOR_ID)
     )
 
 

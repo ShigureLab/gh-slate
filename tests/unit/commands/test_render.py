@@ -7,6 +7,7 @@ from hashlib import sha256
 from typing import TYPE_CHECKING
 
 from gh_slate.cli import run
+from gh_slate.codec import MetaSnapshot, canonical_json_bytes
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -42,6 +43,8 @@ def test_local_table_render_supports_typed_columns(
     tmp_path: Path,
     capsys,
 ) -> None:
+    template = tmp_path / "table.j2"
+    template.write_text('{{ data.jobs | md_table(columns=["name", "passed"]) }}')
     data = tmp_path / "data.json"
     data.write_text(
         '{"jobs":[{"name":"linux","passed":true}]}',
@@ -55,10 +58,8 @@ def test_local_table_render_supports_typed_columns(
                 "ci",
                 "--data",
                 str(data),
-                "--table",
-                ".jobs",
-                "--columns",
-                "name,passed",
+                "--template",
+                str(template),
             ]
         )
         == 0
@@ -67,7 +68,7 @@ def test_local_table_render_supports_typed_columns(
 
 
 def test_render_rejects_renderer_option_and_stdin_conflicts(capsys) -> None:
-    assert run(["render", "ci", "--template", "x", "--columns", "name"]) == 2
+    assert run(["render", "ci", "--profile", "ci", "--schema", "x"]) == 2
     first = capsys.readouterr()
     assert "renderer_option_conflict" in first.err
 
@@ -101,8 +102,8 @@ def test_local_and_remote_render_options_are_unambiguous(capsys) -> None:
                 "42",
                 "--repo",
                 "owner/repo",
-                "--list",
-                ".",
+                "--template",
+                "template.j2",
             ]
         )
         == 2
@@ -154,3 +155,13 @@ def test_local_jinja_render_requires_context_for_target_dependent_templates(
     assert captured.out == ""
     assert "jinja_undefined" in captured.err
     assert "apply --dry-run" in captured.err
+
+
+def test_local_preview_rejects_metadata_for_another_slate(tmp_path, capsys):
+    template = tmp_path / "template.j2"
+    template.write_text("{{ meta.slate.name }}")
+    metadata = tmp_path / "meta.json"
+    metadata.write_bytes(canonical_json_bytes(MetaSnapshot.local("other").to_json()))
+
+    assert run(["render", "ci", "--template", str(template), "--meta", str(metadata)]) == 2
+    assert "render_context_mismatch" in capsys.readouterr().err

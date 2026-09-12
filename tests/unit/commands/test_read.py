@@ -6,17 +6,14 @@ from typing import TYPE_CHECKING
 
 from gh_slate.cli import run
 from gh_slate.codec import (
-    ControllerV1,
-    RendererDescriptorV1,
-    StateV1,
-    encode_comment,
-    render_sha256,
+    Controller,
+    MetaSnapshot,
+    State,
 )
 from gh_slate.commands import read as read_commands
 from gh_slate.github.process import GhProcess, ProcessResult
 from gh_slate.rendering import (
     MaterializedComment,
-    SlateContext,
     jinja_descriptor,
     materialize_comment,
 )
@@ -125,27 +122,40 @@ def _materialized(
     status: str = "ready",
     target_url: str = TARGET_URL,
 ) -> MaterializedComment:
-    state = StateV1(
+    state = State(
         name=name,
+        format="gh-slate/state",
+        meta=MetaSnapshot.from_json(
+            {
+                "host": HOST,
+                "repository": {
+                    "owner": "owner",
+                    "name": "repo",
+                    "full_name": REPOSITORY,
+                    "url": f"https://{HOST}/{REPOSITORY}",
+                },
+                "target": {
+                    "kind": "pull_request" if "/pull/" in target_url else "issue",
+                    "number": NUMBER,
+                    "id": "I_example",
+                    "url": target_url,
+                },
+                "slate": {"name": name},
+            }
+        ),
         revision=7,
-        controller=ControllerV1(login=ACTOR, id=ACTOR_ID),
+        controller=Controller(login=ACTOR, id=ACTOR_ID),
         data={"status": status},
         renderer=jinja_descriptor(
-            "# {{ slate.name }}\n\n"
-            "{{ slate.repository }}#{{ slate.number }}\n\n"
-            "{{ slate.url }}\n\n"
+            "# {{ meta.slate.name }}\n\n"
+            "{{ meta.repository.full_name }}#{{ meta.target.number }}\n\n"
+            "{{ meta.target.url }}\n\n"
             "status={{ data.status }}"
         ),
         render_sha256=EMPTY_HASH,
     )
     return materialize_comment(
         state,
-        slate=SlateContext(
-            name=name,
-            repository=REPOSITORY,
-            number=NUMBER,
-            url=target_url,
-        ),
     )
 
 
@@ -230,17 +240,14 @@ def test_view_default_json_and_web_are_read_only(
         "name": "ci",
         "number": NUMBER,
         "render_sha256": managed.rendered.render_sha256,
-        "renderer": {
-            "kind": "jinja",
-            "version": 1,
-        },
+        "renderer": managed.state.renderer.to_json(),
         "repository": REPOSITORY,
         "revision": 7,
         "schema": False,
         "profile": None,
         "view": None,
         "data": {"status": "ready"},
-        "meta": None,
+        "meta": managed.state.to_json()["meta"],
         "state_sha256": managed.encoded.state_sha256,
         "status": "valid",
         "url": comment["html_url"],
@@ -418,7 +425,7 @@ def test_doctor_checks_host_auth_actor_and_local_runtime_without_writes(
     assert run(["doctor", "--host", HOST], prog="gh slate") == 0
     output = capsys.readouterr()
     assert output.out == (
-        f"ok gh: gh version 2.96.0\nok auth: {ACTOR} ({ACTOR_ID})\nok jq, Jinja, JSON Schema draft 2020-12\n"
+        f"ok gh: gh version 2.96.0\nok auth: {ACTOR} ({ACTOR_ID})\nok Jinja, JSON Schema draft 2020-12\n"
     )
     assert output.err == ""
 
@@ -430,7 +437,6 @@ def test_doctor_checks_host_auth_actor_and_local_runtime_without_writes(
         "gh": "gh version 2.96.0",
         "host": HOST,
         "jinja": "ok",
-        "jq": "ok",
         "json_schema": "draft-2020-12",
         "ok": True,
     }
@@ -453,39 +459,4 @@ def test_doctor_checks_host_auth_actor_and_local_runtime_without_writes(
         ("gh", "auth", "status", "--active", "--hostname", HOST),
         ("gh", "api", "--hostname", HOST, "--method", "GET", "user"),
     ]
-    _assert_only_read_calls(runner)
-
-
-def test_unknown_renderer_remains_exportable_but_cannot_rerender(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    visible = "# Stored by a future renderer\n"
-    state = StateV1(
-        name="future",
-        revision=1,
-        controller=ControllerV1(login=ACTOR, id=ACTOR_ID),
-        data={"status": "ready"},
-        renderer=RendererDescriptorV1(
-            kind="future-dashboard",
-            version=9,
-            config={"layout": "v9"},
-        ),
-        render_sha256=render_sha256(visible),
-    )
-    encoded = encode_comment(state, visible)
-    runner = _install_process(
-        monkeypatch,
-        [[_comment(201, encoded.body)]],
-    )
-
-    assert run(["view", "future", "--target", TARGET_URL]) == 0
-    assert capsys.readouterr().out == visible
-    assert run(["state", "export", "future", "--target", TARGET_URL]) == 0
-    assert json.loads(capsys.readouterr().out) == state.to_json()
-
-    assert run(["render", "future", "--target", TARGET_URL]) == 2
-    assert "renderer_unsupported" in capsys.readouterr().err
-    assert run(["state", "verify", "future", "--target", TARGET_URL]) == 2
-    assert "renderer_unsupported" in capsys.readouterr().err
     _assert_only_read_calls(runner)

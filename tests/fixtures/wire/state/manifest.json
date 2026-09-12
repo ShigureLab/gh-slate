@@ -1,0 +1,18 @@
+{
+  "format": "gh-slate/state",
+  "fixtures": {
+    "full-types": {
+      "comment.md": "e13c6953997c8213746cc0880f8e0646a33c05d7b1ac6e4f55d4fe4415ad69ae",
+      "expected.json": "583219c60586e5c4b0fda61d821c3f6cb05f6e0949935d857614b78de83fae62",
+      "source.state.json": "9fb41ecfa14ad97232280cd4bbb1e91eeaacf9a45f218b01026c3f0ea63d0f3f",
+      "state.canonical.json": "4aad2c9069e3bd5a4c143508d6f898c456f388ddf66ae89f828f286976622856",
+      "visible.md": "0dc71f504f4505ab498f1ae68d9ed08fc7d6cbb57e7d5b59914fcb84b93dca61"
+    },
+    "minimal": {
+      "comment.md": "c54012e9b03365ceb71b20e496a37fbb1fa4bfd4b1c8a7579a4ffa9b62c92216",
+      "expected.json": "73212d8213b9802c4fb11fc90fb4932115fbd32be62ffefb6bb61a58c06c57ff",
+      "state.canonical.json": "c86b11c2748d73a570d404a698ca4331203520ff0d4d12d217dfb1384ade1e7a",
+      "visible.md": "3f8f3d3da73a52981f63fe37c3ba0409b2577700438b5be4bd6a94a3eb7e9a6d"
+    }
+  }
+}

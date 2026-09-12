@@ -1,4 +1,4 @@
-# Business data selects a view
+# CI, review, and benchmark profiles
 
 This directory is an example location, with no special discovery behavior.
 Select `boards.toml` explicitly. All referenced paths are relative to that file.
@@ -39,3 +39,14 @@ never replaced with a current head by gh-slate.
 保留其他 finding。先用 `view --json` 读取 revision，再运行
 `apply review --patch resolve-finding.patch.json --if-revision N`。加上
 `--dry-run --json` 可检查候选差异、最终数据和视图切换。
+
+CI and benchmark use single templates, with no outcome routing requirement:
+
+```bash
+gh slate render ci --config examples/profiles/boards.toml --profile ci --data examples/profiles/ci.json
+gh slate render benchmark --config examples/profiles/boards.toml --profile benchmark --data examples/profiles/benchmark.json
+```
+
+These are synthetic fixtures. Producers supply job diagnoses, source revisions,
+measurements, and computed changes. The core contains no CI/review/benchmark
+branches and does not infer success from incomplete execution.

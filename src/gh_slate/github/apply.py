@@ -6,10 +6,10 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from gh_slate.codec import (
-    ControllerV1,
+    Controller,
     MetaSnapshot,
-    RendererDescriptorV1,
-    SchemaSnapshotV1,
+    RendererDescriptor,
+    SchemaSnapshot,
     State,
     StateDraft,
     canonical_json_bytes,
@@ -17,18 +17,17 @@ from gh_slate.codec import (
     resolve_revision,
     validate_slate_name,
 )
-from gh_slate.codec.model import MAX_REVISION, STATE_FORMAT_V1, STATE_FORMAT_V2
+from gh_slate.codec.model import MAX_REVISION
 from gh_slate.errors import ExitCode, GhSlateError
 from gh_slate.github.models import GitHubActor
 from gh_slate.github.store import CommentStore
 from gh_slate.github.target import (
     ResolvedTarget,
     resolve_target,
-    target_from_comment_url,
 )
 from gh_slate.github.write import GhWriteOutcomeUnknown, GhWriteTimeout
 from gh_slate.patching import apply_data_patch, data_diff, prepare_patch
-from gh_slate.rendering import SlateContext, render
+from gh_slate.rendering import render
 from gh_slate.rendering.routing import selected_view
 
 if TYPE_CHECKING:
@@ -37,7 +36,7 @@ if TYPE_CHECKING:
 ApplyMode = Literal["create", "update", "upsert"]
 ApplyAction = Literal["created", "updated", "unchanged"]
 RecoveryKind = Literal["timeout", "ambiguous"]
-SchemaInput = SchemaSnapshotV1 | bool | Mapping[str, object] | None
+SchemaInput = SchemaSnapshot | bool | Mapping[str, object] | None
 
 
 class ApplyReadClient(Protocol):
@@ -112,7 +111,7 @@ class ApplyRequest:
     patch: object | None = None
     data_schema: SchemaInput = None
     replace_schema: bool = False
-    renderer: RendererDescriptorV1 | None = None
+    renderer: RendererDescriptor | None = None
     controller: str | GitHubActor | None = None
     if_revision: int | None = None
     dry_run: bool = False
@@ -188,10 +187,10 @@ class ApplyRequest:
             object.__setattr__(self, "patch", prepare_patch(self.patch))
         if self.renderer is not None and not isinstance(
             self.renderer,
-            RendererDescriptorV1,
+            RendererDescriptor,
         ):
             raise ApplyError(
-                "renderer must be a RendererDescriptorV1",
+                "renderer must be a RendererDescriptor",
                 code="apply_request_invalid",
                 exit_code=ExitCode.VALIDATION,
             )
@@ -439,53 +438,31 @@ def _canonical_context(
     request: ApplyRequest,
     reader: ApplyReadClient,
     existing: _Existing | None,
-) -> tuple[ResolvedTarget, SlateContext, MetaSnapshot | None]:
-    renderer = (
-        request.renderer if request.renderer is not None else (None if existing is None else existing.state.renderer)
+) -> tuple[ResolvedTarget, MetaSnapshot]:
+    canonical, response = _canonical_new_target(request, reader)
+    node_id = response.get("node_id")
+    if not isinstance(node_id, str) or not node_id:
+        raise ApplyError("GitHub target metadata is missing node_id", code="github_response_invalid")
+    owner, name = canonical.repository.split("/", 1)
+    repository_url = canonical.url.rsplit("/", 2)[0]
+    meta = MetaSnapshot(
+        {
+            "host": canonical.host,
+            "repository": {"owner": owner, "name": name, "full_name": canonical.repository, "url": repository_url},
+            "target": {
+                "kind": "pull_request" if canonical.url.rsplit("/", 2)[-2] == "pull" else "issue",
+                "number": canonical.number,
+                "id": node_id,
+                "url": canonical.url,
+            },
+            "slate": {"name": request.name},
+        }
     )
-    v2 = renderer is not None and renderer.kind == "jinja" and renderer.version == 2
-    meta = None
-    if existing is None or v2:
-        canonical, response = _canonical_new_target(request, reader)
-        if v2:
-            node_id = response.get("node_id")
-            if not isinstance(node_id, str) or not node_id:
-                raise ApplyError("GitHub target metadata is missing node_id", code="github_response_invalid")
-            owner, name = canonical.repository.split("/", 1)
-            repository_url = canonical.url.rsplit("/", 2)[0]
-            meta = MetaSnapshot(
-                {
-                    "host": canonical.host,
-                    "repository": {
-                        "owner": owner,
-                        "name": name,
-                        "full_name": canonical.repository,
-                        "url": repository_url,
-                    },
-                    "target": {
-                        "kind": "pull_request" if canonical.url.rsplit("/", 2)[-2] == "pull" else "issue",
-                        "number": canonical.number,
-                        "id": node_id,
-                        "url": canonical.url,
-                    },
-                    "slate": {"name": request.name},
-                }
-            )
-            if (
-                existing is not None
-                and existing.state.meta is not None
-                and (existing.state.meta.target_id != node_id or existing.state.meta.value["host"] != canonical.host)
-            ):
-                raise ApplyError(
-                    "stored metadata belongs to a different GitHub target", code="target_identity_mismatch"
-                )
-    else:
-        canonical = target_from_comment_url(existing.comment.url, expected=request.target)
-    return (
-        canonical,
-        SlateContext(name=request.name, repository=canonical.repository, number=canonical.number, url=canonical.url),
-        meta,
-    )
+    if existing is not None and (
+        existing.state.meta.target_id != node_id or existing.state.meta.value["host"] != canonical.host
+    ):
+        raise ApplyError("stored metadata belongs to a different GitHub target", code="target_identity_mismatch")
+    return canonical, meta
 
 
 def _desired_state(
@@ -493,8 +470,7 @@ def _desired_state(
     existing: _Existing | None,
     *,
     controller: GitHubActor,
-    context: SlateContext,
-    meta: MetaSnapshot | None,
+    meta: MetaSnapshot,
 ) -> tuple[State, str, str, str, bool]:
     previous = None if existing is None else existing.state
     if previous is None:
@@ -506,7 +482,7 @@ def _desired_state(
                 "creating a slate requires a renderer",
                 code="renderer_required",
                 exit_code=ExitCode.VALIDATION,
-                hints=("pass a Jinja, table, or list renderer",),
+                hints=("pass --profile or --template",),
             )
         reuse_renderer = False
         reuse_schema = False
@@ -522,9 +498,7 @@ def _desired_state(
         assert previous is not None
         data = apply_data_patch(previous.data, request.patch)
     assert renderer is not None
-    if previous is not None and previous.meta is not None and meta is None:
-        raise ApplyError("a V2 slate requires a jinja@2 template", code="renderer_unsupported")
-    stored_controller = ControllerV1(
+    stored_controller = Controller(
         login=controller.login,
         id=controller.id,
     )
@@ -532,13 +506,11 @@ def _desired_state(
         data,
         renderer,
         schema=schema,
-        slate=context,
         meta=meta,
     )
     stored_schema = previous.data_schema if previous is not None and reuse_schema else rendered.data_schema
     draft = StateDraft(
         name=request.name,
-        format=STATE_FORMAT_V2 if meta is not None else STATE_FORMAT_V1,
         meta=meta,
         controller=stored_controller,
         data=rendered.data,
@@ -838,7 +810,7 @@ def _result(
         )
         preview = {
             "data": state.data,
-            "meta": None if state.meta is None else state.meta.to_json(),
+            "meta": state.meta.to_json(),
             "changes": {
                 "data": [{"op": "add", "path": "", "value": state.data}]
                 if previous is None
@@ -860,7 +832,7 @@ def _result(
         dry_run=dry_run,
         recovered=recovered,
         markdown=markdown if dry_run else None,
-        meta_source="github" if state.meta is not None else None,
+        meta_source="github",
         view=selected_view(state.renderer, state.data),
         preview=preview,
     )
@@ -886,7 +858,7 @@ class ApplyTransaction:
             controller=controller,
         )
         _check_mode_and_revision(request, existing)
-        canonical, context, meta = _canonical_context(
+        canonical, meta = _canonical_context(
             request,
             self.reader,
             existing,
@@ -895,7 +867,6 @@ class ApplyTransaction:
             request,
             existing,
             controller=controller,
-            context=context,
             meta=meta,
         )
         action: ApplyAction = "created" if existing is None else "updated"

@@ -1,0 +1,14 @@
+## Benchmark comparison
+
+{{ data.summary }}
+
+Baseline: {{ data.source.base_sha | md_code }} → Candidate: {{ data.source.head_sha | md_code }}
+Environment: {{ data.environment }}
+
+| Benchmark | Before | After | Change | Unit |
+| --- | --- | --- | --- | --- |
+{% for key, metric in data.metrics | dictsort %}| {{ key | md_code }} | {{ metric.before }} | {{ metric.after }} | {{ metric.change }} | {{ metric.unit }} |
+{% endfor %}
+{% if data.notes is defined %}
+{{ data.notes | md_list }}
+{% endif %}

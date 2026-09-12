@@ -12,12 +12,13 @@ from gh_slate.codec.hashes import canonical_state_bytes, render_sha256, state_sh
 from gh_slate.codec.json import canonical_json_bytes
 from gh_slate.codec.limits import CodecLimits
 from gh_slate.codec.marker import Marker, encode_marker
+from gh_slate.codec.meta import MetaSnapshot
 from gh_slate.codec.model import (
     JSON_SCHEMA_DIALECT_2020_12,
-    ControllerV1,
-    RendererDescriptorV1,
-    SchemaSnapshotV1,
-    StateV1,
+    Controller,
+    RendererDescriptor,
+    SchemaSnapshot,
+    State,
 )
 
 VISIBLE = """\
@@ -33,12 +34,12 @@ def make_state(
     *,
     visible: str = VISIBLE,
     name: str = "ci-summary",
-    renderer_version: int = 1,
-) -> StateV1:
-    return StateV1(
+) -> State:
+    return State(
+        meta=MetaSnapshot.local(name),
         name=name,
         revision=7,
-        controller=ControllerV1(login="github-actions[bot]", id=41898282),
+        controller=Controller(login="github-actions[bot]", id=41898282),
         data={
             "jobs": (
                 {
@@ -52,13 +53,8 @@ def make_state(
             "empty": {},
         },
         data_schema=None,
-        renderer=RendererDescriptorV1(
-            kind="builtin-table",
-            version=renderer_version,
-            config={
-                "selector": ".jobs",
-                "columns": ("name", "passed"),
-            },
+        renderer=RendererDescriptor(
+            config={"source": "{{ data.jobs | md_table }}"},
         ),
         render_sha256=render_sha256(visible),
     )
@@ -114,15 +110,6 @@ def test_visible_drift_keeps_canonical_state_readable() -> None:
     assert decoded.state == state
     assert decoded.drifted is True
     assert decoded.expected_render_sha256 != decoded.actual_render_sha256
-
-
-def test_unknown_renderer_remains_readable() -> None:
-    state = make_state(renderer_version=999)
-
-    decoded = decode_comment(encode_comment(state, VISIBLE).body)
-
-    assert decoded.state.renderer.version == 999
-    assert decoded.state.renderer.config["selector"] == ".jobs"
 
 
 def test_encode_rejects_render_hash_mismatch() -> None:
@@ -192,31 +179,10 @@ def test_decode_wraps_invalid_utf8() -> None:
     assert error.value.code == "invalid_utf8"
 
 
-def test_decode_rejects_unknown_marker_major_version_explicitly() -> None:
-    encoded = encode_comment(make_state(), VISIBLE)
-    newer = encoded.body.replace("gh-slate:v1", "gh-slate:v2", 1)
-
-    with pytest.raises(CodecError, match="unsupported marker version") as error:
-        decode_comment(newer)
-
-    assert error.value.code == "unsupported_marker_version"
-
-
-def test_decode_wraps_an_extremely_long_marker_version() -> None:
-    encoded = encode_comment(make_state(), VISIBLE)
-    newer = encoded.body.replace("gh-slate:v1", f"gh-slate:v{'9' * 5000}", 1)
-
-    with pytest.raises(CodecError, match="unsupported marker version") as error:
-        decode_comment(newer)
-
-    assert error.value.code == "unsupported_marker_version"
-    assert error.value.details["version_truncated"] is True
-
-
-def test_decode_rejects_unknown_state_major_version_explicitly() -> None:
+def test_decode_rejects_a_foreign_state_format() -> None:
     state = make_state()
     state_document = state.to_json()
-    state_document["format"] = "gh-slate/state-v99"
+    state_document["format"] = "foreign/state"
     body = encode_marker(
         Marker(
             name=state.name,
@@ -273,7 +239,7 @@ def test_real_comment_components_accept_exact_limits_and_reject_one_byte_less(
 ) -> None:
     state = replace(
         make_state(),
-        data_schema=SchemaSnapshotV1(
+        data_schema=SchemaSnapshot(
             dialect=JSON_SCHEMA_DIALECT_2020_12,
             document={"type": "object"},
         ),

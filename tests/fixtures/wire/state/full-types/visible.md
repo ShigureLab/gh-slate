@@ -1,0 +1,25 @@
+- <code>bool&#95;false</code>: false
+- <code>bool&#95;true</code>: true
+- <code>decimal</code>: 123.45
+- <code>empty&#95;array</code>: <code>&#91;&#93;</code>
+- <code>empty&#95;object</code>: <code>&#123;&#125;</code>
+- <code>exponent&#95;large</code>: 1e+21
+- <code>exponent&#95;small</code>: 1e-7
+- <code>integer&#95;max</code>: 9223372036854775807
+- <code>integer&#95;min</code>: -9223372036854775808
+- <code>negative&#95;zero</code>: 0
+- <code>nested</code>:
+  - <code>items</code>:
+    - <code>&#91;0&#93;</code>:
+      - <code>id</code>: 1
+      - <code>note</code>: null
+    - <code>&#91;1&#93;</code>:
+      - <code>id</code>: 2
+  - <code>level</code>:
+    - <code>empty&#95;object</code>: <code>&#123;&#125;</code>
+    - <code>unicode&#95;key</code>:
+      - <code>雪</code>: snow
+- <code>null&#95;value</code>: null
+- <code>plain&#95;large&#95;boundary</code>: 100000000000000000000
+- <code>plain&#95;small&#95;boundary</code>: 0.000001
+- <code>unicode</code>: 雪 · café · 👩‍💻

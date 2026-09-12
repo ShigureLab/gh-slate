@@ -6,7 +6,6 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "jinja2>=3.1.6,<3.2",
-  "jq>=1.12,<2",
   "jsonpatch>=1.33,<2",
   "jsonpointer>=3.1,<4",
   "jsonschema>=4.25,<5",

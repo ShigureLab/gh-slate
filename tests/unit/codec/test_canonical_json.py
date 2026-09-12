@@ -29,7 +29,7 @@ from gh_slate.codec.json import (
         (42, "42"),
     ],
 )
-def test_canonical_number_uses_the_state_v1_boundaries(value: Decimal | int, expected: str) -> None:
+def test_canonical_number_uses_the_state_boundaries(value: Decimal | int, expected: str) -> None:
     assert canonical_number(value) == expected
 
 

@@ -7,7 +7,7 @@ import pytest
 from gh_slate.rendering.errors import RenderingError
 from gh_slate.rendering.limits import DEFAULT_RENDER_LIMITS
 from gh_slate.rendering.list import render_list
-from gh_slate.rendering.model import ListRendererV1
+from gh_slate.rendering.model import ListOptions
 
 
 def test_object_keys_are_sorted_and_array_order_uses_index_labels() -> None:
@@ -16,7 +16,7 @@ def test_object_keys_are_sorted_and_array_order_uses_index_labels() -> None:
             "z": "last",
             "a": ("first", "second"),
         },
-        ListRendererV1(),
+        ListOptions(),
     )
 
     assert markdown.splitlines() == [
@@ -30,7 +30,7 @@ def test_object_keys_are_sorted_and_array_order_uses_index_labels() -> None:
 def test_empty_array_object_null_and_empty_string_are_distinct() -> None:
     markdown = render_list(
         ((), {}, None, ""),
-        ListRendererV1(),
+        ListOptions(),
     )
 
     assert markdown.splitlines() == [
@@ -42,14 +42,14 @@ def test_empty_array_object_null_and_empty_string_are_distinct() -> None:
 
 
 def test_empty_root_containers_are_not_silently_dropped() -> None:
-    assert render_list((), ListRendererV1()) == "- <code>&#91;&#93;</code>"
-    assert render_list({}, ListRendererV1()) == "- <code>&#123;&#125;</code>"
+    assert render_list((), ListOptions()) == "- <code>&#91;&#93;</code>"
+    assert render_list({}, ListOptions()) == "- <code>&#123;&#125;</code>"
 
 
 def test_depth_limit_shows_compact_json_without_false_item_omission() -> None:
     markdown = render_list(
         {"a": {"b": {"c": "value"}}},
-        ListRendererV1(max_depth=1),
+        ListOptions(max_depth=1),
     )
 
     assert markdown.splitlines() == [
@@ -62,7 +62,7 @@ def test_depth_limit_shows_compact_json_without_false_item_omission() -> None:
 def test_runtime_depth_cap_cannot_be_raised_by_descriptor() -> None:
     markdown = render_list(
         {"a": {"b": {"c": "value"}}},
-        ListRendererV1(max_depth=4),
+        ListOptions(max_depth=4),
         replace(DEFAULT_RENDER_LIMITS, max_list_depth=1),
     )
 
@@ -72,7 +72,7 @@ def test_runtime_depth_cap_cannot_be_raised_by_descriptor() -> None:
 def test_item_limit_counts_rendered_list_entries_and_emits_notice() -> None:
     markdown = render_list(
         {"c": 3, "a": 1, "b": 2},
-        ListRendererV1(max_items=2),
+        ListOptions(max_items=2),
     )
 
     assert markdown.splitlines() == [
@@ -85,14 +85,14 @@ def test_item_limit_counts_rendered_list_entries_and_emits_notice() -> None:
 def test_title_and_output_are_markdown_escaped() -> None:
     assert render_list(
         ("x",),
-        ListRendererV1(title="<Title|`>"),
+        ListOptions(title="<Title|`>"),
     ).startswith("## &#60;Title&#124;&#96;&#62;\n\n")
 
 
 def test_list_neutralizes_markdown_in_title_keys_and_values() -> None:
     markdown = render_list(
         {"[key](https://example.com)": "![image](x) ~~value~~ @team"},
-        ListRendererV1(title="**title** <tag>"),
+        ListOptions(title="**title** <tag>"),
     )
 
     assert markdown.splitlines() == [
@@ -111,7 +111,7 @@ def test_list_output_limit_fails_explicitly() -> None:
     with pytest.raises(RenderingError) as caught:
         render_list(
             ("a long value",),
-            ListRendererV1(),
+            ListOptions(),
             replace(DEFAULT_RENDER_LIMITS, max_output_bytes=8),
         )
 

@@ -7,6 +7,7 @@ from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from gh_slate.codec import canonical_json_bytes, validate_slate_name
+from gh_slate.codec.meta import MetaSnapshot
 from gh_slate.errors import ExitCode
 from gh_slate.github.errors import GitHubReadError
 from gh_slate.github.lookup import ProcessTargetLookup
@@ -16,9 +17,8 @@ from gh_slate.github.target import (
     ResolvedTarget,
     resolve_host_context,
     resolve_target,
-    target_from_comment_url,
 )
-from gh_slate.rendering import SlateContext, render_state, select_one
+from gh_slate.rendering import render_state
 from gh_slate.rendering.routing import selected_view
 
 if TYPE_CHECKING:
@@ -66,22 +66,6 @@ def _read_slate(
     return target, slate
 
 
-def _context(
-    target: ResolvedTarget,
-    slate: ManagedSlate,
-) -> SlateContext:
-    canonical = target_from_comment_url(
-        slate.comment.url,
-        expected=target,
-    )
-    return SlateContext(
-        name=slate.name,
-        repository=canonical.repository,
-        number=canonical.number,
-        url=canonical.url,
-    )
-
-
 def _view_record(
     target: ResolvedTarget,
     slate: ManagedSlate,
@@ -101,14 +85,11 @@ def _view_record(
         "render_sha256": slate.decoded.expected_render_sha256,
         "actual_render_sha256": slate.decoded.actual_render_sha256,
         "schema": state.data_schema is not None,
-        "profile": state.renderer.configuration.get("profile"),
+        "profile": state.renderer.config.get("profile"),
         "view": selected_view(state.renderer, state.data),
         "data": state.data,
-        "meta": None if state.meta is None else state.meta.to_json(),
-        "renderer": {
-            "kind": state.renderer.kind,
-            "version": state.renderer.version,
-        },
+        "meta": state.meta.to_json(),
+        "renderer": state.renderer.to_json(),
     }
 
 
@@ -215,13 +196,9 @@ def run_list(args: Namespace) -> int:
     return 0
 
 
-def _verified_render(
-    target: ResolvedTarget,
-    slate: ManagedSlate,
-) -> str:
+def _verified_render(slate: ManagedSlate) -> str:
     rendered = render_state(
         slate.decoded.state,
-        slate=_context(target, slate),
     )
     if rendered.render_sha256 != slate.decoded.expected_render_sha256:
         raise GitHubReadError(
@@ -238,7 +215,7 @@ def _verified_render(
 
 def run_remote_render(args: Namespace) -> int:
     target, slate = _read_slate(args)
-    markdown = _verified_render(target, slate)
+    markdown = _verified_render(slate)
     if slate.decoded.drifted:
         _warning(
             "render_drift",
@@ -264,7 +241,7 @@ def run_state_export(args: Namespace) -> int:
 
 def run_state_verify(args: Namespace) -> int:
     target, slate = _read_slate(args)
-    _verified_render(target, slate)
+    _verified_render(slate)
     record = {
         **_view_record(target, slate),
         "verified": not slate.decoded.drifted,
@@ -293,16 +270,20 @@ def run_doctor(args: Namespace) -> int:
     version = process.version()
     process.auth_status(host)
     actor = process.current_actor(host)
-    # Exercise the installed native jq binding through the same isolated
-    # adapter used by renderers, not a separate jq executable.
-    select_one({"ready": True}, ".ready")
+    from gh_slate.rendering import jinja_descriptor, render
+
+    render(
+        {"ready": True},
+        jinja_descriptor("{{ data.ready }}"),
+        meta=MetaSnapshot.local("doctor"),
+        schema={"type": "object"},
+    )
     record = {
         "ok": True,
         "gh": version,
         "host": host,
         "actor": actor.login,
         "actor_id": actor.id,
-        "jq": "ok",
         "jinja": "ok",
         "json_schema": "draft-2020-12",
     }
@@ -311,7 +292,7 @@ def run_doctor(args: Namespace) -> int:
     else:
         print(f"ok gh: {version}")
         print(f"ok auth: {actor.login} ({actor.id})")
-        print("ok jq, Jinja, JSON Schema draft 2020-12")
+        print("ok Jinja, JSON Schema draft 2020-12")
     return 0
 
 

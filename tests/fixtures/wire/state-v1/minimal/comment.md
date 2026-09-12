@@ -1,9 +1,0 @@
-<!-- gh-slate:v1 name=ci-summary encoding=zlib+base64 state=f8af838a14c8dabd90e14235f9318bec4955bbe0ae5bc5f8fdbc7a440aaa1817
-eAGrVkrOzyspys/JSS1SsqpWyslPz8xTslJKzyzJKE3STUwuyczPK45Oyi+JVarVUUpJLEkEKUvNLSipBDKAQln5ScVKVtHVSimlRYkg1fG5QL6hkZ6pjlJeYm4q0LCczLzSCiUgN78ExH2yd8HTpXsVPsyf2A0UzC8AaUrMUbLKK83J0VEqSCwuTk1RsiopKk2tjYXaGV+cnJGamwhTk5ZflJtYAnJmhm5xTmJJqn5xCZDULTNUgluanKlbXJqbm1hUCRQrSs1LSS2KL85INDI1A0oamKWaJaYmGSQmmRpappgYpiWZp1ompRknppikWKalWholGqYYGRskWSQnmSYZpaYYmaakJaclm6eYpiWmGVimwI2EhFpyfk5pbh4kGDJSE1NAokpe+UlKIO+UZADFIa4CegdJQQDEpwg1UK/H1sbqKGVn5gEDQSmpNDOnJDNPtyQxKScVqDQ3sSK+KL8caJWpgQGQm1lcnJmXDlT4qGEKULo4NSc1uSQfZLoeOGJ0lEoyS3JA4eHsqYAIj7LUomJgqAPjqRbkk7JMCM+8FgCYIbMG
--->
-
-## CI summary
-
-| Job | Passed |
-| --- | --- |
-| linux | true |

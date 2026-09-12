@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, replace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 STATE_SHA256 = "0123456789abcdef" * 4
-PAYLOAD = encode_payload(b'{"format":"gh-slate/state-v1"}')
+PAYLOAD = encode_payload(b'{"format":"gh-slate/state"}')
 
 
 def make_marker(
@@ -38,7 +38,7 @@ def test_marker_round_trip_preserves_the_exact_visible_remainder() -> None:
     body = encode_marker(marker)
 
     assert body == (
-        f"<!-- gh-slate:v1 name=ci-summary encoding=zlib+base64 "
+        f"<!-- gh-slate: name=ci-summary encoding=zlib+base64 "
         f"state={STATE_SHA256}\n"
         f"{PAYLOAD}\n"
         "-->\n\n"
@@ -53,20 +53,6 @@ def test_marker_is_immutable() -> None:
     field = "name"
     with pytest.raises(FrozenInstanceError):
         setattr(marker, field, "other")
-
-
-@pytest.mark.parametrize("version", [True, 1.0, 2])
-def test_marker_version_is_a_strict_integer_constant(version: object) -> None:
-    with pytest.raises(CodecError) as caught:
-        Marker(
-            name="ci-summary",
-            state_sha256=STATE_SHA256,
-            payload=PAYLOAD,
-            visible="",
-            version=cast("int", version),
-        )
-
-    assert caught.value.code == "unsupported_marker_version"
 
 
 def test_marker_rejects_an_empty_payload() -> None:
@@ -158,7 +144,7 @@ def test_parser_rejects_non_canonical_base64_inside_an_exact_marker() -> None:
 
 
 def test_parser_rejects_an_additional_managed_marker_anywhere_in_visible_text() -> None:
-    visible = "Report\n\n```md\n<!-- gh-slate:v999 malformed -->\n```\n"
+    visible = "Report\n\n```md\n<!-- gh-slate: malformed -->\n```\n"
 
     with pytest.raises(CodecError) as caught:
         make_marker(visible=visible)
