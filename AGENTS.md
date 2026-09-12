@@ -29,9 +29,10 @@
 6. **One authoritative source for each fact.** Derive values from canonical state
    instead of maintaining another copy that must be kept in sync.
 
-## Git commit conventions
+## Git commit and PR conventions
 
-- Follow yutto's commit title format: `<gitmoji> <type>: <subject>`.
+- Follow yutto's title format for both commits and PRs:
+  `<gitmoji> <type>: <subject>`.
 - Use the Unicode emoji itself, such as `✨`, rather than an emoji shortcode.
 - Choose the emoji and type to match the change:
    - `✨ feat`: new functionality.
