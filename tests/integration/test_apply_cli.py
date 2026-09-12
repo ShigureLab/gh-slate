@@ -56,7 +56,7 @@ class FakeGhBackend:
         if endpoint == "user":
             return _result({"id": ACTOR_ID, "login": ACTOR})
         if endpoint == f"repos/{REPOSITORY}/issues/{NUMBER}":
-            return _result({"html_url": self.page_url})
+            return _result({"html_url": self.page_url, "node_id": "I_target"})
         if endpoint == self.comments_endpoint:
             pages: object = [self.comments] if paginate else self.comments
             return _result(pages)
@@ -265,3 +265,49 @@ def test_cli_to_gh_contract_create_update_unchanged_and_readback(
                 backend.comments_endpoint,
                 HOST,
             )
+
+
+@pytest.mark.parametrize("kind", ["issues", "pull"])
+def test_v2_target_preview_matches_offline_fixture_and_stored_render(kind, tmp_path, monkeypatch, capsys):
+    page_url = f"https://{HOST}/{REPOSITORY}/{kind}/{NUMBER}"
+    backend = FakeGhBackend(page_url=page_url)
+    reader = GhProcess(runner=ReadRunner(backend))
+    transaction = apply_commands._CoreTransaction(reader=reader, writer=GhWriteProcess(runner=WriteRunner(backend)))
+    monkeypatch.setattr(apply_commands, "_new_transaction", lambda: transaction)
+    monkeypatch.setattr(read_commands, "_new_process", lambda: reader)
+    template = tmp_path / "template.j2"
+    template.write_text(
+        "# {{ meta.slate.name }}\n{{ meta.repository.full_name | md_link(meta.target.url) }} #{{ meta.target.number }}\n{{ data.message }}"
+    )
+    data = tmp_path / "data.json"
+    data.write_text('{"message":"A|B <img> `code`"}')
+    args = ["apply", "ci", "--target", page_url, "--template", str(template), "--data", str(data)]
+    assert run([*args, "--dry-run"]) == 0
+    preview = capsys.readouterr().out
+    assert not backend.comments
+    assert run([*args, "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["action"] == "created"
+    assert run(["view", "ci", "--target", page_url, "--json"]) == 0
+    stored = json.loads(capsys.readouterr().out)
+    assert stored["data"]["message"] == "A|B <img> `code`"
+    meta = tmp_path / "target.json"
+    meta.write_text(json.dumps(stored["meta"]))
+    assert run(["render", "ci", "--template", str(template), "--data", str(data), "--meta", str(meta)]) == 0
+    assert capsys.readouterr().out == preview
+    assert run(["render", "ci", "--template", str(template), "--data", str(data), "--meta", str(meta), "--json"]) == 0
+    local = json.loads(capsys.readouterr().out)
+    assert local["meta_source"] == "fixture"
+    assert local["meta"] == stored["meta"]
+    assert local["markdown"] == preview
+    assert run([*args, "--dry-run", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["meta_source"] == "github"
+    template.unlink()
+    assert run(["render", "ci", "--target", page_url]) == 0
+    assert capsys.readouterr().out == preview
+    assert run(["render", "ci", "--target", page_url, "--json"]) == 0
+    remote = json.loads(capsys.readouterr().out)
+    assert remote["meta_source"] == "stored"
+    assert remote["markdown"] == preview
+    assert run(["apply", "ci", "--target", page_url, "--data", str(data), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["action"] == "unchanged"
+    assert [event[0] for event in backend.events if event[0] in {"POST", "PATCH"}] == ["POST"]

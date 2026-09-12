@@ -8,8 +8,10 @@ from typing import NoReturn, cast
 
 from gh_slate.codec.errors import CodecError
 from gh_slate.codec.json import freeze_json
+from gh_slate.codec.meta import MetaSnapshot
 
 STATE_FORMAT_V1 = "gh-slate/state-v1"
+STATE_FORMAT_V2 = "gh-slate/state-v2"
 JSON_SCHEMA_DIALECT_2020_12 = "https://json-schema.org/draft/2020-12/schema"
 MAX_REVISION = 2**63 - 1
 MAX_RENDERER_VERSION = 2**31 - 1
@@ -288,7 +290,7 @@ class SchemaSnapshotV1:
 
 
 @dataclass(frozen=True, slots=True)
-class StateDraftV1:
+class StateDraft:
     name: str
     controller: ControllerV1
     data: Mapping[str, object]
@@ -296,16 +298,22 @@ class StateDraftV1:
     render_sha256: str
     data_schema: SchemaSnapshotV1 | None = None
     format: str = STATE_FORMAT_V1
+    meta: MetaSnapshot | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "format", _require_string(self.format, path="format"))
-        if self.format != STATE_FORMAT_V1:
+        if self.format not in {STATE_FORMAT_V1, STATE_FORMAT_V2}:
             raise CodecError(
                 f"unsupported state format: {self.format}",
                 code="unsupported_state_format",
                 details={"format": self.format},
             )
         object.__setattr__(self, "name", validate_slate_name(self.name))
+        if self.format == STATE_FORMAT_V2:
+            if not isinstance(self.meta, MetaSnapshot) or self.meta.name != self.name:
+                _invalid("state-v2 requires matching meta", path="meta")
+        elif self.meta is not None:
+            _invalid("state-v1 must not contain meta", path="meta")
         if not isinstance(self.controller, ControllerV1):
             _invalid("controller must be a ControllerV1", path="controller")
         object.__setattr__(self, "data", _require_object(self.data, path="data"))
@@ -321,6 +329,7 @@ class StateDraftV1:
 
     def to_json(self) -> dict[str, object]:
         return {
+            **({"meta": self.meta.to_json()} if self.meta is not None else {}),
             "format": self.format,
             "name": self.name,
             "controller": self.controller.to_json(),
@@ -330,9 +339,10 @@ class StateDraftV1:
             "render_sha256": self.render_sha256,
         }
 
-    def with_revision(self, revision: int) -> StateV1:
-        return StateV1(
+    def with_revision(self, revision: int) -> State:
+        return State(
             format=self.format,
+            meta=self.meta,
             name=self.name,
             revision=revision,
             controller=self.controller,
@@ -343,7 +353,7 @@ class StateDraftV1:
         )
 
     @classmethod
-    def from_json(cls, value: object) -> StateDraftV1:
+    def from_json(cls, value: object) -> StateDraft:
         obj = _require_object(value, path="state")
         required = frozenset(
             {
@@ -356,10 +366,13 @@ class StateDraftV1:
                 "render_sha256",
             }
         )
+        if obj.get("format") == STATE_FORMAT_V2:
+            required = required | {"meta"}
         _reject_unknown_fields(obj, allowed=required, path="state")
         _require_fields(obj, required=required, path="state")
         return cls(
             format=_require_string(obj["format"], path="format"),
+            meta=MetaSnapshot.from_json(obj["meta"]) if "meta" in obj else None,
             name=validate_slate_name(obj["name"]),
             controller=ControllerV1.from_json(obj["controller"]),
             data=_require_object(obj["data"], path="data"),
@@ -370,7 +383,7 @@ class StateDraftV1:
 
 
 @dataclass(frozen=True, slots=True)
-class StateV1:
+class State:
     name: str
     revision: int
     controller: ControllerV1
@@ -379,16 +392,22 @@ class StateV1:
     render_sha256: str
     data_schema: SchemaSnapshotV1 | None = None
     format: str = STATE_FORMAT_V1
+    meta: MetaSnapshot | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "format", _require_string(self.format, path="format"))
-        if self.format != STATE_FORMAT_V1:
+        if self.format not in {STATE_FORMAT_V1, STATE_FORMAT_V2}:
             raise CodecError(
                 f"unsupported state format: {self.format}",
                 code="unsupported_state_format",
                 details={"format": self.format},
             )
         object.__setattr__(self, "name", validate_slate_name(self.name))
+        if self.format == STATE_FORMAT_V2:
+            if not isinstance(self.meta, MetaSnapshot) or self.meta.name != self.name:
+                _invalid("state-v2 requires matching meta", path="meta")
+        elif self.meta is not None:
+            _invalid("state-v1 must not contain meta", path="meta")
         object.__setattr__(
             self,
             "revision",
@@ -417,9 +436,10 @@ class StateV1:
         value["revision"] = self.revision
         return value
 
-    def to_draft(self) -> StateDraftV1:
-        return StateDraftV1(
+    def to_draft(self) -> StateDraft:
+        return StateDraft(
             format=self.format,
+            meta=self.meta,
             name=self.name,
             controller=self.controller,
             data=self.data,
@@ -429,7 +449,7 @@ class StateV1:
         )
 
     @classmethod
-    def from_json(cls, value: object) -> StateV1:
+    def from_json(cls, value: object) -> State:
         obj = _require_object(value, path="state")
         required = frozenset(
             {
@@ -443,10 +463,13 @@ class StateV1:
                 "render_sha256",
             }
         )
+        if obj.get("format") == STATE_FORMAT_V2:
+            required = required | {"meta"}
         _reject_unknown_fields(obj, allowed=required, path="state")
         _require_fields(obj, required=required, path="state")
         return cls(
             format=_require_string(obj["format"], path="format"),
+            meta=MetaSnapshot.from_json(obj["meta"]) if "meta" in obj else None,
             name=validate_slate_name(obj["name"]),
             revision=_require_integer(
                 obj["revision"],
@@ -460,3 +483,8 @@ class StateV1:
             renderer=RendererDescriptorV1.from_json(obj["renderer"]),
             render_sha256=_validate_sha256(obj["render_sha256"], path="render_sha256"),
         )
+
+
+# Source compatibility for clients of the original codec. The wire format stays explicit.
+StateDraftV1 = StateDraft
+StateV1 = State

@@ -207,14 +207,14 @@ For a custom layout, pass trusted Jinja source. Template source is embedded in
 the state, so a later update does not depend on the original checkout:
 
 ```jinja2
-## Deployment: {{ slate.name }}
+## Deployment: {{ meta.slate.name }}
 
-Target: [{{ slate.repository }}#{{ slate.number }}]({{ slate.url }})
+Target: {{ meta.repository.full_name | md_link(meta.target.url) }} #{{ meta.target.number }}
 
 {{ data.checks | md_table(columns=["name", "status"]) }}
 {{ data.notes | md_list }}
 
-Metadata: `{{ data.metadata | compact_json }}`
+Metadata: {{ data.metadata | compact_json | md_code }}
 ```
 
 Save that source as `deployment.md.j2`, then preview it against the real target:
@@ -223,25 +223,27 @@ Save that source as `deployment.md.j2`, then preview it against the real target:
 gh slate apply deployment --target https://github.com/OWNER/REPO/pull/42 --mode create --data deployment.json --schema deployment.schema.json --template deployment.md.j2 --dry-run
 ```
 
-Remove `--dry-run` only after reviewing the rendered Markdown. Pure
-`gh slate render` can preview target-independent templates; when a template
-references `slate.repository`, `slate.number`, or `slate.url`, use the
-target-aware `apply --dry-run` form above so size and branch checks use the real
-Issue or Pull Request context.
+New direct templates use `jinja@2`: immutable business `data` and read-only
+`meta` containing the host, repository, target kind/number/node ID/URL, and
+slate name. Apply resolves target metadata through GitHub and saves it with the
+data and template. Stored renders and repairs reuse that snapshot; an identical
+apply does not create a new revision.
 
-Templates receive only the canonical typed `data` object and `slate.name`,
-`slate.repository`, `slate.number`, and `slate.url`. JSON scalars interpolate
-directly. Objects and arrays must use the deterministic `md_table`, `md_list`,
-or `compact_json` filters shown above; arbitrary calls, imports, includes,
-filesystem access, environment variables, and default Jinja globals are not
-available.
+For an offline preview, provide `--meta target.json` to `gh slate render`.
+Without a fixture, `meta.slate.name` is available and the host, repository, and
+target are `null`. Use `apply --dry-run` above for a preview with verified GitHub
+metadata. See [the complete fixture and runnable example](examples/templates/README.md).
 
-Jinja autoescaping is disabled because the output is Markdown, not HTML.
-Direct scalar interpolation and `compact_json` do not escape Markdown syntax:
-for example, untrusted backticks can break a code span. `md_table` and
-`md_list` apply the built-in Markdown text escaping rules; for values placed
-directly into links, code spans, headings, or raw prose, validate or escape them
-for that exact context in the trusted template.
+Ordinary interpolated strings are escaped as Markdown text. Use `md_link`,
+`md_code`, `md_codeblock`, `md_details`, `md_table`, and `md_list` to construct
+Markdown in the appropriate context; their output composes without being
+escaped again. `compact_json`, `length`, and `dictsort` support formatting typed
+data. The sandbox retains strict undefined values, bounded loops and output,
+and no arbitrary calls, imports, files, or network access.
+
+Existing `jinja@1` comments retain their original `data/slate` semantics.
+Updating their data reuses that renderer. Explicitly pass a new `--template`
+using `data/meta` to migrate the same comment to V2 in one write.
 
 ### Add or change a JSON Schema
 

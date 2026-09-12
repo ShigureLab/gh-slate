@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from gh_slate.codec import validate_slate_name
+from gh_slate.codec import MetaSnapshot, canonical_json_bytes, strict_loads, validate_slate_name
 from gh_slate.codec.json import DEFAULT_JSON_LIMITS
 from gh_slate.rendering import (
     ListRendererV1,
@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
 _LOCAL_OPTIONS = (
     "data",
+    "meta",
     "schema",
     "template",
     "table",
@@ -146,6 +147,7 @@ def _ensure_single_stdin(args: Namespace) -> None:
         getattr(args, "data", None),
         getattr(args, "schema", None),
         getattr(args, "template", None),
+        getattr(args, "meta", None),
     )
     if sum(source == "-" for source in sources) > 1:
         raise RenderingError(
@@ -200,7 +202,7 @@ def _run_local_render(args: Namespace) -> int:
     data = validate_data_json(data_source, schema)
 
     if args.template is not None:
-        descriptor = jinja_descriptor(_template_source(args.template))
+        descriptor = jinja_descriptor(_template_source(args.template), version=2)
     elif args.table is not None:
         descriptor = TableRendererV1(
             selector=args.table,
@@ -213,13 +215,36 @@ def _run_local_render(args: Namespace) -> int:
             title=args.title,
         ).to_descriptor()
 
+    meta_file = getattr(args, "meta", None)
+    meta = (
+        None
+        if meta_file is None
+        else MetaSnapshot.from_json(
+            strict_loads(_read_bytes(meta_file, subject="meta", max_bytes=DEFAULT_JSON_LIMITS.max_input_bytes))
+        )
+    )
     result = render(
         data,
         descriptor,
         schema=schema,
         slate=SlateContext(name=name),
+        meta=meta,
     )
-    sys.stdout.write(result.markdown)
+    if args.json:
+        sys.stdout.write(
+            canonical_json_bytes(
+                {
+                    "markdown": result.markdown,
+                    "data": result.data,
+                    "meta": None if result.meta is None else result.meta.to_json(),
+                    "meta_source": "fixture" if meta_file is not None else "local",
+                    "renderer": {"kind": result.renderer.kind, "version": result.renderer.version},
+                }
+            ).decode("utf-8")
+            + "\n"
+        )
+    else:
+        sys.stdout.write(result.markdown)
     return 0
 
 

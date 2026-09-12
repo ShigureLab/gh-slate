@@ -1,6 +1,6 @@
 # gh-slate 渐进式重设计方案
 
-状态：设计提案，2026-09-12。下文的配置、`--profile`、`--meta`、`--patch` 和多模板路由是目标接口，尚未实现。
+状态：逐层实施中，2026-09-12。第 1 层已实现：`data/meta`、V2 状态、Markdown helpers 和离线 `--meta`。配置、`--profile`、`--patch` 和多模板路由仍是后续层的目标接口。
 
 目标是让 agent 和自动化程序依据明确的数据结构，持续维护风格一致的 GitHub 看板。agent 负责分析与业务判断；gh-slate 负责校验、选模板、渲染和发布。先沿用现有 GitHub 访问与写入流程，逐层替换实现。
 
@@ -374,10 +374,10 @@ gh stack add codex/slate-profiles
 
 ## 10. 与现有精简 PR 的关系
 
-2026-09-12 核对时，#19 已合并；#20（snapshot-only CLI）与 #21（release 简化）仍未合并。
+2026-09-12 开始实施后，#19 已合并；#20（snapshot-only CLI）已关闭；#21（release 简化）已从旧链解耦，作为基于 `main` 的独立 draft PR 保留。
 
 - 新开发栈从最新 `main` 开始，不以 #20 作为产品前提。第 5 层可以复用它的有效删除，但要在替代接口完成后按最终范围整理。
-- #21 的发布改动与新产品接口独立；进入发布流程工作时再从依赖 #20 的链上解耦，不作为本设计实施的阻塞项。
-- 不在编写方案时关闭、合并或改写这两个 PR。
+- #21 的发布改动与新产品接口独立，不作为本设计实施的阻塞项。
+- 新栈按上述开发顺序发布 draft PR，完成后由用户审阅和决定合入。
 
 参考：[当前 CLI 与状态设计](cli.md)、[#20](https://github.com/ShigureLab/gh-slate/pull/20)、[#21](https://github.com/ShigureLab/gh-slate/pull/21)、[Paddle 示例](https://github.com/PaddlePaddle/Paddle/pull/79755)。

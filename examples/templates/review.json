@@ -1,0 +1,8 @@
+{
+   "summary": "Checks passed; symbols such as <tag>, | and `code` are literal text.",
+   "checks": [
+      { "check": "Unit tests", "result": "passed" },
+      { "check": "Type checks", "result": "passed" }
+   ],
+   "log": "Example evidence only.\nSource commit: supply the analyzed SHA in data.source."
+}

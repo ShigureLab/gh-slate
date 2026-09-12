@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from html import unescape
 from importlib import import_module
 from typing import TYPE_CHECKING, cast
 
@@ -28,6 +29,7 @@ from gh_slate.rendering import (
     SlateContext,
     jinja_descriptor,
     materialize_comment,
+    render_state,
 )
 from gh_slate.schema import validate_schema
 
@@ -113,6 +115,7 @@ class FakeGitHub:
     actor_login: str = "ci-bot"
     actor_id: int = ACTOR_ID
     target_html_url: str = ISSUE_URL
+    target_node_id: str = "I_example"
     write_behavior: str = "normal"
     before_comment_read: dict[int, Callable[[FakeGitHub], None]] = field(default_factory=dict)
     read_calls: list[tuple[object, ...]] = field(default_factory=list)
@@ -145,7 +148,7 @@ class FakeGitHub:
         self.read_calls.append(("GET", endpoint, hostname, paginate))
         self.events.append(("GET", endpoint))
         if endpoint == f"repos/{REPOSITORY}/issues/{NUMBER}":
-            return {"html_url": self.target_html_url}
+            return {"html_url": self.target_html_url, "node_id": self.target_node_id}
         if endpoint == f"repos/{REPOSITORY}/issues/{NUMBER}/comments?per_page=100":
             self.comment_reads += 1
             callback = self.before_comment_read.get(self.comment_reads)
@@ -1089,3 +1092,56 @@ def test_request_rejects_invalid_controller_and_revision(
 
     assert caught.value.code == code
     assert caught.value.exit_code == ExitCode.VALIDATION
+
+
+@pytest.mark.parametrize(("url", "kind"), [(ISSUE_URL, "issue"), (PULL_URL, "pull_request")])
+def test_v2_meta_snapshot_create_noop_and_explicit_v1_migration(url: str, kind: str) -> None:
+    github = FakeGitHub(target_html_url=url)
+    descriptor = jinja_descriptor("{{ meta.target.kind }} #{{ meta.target.number }}: {{ data.status }}", version=2)
+    created = apply(
+        ApplyRequest(target=TARGET, name="ci", renderer=descriptor, data={"status": "pass"}),
+        reader=github,
+        writer=github,
+    )
+    stored = decode_comment(cast("str", github.comments[0]["body"]))
+    assert stored.state.format == "gh-slate/state-v2"
+    assert stored.state.meta is not None
+    assert stored.state.meta.value["target"] == {"kind": kind, "number": NUMBER, "id": "I_example", "url": url}
+    assert unescape(render_state(stored.state).markdown) == f"{kind} #42: pass\n"
+    unchanged = apply(ApplyRequest(target=TARGET, name="ci", data={"status": "pass"}), reader=github, writer=github)
+    assert unchanged.action == "unchanged"
+    assert unchanged.revision == created.revision == 1
+    assert len(github.write_calls) == 1
+
+    legacy = FakeGitHub(comments=[_record(100, _body(), page_url=url)], target_html_url=url)
+    migrated = apply(ApplyRequest(target=TARGET, name="ci", renderer=descriptor), reader=legacy, writer=legacy)
+    upgraded = decode_comment(cast("str", legacy.comments[0]["body"]))
+    assert migrated.revision == 2
+    assert upgraded.state.data == {"status": "old"}
+    assert upgraded.state.meta is not None
+    assert len(legacy.comments) == 1
+
+
+def test_v2_rejects_copied_target_identity_without_writing() -> None:
+    github = FakeGitHub()
+    apply(
+        ApplyRequest(target=TARGET, name="ci", renderer=jinja_descriptor("ok", version=2)), reader=github, writer=github
+    )
+    github.target_node_id = "I_different"
+    github.write_calls.clear()
+    with pytest.raises(ApplyError) as error:
+        apply(ApplyRequest(target=TARGET, name="ci", data={"status": "new"}), reader=github, writer=github)
+    assert error.value.code == "target_identity_mismatch"
+    assert github.write_calls == []
+
+
+def test_v2_snapshot_reproduction_does_not_need_live_metadata() -> None:
+    github = FakeGitHub()
+    apply(
+        ApplyRequest(target=TARGET, name="ci", renderer=jinja_descriptor("{{ meta.target.number }}", version=2)),
+        reader=github,
+        writer=github,
+    )
+    stored = decode_comment(cast("str", github.comments[0]["body"]))
+    assert render_state(stored.state, slate=SlateContext(name="ci", number=99)).markdown == "42\n"
+    assert render_state(replace(stored.state, revision=99)).render_sha256 == stored.state.render_sha256

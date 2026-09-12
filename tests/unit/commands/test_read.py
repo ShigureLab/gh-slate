@@ -237,6 +237,8 @@ def test_view_default_json_and_web_are_read_only(
         "repository": REPOSITORY,
         "revision": 7,
         "schema": False,
+        "data": {"status": "ready"},
+        "meta": None,
         "state_sha256": managed.encoded.state_sha256,
         "status": "valid",
         "url": comment["html_url"],

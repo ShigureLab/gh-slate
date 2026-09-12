@@ -26,10 +26,13 @@ from gh_slate.codec.json import (
     strict_loads_object,
 )
 from gh_slate.codec.limits import CodecLimits, SizeReport
+from gh_slate.codec.meta import MetaSnapshot
 from gh_slate.codec.model import (
     ControllerV1,
     RendererDescriptorV1,
     SchemaSnapshotV1,
+    State,
+    StateDraft,
     StateDraftV1,
     StateV1,
     validate_slate_name,
@@ -48,8 +51,11 @@ __all__ = [
     "RevisionResult",
     "SchemaSnapshotV1",
     "SizeReport",
-    "StateDraftV1",
+    "StateDraft",
+    "State",
     "StateV1",
+    "StateDraftV1",
+    "MetaSnapshot",
     "canonical_json_bytes",
     "canonical_number",
     "canonical_state_bytes",

@@ -20,7 +20,7 @@ from gh_slate.codec.limits import (
     enforce_size_limits,
 )
 from gh_slate.codec.marker import Marker, encode_marker, parse_marker
-from gh_slate.codec.model import StateV1
+from gh_slate.codec.model import State
 from gh_slate.codec.text import utf8_size
 
 
@@ -34,7 +34,7 @@ class EncodedComment:
 
 @dataclass(frozen=True, slots=True)
 class DecodedComment:
-    state: StateV1
+    state: State
     visible_markdown: str
     state_sha256: str
     expected_render_sha256: str
@@ -43,7 +43,7 @@ class DecodedComment:
     sizes: SizeReport
 
 
-def _component_sizes(state: StateV1) -> tuple[int, int, int]:
+def _component_sizes(state: State) -> tuple[int, int, int]:
     data_bytes = len(canonical_json_bytes(state.data))
     schema_bytes = 0 if state.data_schema is None else len(canonical_json_bytes(state.data_schema.to_json()))
     renderer_bytes = len(canonical_json_bytes(state.renderer.to_json()))
@@ -52,7 +52,7 @@ def _component_sizes(state: StateV1) -> tuple[int, int, int]:
 
 def _size_report(
     *,
-    state: StateV1,
+    state: State,
     state_bytes: bytes,
     payload: str,
     body: str,
@@ -74,16 +74,16 @@ def _size_report(
 
 
 def encode_comment(
-    state: StateV1,
+    state: State,
     visible_markdown: str,
     *,
     limits: CodecLimits = DEFAULT_CODEC_LIMITS,
 ) -> EncodedComment:
     """Encode one complete managed comment from canonical typed state."""
 
-    if not isinstance(state, StateV1):
+    if not isinstance(state, State):
         raise CodecError(
-            "comment encoding requires a StateV1",
+            "comment encoding requires a State",
             code="invalid_state",
             details={"path": "state"},
         )
@@ -208,7 +208,7 @@ def decode_comment(
             details={"path": "state"},
         )
 
-    state = StateV1.from_json(parsed)
+    state = State.from_json(parsed)
     if state.name != marker.name:
         raise CodecError(
             "marker name does not match the stored state name",

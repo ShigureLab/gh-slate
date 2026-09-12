@@ -88,7 +88,7 @@ def _renderer(args: Namespace) -> RendererDescriptorV1 | None:
             code="renderer_option_conflict",
         )
     if args.template is not None:
-        return jinja_descriptor(_template_source(args.template))
+        return jinja_descriptor(_template_source(args.template), version=2)
     if args.table is not None:
         return TableRendererV1(
             selector=args.table,

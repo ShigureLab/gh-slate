@@ -15,9 +15,10 @@ from gh_slate.codec import (
     ControllerV1,
     EncodedComment,
     JsonValue,
+    MetaSnapshot,
     RendererDescriptorV1,
     SchemaSnapshotV1,
-    StateV1,
+    State,
     canonical_json_bytes,
     encode_comment,
     normalize_visible_markdown,
@@ -29,6 +30,8 @@ from gh_slate.codec.model import (
     MAX_GITHUB_LOGIN_BYTES,
     MAX_GITHUB_USER_ID,
     MAX_REVISION,
+    STATE_FORMAT_V1,
+    STATE_FORMAT_V2,
 )
 from gh_slate.codec.text import utf8_size
 from gh_slate.rendering.errors import RenderingError
@@ -66,18 +69,19 @@ class RenderResult:
     renderer: RendererDescriptorV1
     markdown: str
     render_sha256: str
+    meta: MetaSnapshot | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class MaterializedComment:
     """A state whose renderer/hash match the encoded comment body."""
 
-    state: StateV1
+    state: State
     rendered: RenderResult
     encoded: EncodedComment
 
 
-def jinja_descriptor(source: str) -> RendererDescriptorV1:
+def jinja_descriptor(source: str, *, version: int = 1) -> RendererDescriptorV1:
     if not isinstance(source, str):
         raise RenderingError(
             "Jinja source must be text",
@@ -85,13 +89,13 @@ def jinja_descriptor(source: str) -> RendererDescriptorV1:
         )
     return RendererDescriptorV1(
         kind="jinja",
-        version=1,
+        version=version,
         config={"source": source},
     )
 
 
 def _parse_jinja_source(descriptor: RendererDescriptorV1) -> str:
-    if descriptor.version != 1:
+    if descriptor.version not in {1, 2}:
         raise RenderingError(
             "renderer version is not supported for rendering",
             code="renderer_unsupported",
@@ -103,7 +107,7 @@ def _parse_jinja_source(descriptor: RendererDescriptorV1) -> str:
     config = descriptor.configuration
     if set(config) != {"source"} or not isinstance(config.get("source"), str):
         raise RenderingError(
-            "jinja@1 renderer must contain exactly one text source field",
+            "Jinja renderer must contain exactly one text source field",
             code="renderer_config_invalid",
         )
     return cast("str", config["source"])
@@ -609,8 +613,10 @@ def _preflight_materialization(
         raise AssertionError("preflight controller login must use the full GitHub login budget")
 
     encoded = encode_comment(
-        StateV1(
+        State(
             name=name,
+            format=STATE_FORMAT_V2 if result.meta is not None else STATE_FORMAT_V1,
+            meta=result.meta,
             revision=MAX_REVISION,
             controller=ControllerV1(
                 login=_PREFLIGHT_CONTROLLER_LOGIN,
@@ -660,16 +666,25 @@ def _render(
     *,
     schema: SchemaSnapshotV1 | bool | Mapping[str, object] | None = None,
     slate: SlateContext,
+    meta: MetaSnapshot | None = None,
     limits: RenderLimits = DEFAULT_RENDER_LIMITS,
     preflight: bool,
 ) -> RenderResult:
+    if renderer.kind == "jinja" and renderer.version == 2:
+        meta = MetaSnapshot.local(slate.name) if meta is None else meta
+        if meta.name != slate.name:
+            raise RenderingError("meta.slate.name must match the slate name", code="render_context_mismatch")
+    elif meta is not None:
+        raise RenderingError("meta requires a jinja@2 template", code="render_context_mismatch")
     canonical, snapshot = _canonical_data(data, schema)
     resolved_descriptor = renderer
     _enforce_components(canonical, snapshot, renderer)
 
     if renderer.kind == "jinja":
         source = _parse_jinja_source(renderer)
-        missing_target_fields = _missing_jinja_target_fields(source, slate) if preflight else ()
+        missing_target_fields = (
+            _missing_jinja_target_fields(source, slate) if preflight and renderer.version == 1 else ()
+        )
         if missing_target_fields:
             raise RenderingError(
                 "target-dependent Jinja previews require their real GitHub target context",
@@ -681,6 +696,8 @@ def _render(
             source,
             data=canonical,
             slate=slate,
+            meta=meta,
+            version=renderer.version,
             render_limits=limits,
         )
     else:
@@ -726,6 +743,7 @@ def _render(
         renderer=resolved_descriptor,
         markdown=markdown,
         render_sha256=render_sha256(markdown),
+        meta=meta,
     )
     if preflight:
         _preflight_materialization(result, name=slate.name)
@@ -738,6 +756,7 @@ def render(
     *,
     schema: SchemaSnapshotV1 | bool | Mapping[str, object] | None = None,
     slate: SlateContext,
+    meta: MetaSnapshot | None = None,
     limits: RenderLimits = DEFAULT_RENDER_LIMITS,
 ) -> RenderResult:
     """Validate, canonicalize, and locally preview one slate without I/O."""
@@ -747,20 +766,21 @@ def render(
         renderer,
         schema=schema,
         slate=slate,
+        meta=meta,
         limits=limits,
         preflight=True,
     )
 
 
 def render_state(
-    state: StateV1,
+    state: State,
     *,
     slate: SlateContext | None = None,
     limits: RenderLimits = DEFAULT_RENDER_LIMITS,
 ) -> RenderResult:
-    if not isinstance(state, StateV1):
+    if not isinstance(state, State):
         raise RenderingError(
-            "render_state requires a StateV1",
+            "render_state requires a State",
             code="render_state_invalid",
         )
     context = SlateContext(name=state.name) if slate is None else slate
@@ -770,7 +790,7 @@ def render_state(
             code="render_context_mismatch",
             details={"context_name": context.name, "state_name": state.name},
         )
-    if state.renderer.kind == "jinja":
+    if state.renderer.kind == "jinja" and state.renderer.version == 1:
         missing_fields: list[str] = []
         if not isinstance(context.repository, str) or not context.repository:
             missing_fields.append("repository")
@@ -790,6 +810,7 @@ def render_state(
         state.renderer,
         schema=state.data_schema,
         slate=context,
+        meta=state.meta,
         limits=limits,
         preflight=False,
     )
@@ -815,7 +836,7 @@ def render_state(
 
 
 def materialize_comment(
-    state: StateV1,
+    state: State,
     *,
     slate: SlateContext | None = None,
     limits: RenderLimits = DEFAULT_RENDER_LIMITS,

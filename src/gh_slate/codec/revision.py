@@ -4,19 +4,19 @@ from dataclasses import dataclass
 
 from gh_slate.codec.errors import CodecError
 from gh_slate.codec.hashes import functional_state_bytes
-from gh_slate.codec.model import MAX_REVISION, StateDraftV1, StateV1
+from gh_slate.codec.model import MAX_REVISION, State, StateDraft
 
 
 @dataclass(frozen=True, slots=True)
 class RevisionResult:
-    state: StateV1
+    state: State
     changed: bool
 
 
 def resolve_revision(
-    draft: StateDraftV1,
+    draft: StateDraft,
     *,
-    previous: StateV1 | None = None,
+    previous: State | None = None,
 ) -> RevisionResult:
     """Materialize a draft with a monotonic functional revision.
 
@@ -25,17 +25,17 @@ def resolve_revision(
     canonical state that was already stored.
     """
 
-    if not isinstance(draft, StateDraftV1):
+    if not isinstance(draft, StateDraft):
         raise CodecError(
-            "revision resolution requires a StateDraftV1",
+            "revision resolution requires a StateDraft",
             code="invalid_state",
             details={"path": "draft"},
         )
     if previous is None:
         return RevisionResult(state=draft.with_revision(1), changed=True)
-    if not isinstance(previous, StateV1):
+    if not isinstance(previous, State):
         raise CodecError(
-            "previous state must be a StateV1",
+            "previous state must be a State",
             code="invalid_state",
             details={"path": "previous"},
         )

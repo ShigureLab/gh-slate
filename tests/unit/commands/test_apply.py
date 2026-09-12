@@ -114,7 +114,7 @@ def test_apply_builds_a_validated_create_transaction_request(
         ),
         encoding="utf-8",
     )
-    template_path.write_bytes(b"# {{ slate.name }}\r\n\r\n{{ data.status }}")
+    template_path.write_bytes(b"# {{ meta.slate.name }}\r\n\r\n{{ data.status }}")
     transaction = _install_transaction(monkeypatch)
 
     assert (
@@ -159,8 +159,8 @@ def test_apply_builds_a_validated_create_transaction_request(
     assert request.data_schema is not None
     assert request.renderer is not None
     assert request.renderer.kind == "jinja"
-    assert request.renderer.version == 1
-    assert request.renderer.configuration == {"source": "# {{ slate.name }}\n\n{{ data.status }}"}
+    assert request.renderer.version == 2
+    assert request.renderer.configuration == {"source": "# {{ meta.slate.name }}\n\n{{ data.status }}"}
     assert transaction.reader.calls == []
 
 

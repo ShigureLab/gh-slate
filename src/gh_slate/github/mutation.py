@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Protocol, TypeAlias, cast
 from gh_slate.codec import (
     RendererDescriptorV1,
     SchemaSnapshotV1,
-    StateV1,
+    State,
 )
 from gh_slate.errors import ExitCode
 from gh_slate.github.apply import (
@@ -49,7 +49,7 @@ class MutationSnapshot:
     name: str
     controller: GitHubActor
     comment: GitHubComment
-    state: StateV1
+    state: State
     state_sha256: str
 
     @property
