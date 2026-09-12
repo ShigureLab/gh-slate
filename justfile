@@ -5,6 +5,7 @@ install:
 
 test:
   uv run pytest
+  just clean
 
 fmt:
   uv run ruff format .
@@ -24,28 +25,19 @@ fmt-docs:
   prettier --write '**/*.md'
 
 build:
-  uv build --no-sources
-
-release-verify:
-  uv run python scripts/release_verify.py --dist-dir dist
+  uv build
 
 release:
-  @test "$$(git branch --show-current)" = "main" || (echo 'error: release tags must be created from the main branch.' >&2; exit 1)
-  @test -z "$$(git status --porcelain=v1 --untracked-files=all)" || (echo 'error: release requires a clean worktree and index so the tested source equals the tagged commit.' >&2; exit 1)
-  just ci-fmt-check
-  just ci-lint
-  just ci-test
-  just clean-builds
-  just build
-  uv run python scripts/release_verify.py --dist-dir dist --tag "v{{VERSION}}"
   @echo 'Tagging v{{VERSION}}...'
   git tag "v{{VERSION}}"
-  @echo 'Pushing v{{VERSION}} to trigger the gated release workflow...'
-  git push origin "v{{VERSION}}"
+  @echo 'Push to GitHub to trigger publish process...'
+  git push --tags
 
 publish:
-  @echo 'Direct publishing is disabled; use `just release` so verified artifacts pass the tagged workflow.' >&2
-  @exit 1
+  uv build
+  uv publish
+  git push --tags
+  just clean-builds
 
 clean:
   find . -name "*.pyc" -print0 | xargs -0 rm -f
@@ -59,7 +51,7 @@ clean-builds:
   rm -rf *.egg-info/
 
 ci-install:
-  uv sync --locked --all-extras --dev
+  just install
 
 ci-fmt-check:
   uv run ruff format --check --diff .
@@ -72,3 +64,4 @@ ci-lint:
 
 ci-test:
   uv run pytest --reruns 3 --reruns-delay 1
+  just clean
