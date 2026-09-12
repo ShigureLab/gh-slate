@@ -82,34 +82,23 @@ and disable workflow approval through that token. A user who can write an
 arbitrary ref can otherwise add a same-named workflow, request PyPI OIDC or a
 write-scoped `GITHUB_TOKEN`, and bypass an in-repository approval convention.
 
-The release path separates unprivileged candidate execution from publishing:
+The release path uses one explicit tag-triggered workflow:
 
-1. A `v*` tag runs `release-candidate.yml` from the tagged commit with only
-   `contents: read`. It has no secrets, write permission, or OIDC permission,
-   and every Action reference is a full commit SHA.
-2. Only a successful candidate run can trigger `release.yml`. Its read-only
-   source-rebuild job checks out the exact candidate SHA and uses pinned
-   `uv 0.12.5`, offline mode, and a fixed source epoch to rebuild the wheel and
-   sdist independently.
-3. The intake verifier is checked out at the immutable `workflow_sha`, not the
-   moving default-branch tip. It fetches the canonical candidate workflow and
-   triggering run through the Actions API, then binds workflow ID, path, run
-   attempt, repository ID, commit, and tag to the artifact context. It requires
-   the candidate SHA in current default-branch history, requires the lightweight
-   tag to still point to that SHA, byte-compares both Python distributions with
-   the independent rebuild, deterministically rebuilds all extension assets
-   from the accepted source, and rechecks the exact SHA256 manifest.
-4. Jobs that execute candidate code never receive PyPI OIDC or
-   `contents: write`. The live job uses its job-scoped `GITHUB_TOKEN` with only
-   Issue/Pull Request comment permissions. Configure the same-repository
-   disposable targets as `GH_SLATE_LIVE_DISPOSABLE_ISSUE_URL` and
+1. The build job requires the `v*` tag commit to be in current default-branch
+   history, runs every deterministic gate, builds the wheel and sdist once, and
+   verifies the Python and extension artifacts plus their SHA256 manifest.
+2. The live job uses a job-scoped `GITHUB_TOKEN` with only Issue/Pull Request
+   comment permissions. Configure the same-repository disposable targets as
+   `GH_SLATE_LIVE_DISPOSABLE_ISSUE_URL` and
    `GH_SLATE_LIVE_DISPOSABLE_PR_URL` repository variables; there are no release
    Actions secrets.
-5. Write-scoped jobs only download and hash-check the accepted files. They do
-   not check out or execute candidate code. The first creates or updates a
-   draft release, PyPI publishes the same wheel and sdist with OIDC, and the
-   final job compares every staged asset before publishing the draft as stable.
-   The draft-to-published sequence is compatible with immutable releases.
+3. After the live and extension gates pass, a write-scoped job stages the exact
+   verified files in a draft GitHub Release and compares the staged bytes.
+4. The PyPI job follows the official minimal shape: download the verified
+   artifact set, then invoke `pypa/gh-action-pypi-publish` with job-scoped OIDC.
+   The official action publishes attestations by default.
+5. Only after PyPI succeeds does the final write-scoped job make the draft
+   GitHub Release stable. The workflow rechecks that the tag has not moved.
 
 Configure the PyPI Trusted Publisher with owner `ShigureLab`, repository
 `gh-slate`, workflow filename `release.yml`, and no Environment claim. PyPI's
@@ -117,9 +106,9 @@ workflow identity does not replace repository access control: do not grant a
 non-release-maintainer write access while this same-repository design is in
 use. Before doing so, move publishing to a separately controlled release
 repository or enable a paid/public protection boundary with equivalent
-external approval. A missing live-target variable, mismatched tag, stale
-candidate SHA, changed artifact, unexpected existing prerelease, or absent
-Trusted Publisher fails the release closed.
+external approval. A missing live-target variable, mismatched or moved tag,
+unexpected existing prerelease, changed staged artifact, or absent Trusted
+Publisher fails the release closed.
 
 Before the first release, change the repository Actions default token to
 read-only and disable pull-request approval through that token. The checked-in

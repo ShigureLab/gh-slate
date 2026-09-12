@@ -439,17 +439,14 @@ just release-verify
 ```
 
 `just release` adds all deterministic gates and tag/version verification, then
-pushes only that version tag. The tag runs an unprivileged Release Candidate
-workflow with a read-only token and no secrets. A separate `workflow_run`
-publisher is pinned to its trusted workflow commit, checks the triggering
-workflow ID, path, run attempt, repository, commit, and tag through the Actions
-API, then independently rebuilds the Python distributions and extension
-assets. Only byte-identical, source-bound artifacts can reach write or PyPI
-OIDC jobs. Every referenced Action is pinned to a full commit SHA. The
-publisher runs the live gate with a job-scoped `GITHUB_TOKEN`, stages a draft
-GitHub Release, publishes the verified Python files, and only then makes the
-exact draft stable. Direct `just publish` is disabled so it cannot bypass this
-ordering.
+pushes only that version tag. One tag-triggered workflow requires the commit to
+be on the default branch, runs the full deterministic and live gates, builds
+and verifies the release artifacts once, and stages those exact files in a
+draft GitHub Release. Its PyPI OIDC job has only two steps: download the
+verified artifact set and invoke the pinned official PyPI publishing action.
+Only after PyPI succeeds does the workflow make the draft GitHub Release
+stable. Every referenced Action is pinned to a full commit SHA. Direct
+`just publish` is disabled so it cannot bypass this ordering.
 
 This private repository's release trust boundary is exclusive write access:
 only release maintainers may have write or admin permission, while all other
