@@ -1,18 +1,16 @@
 # gh-slate
 
-`gh-slate` turns typed JSON into named dashboard comments on GitHub Issues and
-Pull Requests. A profile combines an optional JSON Schema with a Jinja template
-or several complete views. The managed comment stores data, metadata, schema,
-and all template sources, so later updates work without the original checkout.
-
-This is a pre-release implementation.
+Manage named, data-backed dashboard comments on GitHub Issues and Pull Requests.
 
 <p align="center">
-   <a href="https://python.org/" target="_blank"><img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-blue?logo=python&style=flat-square"></a>
+   <a href="https://python.org/" target="_blank"><img alt="PyPI - Python Version" src="https://img.shields.io/pypi/pyversions/gh-slate?logo=python&style=flat-square"></a>
+   <a href="https://pypi.org/project/gh-slate/" target="_blank"><img src="https://img.shields.io/pypi/v/gh-slate?style=flat-square" alt="pypi"></a>
+   <a href="https://pypi.org/project/gh-slate/" target="_blank"><img alt="PyPI - Downloads" src="https://img.shields.io/pypi/dm/gh-slate?style=flat-square"></a>
    <a href="LICENSE"><img alt="LICENSE" src="https://img.shields.io/github/license/ShigureLab/gh-slate?style=flat-square"></a>
    <br/>
    <a href="https://github.com/astral-sh/uv"><img alt="uv" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json&style=flat-square"></a>
    <a href="https://github.com/astral-sh/ruff"><img alt="ruff" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json&style=flat-square"></a>
+   <a href="https://gitmoji.dev"><img alt="Gitmoji" src="https://img.shields.io/badge/gitmoji-%20😜%20😍-FFDD67?style=flat-square"></a>
 </p>
 
 ## Install
