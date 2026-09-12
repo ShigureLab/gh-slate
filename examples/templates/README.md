@@ -37,3 +37,14 @@ To migrate an old Jinja comment, change its source from `slate.name` to
 Replace hand-built dynamic links and code spans with the corresponding
 helpers. Pass the new `--template` explicitly; existing data is retained if
 `--data` is omitted, and validation happens before the single update.
+
+The same files are available as an explicit single-template profile:
+
+```bash
+gh slate render review --config examples/templates/boards.toml \
+  --profile review --data examples/templates/review.json \
+  --meta examples/templates/target.json
+```
+
+You can move this directory anywhere. Paths inside `boards.toml` are relative
+to that file, and are loaded only when `--profile` is explicitly selected.

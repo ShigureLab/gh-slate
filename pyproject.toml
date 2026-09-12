@@ -10,6 +10,7 @@ dependencies = [
   "jsonschema>=4.25,<5",
   "referencing>=0.36,<1",
   "regex>=2025.7.34,<2027",
+  "tomli>=2.2,<3 ; python_full_version < '3.11'",
 ]
 authors = [{ name = "Nyakku Shigure", email = "sigure.qaq@gmail.com" }]
 keywords = ["github", "cli", "dashboard", "issues", "pull-requests", "markdown"]
@@ -46,6 +47,7 @@ dev = [
   "ruff>=0.16.6",
   "pytest>=9.1.1",
   "pytest-rerunfailures>=16.6.1",
+  "tomli>=2.2,<3",
 ]
 
 [tool.ruff]

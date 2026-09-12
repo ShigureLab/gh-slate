@@ -492,6 +492,17 @@ def jinja_target_fields(
     return frozenset(fields)
 
 
+def validate_jinja_source(source: str) -> None:
+    """Validate a new definition without requiring branch-specific data."""
+    limits = DEFAULT_JINJA_LIMITS
+    environment = _environment(limits, _LoopBudget(limits.max_loop_iterations), DEFAULT_RENDER_LIMITS, version=2)
+    syntax_tree, _ = _validated_syntax_tree(source, environment=environment, limits=limits, version=2)
+    try:
+        environment.compile(_GuardLoops().visit(syntax_tree))
+    except TemplateError as error:
+        raise RenderingError("Jinja template could not be compiled", code="jinja_syntax_error") from error
+
+
 def render_jinja(
     source: str,
     *,

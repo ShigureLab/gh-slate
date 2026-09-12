@@ -311,3 +311,57 @@ def test_v2_target_preview_matches_offline_fixture_and_stored_render(kind, tmp_p
     assert run(["apply", "ci", "--target", page_url, "--data", str(data), "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["action"] == "unchanged"
     assert [event[0] for event in backend.events if event[0] in {"POST", "PATCH"}] == ["POST"]
+
+
+def test_profile_updates_use_stored_definition_until_explicit_reload(tmp_path, monkeypatch, capsys):
+    page_url = f"https://{HOST}/{REPOSITORY}/issues/{NUMBER}"
+    backend = FakeGhBackend(page_url=page_url)
+    reader = GhProcess(runner=ReadRunner(backend))
+    transaction = apply_commands._CoreTransaction(reader=reader, writer=GhWriteProcess(runner=WriteRunner(backend)))
+    monkeypatch.setattr(apply_commands, "_new_transaction", lambda: transaction)
+    monkeypatch.setattr(read_commands, "_new_process", lambda: reader)
+    config = tmp_path / "boards.toml"
+    template = tmp_path / "template.j2"
+    schema = tmp_path / "schema.json"
+    schema.write_text(
+        '{"type":"object","required":["message"],"additionalProperties":false,"properties":{"message":{"type":"string"}}}'
+    )
+    config.write_text('version = 1\n[profiles.summary]\ntemplate = "template.j2"\nschema = "schema.json"\n')
+    template.write_text("Original: {{ data.message }}")
+    data = tmp_path / "data.json"
+    data.write_text('{"message":"first"}')
+    base = ["apply", "ci", "--target", page_url, "--json"]
+    definition = ["--config", str(config), "--profile", "summary"]
+    assert run([*base, *definition, "--data", str(data)]) == 0
+    assert json.loads(capsys.readouterr().out)["revision"] == 1
+    template.write_text("Reloaded: {{ data.message }}")
+    data.write_text('{"message":"second"}')
+    assert run([*base, "--data", str(data)]) == 0
+    assert json.loads(capsys.readouterr().out)["revision"] == 2
+    assert run(["render", "ci", "--target", page_url]) == 0
+    assert capsys.readouterr().out == "Original: second\n"
+    assert run([*base, *definition]) == 0
+    assert json.loads(capsys.readouterr().out)["revision"] == 3
+    assert run(["render", "ci", "--target", page_url]) == 0
+    assert capsys.readouterr().out == "Reloaded: second\n"
+    schema.write_text('{"required":["different"]}')
+    writes = len([event for event in backend.events if event[0] in {"POST", "PATCH"}])
+    assert run([*base, *definition]) == 2
+    capsys.readouterr()
+    assert len([event for event in backend.events if event[0] in {"POST", "PATCH"}]) == writes
+    config.write_text('version = 1\n[profiles.summary]\ntemplate = "template.j2"\n')
+    data.write_text('{"message":"third","extra":true}')
+    assert run([*base, *definition, "--data", str(data)]) == 0
+    assert json.loads(capsys.readouterr().out)["revision"] == 4
+    config.unlink()
+    template.unlink()
+    schema.unlink()
+    monkeypatch.setenv("GH_SLATE_CONFIG", str(config))
+    data.write_text('{"message":"fourth"}')
+    assert run([*base, "--data", str(data)]) == 0
+    assert json.loads(capsys.readouterr().out)["revision"] == 5
+    assert len(backend.comments) == 1
+    assert run(["view", "ci", "--target", page_url, "--json"]) == 0
+    stored = json.loads(capsys.readouterr().out)
+    assert stored["profile"] == "summary"
+    assert stored["schema"] is False

@@ -105,11 +105,16 @@ def _parse_jinja_source(descriptor: RendererDescriptorV1) -> str:
             },
         )
     config = descriptor.configuration
-    if set(config) != {"source"} or not isinstance(config.get("source"), str):
+    allowed = {"source", "profile"} if descriptor.version == 2 else {"source"}
+    if set(config) - allowed or not isinstance(config.get("source"), str):
         raise RenderingError(
-            "Jinja renderer must contain exactly one text source field",
+            "Jinja renderer requires a text source and optional profile name",
             code="renderer_config_invalid",
         )
+    if "profile" in config and (
+        not isinstance(config["profile"], str) or not config["profile"] or len(config["profile"].encode("utf-8")) > 128
+    ):
+        raise RenderingError("invalid profile name in renderer snapshot", code="renderer_config_invalid")
     return cast("str", config["source"])
 
 

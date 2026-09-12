@@ -150,7 +150,9 @@ def _add_snapshot_options(
 
 
 def _add_renderer_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--config", metavar="FILE", help="explicit TOML configuration (or GH_SLATE_CONFIG)")
     renderer = parser.add_mutually_exclusive_group()
+    renderer.add_argument("--profile", metavar="NAME", help="load a named definition from the explicit config")
     renderer.add_argument(
         "--template",
         metavar="FILE",

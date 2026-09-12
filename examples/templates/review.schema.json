@@ -1,0 +1,22 @@
+{
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "required": ["summary", "checks", "log"],
+   "additionalProperties": false,
+   "properties": {
+      "summary": { "type": "string" },
+      "log": { "type": "string" },
+      "checks": {
+         "type": "array",
+         "items": {
+            "type": "object",
+            "required": ["check", "result"],
+            "additionalProperties": false,
+            "properties": {
+               "check": { "type": "string" },
+               "result": { "type": "string" }
+            }
+         }
+      }
+   }
+}

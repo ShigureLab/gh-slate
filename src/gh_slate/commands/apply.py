@@ -16,6 +16,7 @@ from gh_slate.codec.json import DEFAULT_JSON_LIMITS
 from gh_slate.commands.render import (
     _ensure_single_stdin,
     _read_bytes,
+    _selected_profile,
     _table_columns,
     _template_source,
 )
@@ -112,17 +113,19 @@ def _prepare_request_parts(
     RendererDescriptorV1 | None,
 ]:
     name = validate_slate_name(args.name)
+    profile = _selected_profile(args)
     renderer_selected = any(
         value is not None
         for value in (
             args.template,
+            getattr(args, "profile", None),
             args.table,
             args.list,
         )
     )
     if args.mode == "create" and not renderer_selected:
         raise RenderingError(
-            "creating a slate requires --template, --table, or --list",
+            "creating a slate requires --profile, --template, --table, or --list",
             code="renderer_required",
         )
     _ensure_single_stdin(args)
@@ -138,6 +141,8 @@ def _prepare_request_parts(
         if args.schema is not None
         else None
     )
+    if profile is not None:
+        schema = profile.schema
     if args.data is not None:
         data = validate_data_json(
             _read_bytes(
@@ -151,7 +156,7 @@ def _prepare_request_parts(
         data = validate_data_json(b"{}", schema)
     else:
         data = None
-    return name, data, schema, _renderer(args)
+    return name, data, schema, profile.renderer if profile is not None else _renderer(args)
 
 
 def _write_json(value: Mapping[str, object]) -> None:
@@ -199,7 +204,7 @@ def run_apply(args: Namespace) -> int:
         data=data,
         renderer=renderer,
         data_schema=schema,
-        replace_schema=args.schema is not None,
+        replace_schema=args.schema is not None or args.profile is not None,
         controller=args.controller,
         if_revision=args.if_revision,
         dry_run=args.dry_run,

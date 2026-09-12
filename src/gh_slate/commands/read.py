@@ -100,6 +100,7 @@ def _view_record(
         "render_sha256": slate.decoded.expected_render_sha256,
         "actual_render_sha256": slate.decoded.actual_render_sha256,
         "schema": state.data_schema is not None,
+        "profile": state.renderer.configuration.get("profile"),
         "data": state.data,
         "meta": None if state.meta is None else state.meta.to_json(),
         "renderer": {
