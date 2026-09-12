@@ -270,6 +270,27 @@ candidate data. CLI `--config` takes precedence over the environment variable;
 `--config` requires `--profile`. Profile mode rejects direct definition
 overrides such as `--template`, `--schema`, `--table`, or `--list`.
 
+For outcomes that need different page layouts, map a JSON Pointer to named views:
+
+```toml
+version = 1
+
+[profiles.review]
+schema = "review.schema.json"
+view_by = "/outcome"
+
+[profiles.review.views]
+approved = "review-approved.md.j2"
+changes_requested = "review-changes.md.j2"
+error = "review-error.md.j2"
+```
+
+The producer supplies `data.outcome`; gh-slate validates the complete data and
+matches the configured view exactly. Missing, non-string, or unknown values
+fail before writing. All view sources are checked and saved together, so an
+outcome change works without local files. There is no separate `--view`
+override. See [the runnable three-outcome review profile](examples/profiles/README.md).
+
 ### Add or change a JSON Schema
 
 Schemas use JSON Schema draft 2020-12 and are stored with the data. `$ref`

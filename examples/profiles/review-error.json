@@ -1,0 +1,10 @@
+{
+   "outcome": "error",
+   "source": {
+      "head_sha": "0123456789012345678901234567890123456789"
+   },
+   "error": {
+      "message": "Example: the review could not fetch the required evidence.",
+      "log": "Evidence request failed; review outcome is unknown."
+   }
+}

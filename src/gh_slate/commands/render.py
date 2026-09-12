@@ -177,6 +177,7 @@ def _run_local_render(args: Namespace) -> int:
                     "meta_source": "fixture" if meta_file is not None else "local",
                     "renderer": {"kind": result.renderer.kind, "version": result.renderer.version},
                     "profile": result.renderer.configuration.get("profile"),
+                    "view": result.view,
                 }
             ).decode("utf-8")
             + "\n"

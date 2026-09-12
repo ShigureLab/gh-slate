@@ -1,0 +1,8 @@
+## Review passed
+
+{{ data.summary }}
+
+Analyzed revision: {{ data.source.head_sha | md_code }}
+{% if meta.target is not none %}
+Target: {{ meta.repository.full_name | md_link(meta.target.url) }} #{{ meta.target.number }}
+{% endif %}

@@ -1,0 +1,111 @@
+{
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "required": [
+      "outcome",
+      "source"
+   ],
+   "properties": {
+      "outcome": {
+         "type": "string"
+      },
+      "source": {
+         "type": "object",
+         "required": [
+            "head_sha"
+         ],
+         "additionalProperties": false,
+         "properties": {
+            "head_sha": {
+               "type": "string",
+               "minLength": 1
+            }
+         }
+      }
+   },
+   "oneOf": [
+      {
+         "properties": {
+            "outcome": {
+               "const": "approved"
+            },
+            "summary": {
+               "type": "string",
+               "minLength": 1
+            }
+         },
+         "required": [
+            "summary"
+         ]
+      },
+      {
+         "properties": {
+            "outcome": {
+               "const": "changes_requested"
+            },
+            "findings": {
+               "type": "object",
+               "minProperties": 1,
+               "additionalProperties": {
+                  "type": "object",
+                  "required": [
+                     "message",
+                     "status",
+                     "url"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                     "message": {
+                        "type": "string",
+                        "minLength": 1
+                     },
+                     "status": {
+                        "enum": [
+                           "open",
+                           "resolved"
+                        ]
+                     },
+                     "url": {
+                        "type": "string",
+                        "pattern": "^https?://"
+                     },
+                     "evidence": {
+                        "type": "string"
+                     }
+                  }
+               }
+            }
+         },
+         "required": [
+            "findings"
+         ]
+      },
+      {
+         "properties": {
+            "outcome": {
+               "const": "error"
+            },
+            "error": {
+               "type": "object",
+               "required": [
+                  "message"
+               ],
+               "additionalProperties": false,
+               "properties": {
+                  "message": {
+                     "type": "string",
+                     "minLength": 1
+                  },
+                  "log": {
+                     "type": "string"
+                  }
+               }
+            }
+         },
+         "required": [
+            "error"
+         ]
+      }
+   ],
+   "unevaluatedProperties": false
+}

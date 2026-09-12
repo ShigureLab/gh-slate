@@ -18,6 +18,7 @@ from gh_slate.codec.limits import SizeReport, enforce_size_limits
 from gh_slate.inputs import read_bytes, template_source
 from gh_slate.rendering.errors import RenderingError
 from gh_slate.rendering.jinja import validate_jinja_source
+from gh_slate.rendering.routing import validate_views
 from gh_slate.schema import validate_schema_json
 
 MAX_CONFIG_BYTES = 64 * 1024
@@ -67,13 +68,24 @@ def load_profile(
     if not isinstance(profile, Mapping):
         raise RenderingError("profile must be a TOML table", code="config_invalid")
     profile = cast("Mapping[str, object]", profile)
-    if "views" in profile or "view_by" in profile:
-        raise RenderingError("multiple views are not supported yet", code="profile_views_unsupported")
-    if set(profile) - {"template", "schema"} or "template" not in profile:
-        raise RenderingError("profile requires template and an optional schema", code="config_invalid")
+    if set(profile) - {"template", "schema", "views", "view_by"}:
+        raise RenderingError("profile contains unknown fields", code="config_invalid")
     base = config_path.parent
-    source = template_source(str(_path(profile["template"], base=base, field="template")))
-    validate_jinja_source(source)
+    definition: dict[str, object] = {"profile": name}
+    if "template" in profile:
+        if "views" in profile or "view_by" in profile:
+            raise RenderingError("template is exclusive with views and view_by", code="config_invalid")
+        source = template_source(str(_path(profile["template"], base=base, field="template")))
+        validate_jinja_source(source)
+        definition["source"] = source
+    else:
+        _, paths = validate_views(profile.get("view_by"), profile.get("views"))
+        sources: dict[str, str] = {}
+        for view, location in paths.items():
+            source = template_source(str(_path(location, base=base, field=f"views.{view}")))
+            validate_jinja_source(source)
+            sources[view] = source
+        definition.update({"view_by": profile["view_by"], "views": sources})
     schema = None
     if "schema" in profile:
         schema = validate_schema_json(
@@ -83,7 +95,7 @@ def load_profile(
                 max_bytes=DEFAULT_JSON_LIMITS.max_input_bytes,
             )
         )
-    renderer = RendererDescriptorV1(kind="jinja", version=2, config={"source": source, "profile": name})
+    renderer = RendererDescriptorV1(kind="jinja", version=2, config=definition)
     enforce_size_limits(
         SizeReport(
             renderer_bytes=len(canonical_json_bytes(renderer.to_json())),

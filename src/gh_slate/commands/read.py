@@ -19,6 +19,7 @@ from gh_slate.github.target import (
     target_from_comment_url,
 )
 from gh_slate.rendering import SlateContext, render_state, select_one
+from gh_slate.rendering.routing import selected_view
 
 if TYPE_CHECKING:
     from argparse import Namespace
@@ -101,6 +102,7 @@ def _view_record(
         "actual_render_sha256": slate.decoded.actual_render_sha256,
         "schema": state.data_schema is not None,
         "profile": state.renderer.configuration.get("profile"),
+        "view": selected_view(state.renderer, state.data),
         "data": state.data,
         "meta": None if state.meta is None else state.meta.to_json(),
         "renderer": {

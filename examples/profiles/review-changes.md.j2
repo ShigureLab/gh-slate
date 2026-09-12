@@ -1,0 +1,19 @@
+## Review needs changes
+
+Analyzed revision: {{ data.source.head_sha | md_code }}
+{% if meta.target is not none %}
+Target: {{ meta.repository.full_name | md_link(meta.target.url) }} #{{ meta.target.number }}
+{% endif %}
+
+| ID | Status | Finding |
+| --- | --- | --- |
+{% for id, finding in data.findings | dictsort -%}
+| {{ id | md_code }} | {{ finding.status }} | {{ finding.message | md_link(finding.url) }} |
+{% endfor %}
+{% for id, finding in data.findings | dictsort %}
+{% if finding.evidence is defined %}
+### {{ id | md_code }}
+
+{{ finding.evidence | md_codeblock | md_details("Evidence") }}
+{% endif %}
+{% endfor %}

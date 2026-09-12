@@ -27,6 +27,7 @@ from gh_slate.github.target import (
 )
 from gh_slate.github.write import GhWriteOutcomeUnknown, GhWriteTimeout
 from gh_slate.rendering import SlateContext, render
+from gh_slate.rendering.routing import selected_view
 
 if TYPE_CHECKING:
     from gh_slate.github.models import GitHubComment, SlateCandidate
@@ -193,6 +194,7 @@ class ApplyResult:
     recovered: bool = False
     markdown: str | None = None
     meta_source: str | None = None
+    view: str | None = None
 
     def to_json(self) -> dict[str, object]:
         value: dict[str, object] = {
@@ -212,6 +214,8 @@ class ApplyResult:
                     "markdown": self.markdown,
                 }
             )
+        if self.view is not None:
+            value["view"] = self.view
         if self.meta_source is not None:
             value["meta_source"] = self.meta_source
         if self.recovered:
@@ -802,6 +806,7 @@ def _result(
         recovered=recovered,
         markdown=markdown if dry_run else None,
         meta_source="github" if state.meta is not None else None,
+        view=selected_view(state.renderer, state.data),
     )
 
 
