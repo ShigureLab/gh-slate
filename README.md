@@ -477,6 +477,10 @@ procedure.
 This README is the user guide. [CLI design](docs/cli.md) is the early protocol
 and implementation record; normal use should not require it.
 
+The [incremental redesign proposal](docs/redesign.md) describes configurable
+profiles, multiple views, data/meta context, and a staged implementation plan.
+It is a proposal, not the current command contract.
+
 ## License
 
 [MIT](LICENSE)
