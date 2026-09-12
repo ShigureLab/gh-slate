@@ -1,0 +1,10 @@
+version = 1
+
+[profiles.review]
+schema = "review.schema.json"
+view_by = "/outcome"
+
+[profiles.review.views]
+approved = "review-approved.md.j2"
+changes_requested = "review-changes.md.j2"
+error = "review-error.md.j2"

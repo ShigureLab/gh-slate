@@ -1,0 +1,14 @@
+{
+   "outcome": "changes_requested",
+   "source": {
+      "head_sha": "0123456789012345678901234567890123456789"
+   },
+   "findings": {
+      "F17": {
+         "message": "Example: handle an empty input before selecting the first item.",
+         "status": "open",
+         "url": "https://github.com/example/project/pull/42",
+         "evidence": "items = []\nfirst = items[0]"
+      }
+   }
+}

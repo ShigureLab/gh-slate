@@ -1,0 +1,11 @@
+## Review did not complete
+
+{{ data.error.message }}
+
+Analyzed revision: {{ data.source.head_sha | md_code }}
+
+This result does not indicate approval. Retry the review before drawing a conclusion.
+{% if data.error.log is defined %}
+
+{{ data.error.log | md_codeblock | md_details("Error details") }}
+{% endif %}

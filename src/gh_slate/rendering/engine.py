@@ -44,6 +44,7 @@ from gh_slate.rendering.model import (
     TableRendererV1,
     parse_renderer_descriptor,
 )
+from gh_slate.rendering.routing import selected_view
 from gh_slate.rendering.table import render_table, resolve_table_renderer
 from gh_slate.schema import validate_data, validate_schema
 from gh_slate.schema._interop import SlateDraft202012Validator
@@ -70,6 +71,7 @@ class RenderResult:
     markdown: str
     render_sha256: str
     meta: MetaSnapshot | None = None
+    view: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,7 +96,7 @@ def jinja_descriptor(source: str, *, version: int = 1) -> RendererDescriptorV1:
     )
 
 
-def _parse_jinja_source(descriptor: RendererDescriptorV1) -> str:
+def _parse_jinja_source(descriptor: RendererDescriptorV1, data: object) -> tuple[str, str | None]:
     if descriptor.version not in {1, 2}:
         raise RenderingError(
             "renderer version is not supported for rendering",
@@ -105,17 +107,22 @@ def _parse_jinja_source(descriptor: RendererDescriptorV1) -> str:
             },
         )
     config = descriptor.configuration
-    allowed = {"source", "profile"} if descriptor.version == 2 else {"source"}
-    if set(config) - allowed or not isinstance(config.get("source"), str):
-        raise RenderingError(
-            "Jinja renderer requires a text source and optional profile name",
-            code="renderer_config_invalid",
-        )
+    allowed = {"source", "profile", "views", "view_by"} if descriptor.version == 2 else {"source"}
+    if set(config) - allowed:
+        raise RenderingError("Jinja renderer contains unknown fields", code="renderer_config_invalid")
     if "profile" in config and (
         not isinstance(config["profile"], str) or not config["profile"] or len(config["profile"].encode("utf-8")) > 128
     ):
         raise RenderingError("invalid profile name in renderer snapshot", code="renderer_config_invalid")
-    return cast("str", config["source"])
+    if "source" in config:
+        if not isinstance(config["source"], str) or "views" in config or "view_by" in config:
+            raise RenderingError("Jinja source is exclusive with views and view_by", code="renderer_config_invalid")
+        return config["source"], None
+    if descriptor.version == 2 and "views" in config:
+        view = selected_view(descriptor, data)
+        assert view is not None
+        return cast("Mapping[str, str]", config["views"])[view], view
+    raise RenderingError("Jinja renderer requires source or routed views", code="renderer_config_invalid")
 
 
 def _canonical_data(
@@ -685,8 +692,9 @@ def _render(
     resolved_descriptor = renderer
     _enforce_components(canonical, snapshot, renderer)
 
+    view = None
     if renderer.kind == "jinja":
-        source = _parse_jinja_source(renderer)
+        source, view = _parse_jinja_source(renderer, canonical)
         missing_target_fields = (
             _missing_jinja_target_fields(source, slate) if preflight and renderer.version == 1 else ()
         )
@@ -749,6 +757,7 @@ def _render(
         markdown=markdown,
         render_sha256=render_sha256(markdown),
         meta=meta,
+        view=view,
     )
     if preflight:
         _preflight_materialization(result, name=slate.name)

@@ -298,10 +298,23 @@ profile has none. Validation failure leaves both the old definition and data
 unchanged. Without `--profile`, updates use the saved definition even if the
 original config and template files have been removed.
 
-This layer supports a single `template`; `views` and `view_by` are rejected
-explicitly until the routing layer is available. Profile names are independent
-of remote slate names. `view --json` and local `render --json` include the
-profile name without dumping template sources.
+A profile chooses either one `template` or a `views` table with `view_by`.
+`view_by` is a standard JSON Pointer relative to the business data root. After
+Schema validation, its value must be a string exactly matching a view name.
+Missing, non-string, and unmatched values are explicit errors; no fallback or
+`--view` override is provided. The core does not define any business outcomes.
+
+Every view source is loaded, syntax-checked, and stored in the renderer snapshot.
+Only the selected view is rendered against the current data. Templates and
+metadata together remain subject to the existing comment size budget. Changing
+the routing field with a data-only apply updates the same comment, without
+requiring local configuration or files.
+
+Use a Schema `oneOf` with outcome `const` values to require different fields for
+each business branch. For a complete example, see [the review profile](../examples/profiles/README.md).
+Profile names are independent of remote slate names. `view --json`,
+`render --json`, and apply results expose the derived `view`; a single template
+has no named view. The selected view is never independently stored or editable.
 
 ### 4.2 Built-in table renderer
 

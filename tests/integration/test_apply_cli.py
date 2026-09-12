@@ -365,3 +365,50 @@ def test_profile_updates_use_stored_definition_until_explicit_reload(tmp_path, m
     stored = json.loads(capsys.readouterr().out)
     assert stored["profile"] == "summary"
     assert stored["schema"] is False
+
+
+def test_multi_view_updates_switch_one_comment_without_local_files(tmp_path, monkeypatch, capsys):
+    page_url = f"https://{HOST}/{REPOSITORY}/pull/{NUMBER}"
+    backend = FakeGhBackend(page_url=page_url)
+    reader = GhProcess(runner=ReadRunner(backend))
+    transaction = apply_commands._CoreTransaction(reader=reader, writer=GhWriteProcess(runner=WriteRunner(backend)))
+    monkeypatch.setattr(apply_commands, "_new_transaction", lambda: transaction)
+    monkeypatch.setattr(read_commands, "_new_process", lambda: reader)
+    config = tmp_path / "boards.toml"
+    config.write_text(
+        'version = 1\n[profiles.review]\nview_by = "/outcome"\n[profiles.review.views]\napproved = "approved.j2"\nchanges_requested = "changes.j2"\nerror = "error.j2"'
+    )
+    for filename, source in {
+        "approved.j2": "Passed: {{ data.summary }}",
+        "changes.j2": "Findings: {{ data.findings | md_list }}",
+        "error.j2": "Failed: {{ data.error.message }}",
+    }.items():
+        (tmp_path / filename).write_text(source)
+    data = tmp_path / "data.json"
+    data.write_text('{"outcome":"changes_requested","findings":{"F17":"fix"}}')
+    base = ["apply", "review", "--target", page_url, "--data", str(data), "--json"]
+    assert run([*base, "--config", str(config), "--profile", "review"]) == 0
+    created = json.loads(capsys.readouterr().out)
+    assert created["view"] == "changes_requested"
+    for path in (config, *tmp_path.glob("*.j2")):
+        path.unlink()
+    for outcome, payload in (("error", {"error": {"message": "unavailable"}}), ("approved", {"summary": "resolved"})):
+        data.write_text(json.dumps({"outcome": outcome, **payload}))
+        assert run([*base, "--dry-run"]) == 0
+        preview = json.loads(capsys.readouterr().out)
+        assert preview["view"] == outcome
+        assert run(base) == 0
+        updated = json.loads(capsys.readouterr().out)
+        assert updated["view"] == outcome
+        assert updated["comment_id"] == created["comment_id"]
+    assert run(base) == 0
+    assert json.loads(capsys.readouterr().out)["action"] == "unchanged"
+    assert run(["view", "review", "--target", page_url, "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["view"] == "approved"
+    writes = [event for event in backend.events if event[0] in {"POST", "PATCH"}]
+    assert len(writes) == 3
+    for invalid in ({}, {"outcome": "unknown"}, {"outcome": False}):
+        data.write_text(json.dumps(invalid))
+        assert run(base) == 2
+        capsys.readouterr()
+    assert len([event for event in backend.events if event[0] in {"POST", "PATCH"}]) == len(writes)

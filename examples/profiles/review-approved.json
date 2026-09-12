@@ -1,0 +1,7 @@
+{
+   "outcome": "approved",
+   "source": {
+      "head_sha": "0123456789012345678901234567890123456789"
+   },
+   "summary": "Example: the requested changes are resolved and validation passed."
+}

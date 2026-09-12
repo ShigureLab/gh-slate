@@ -83,7 +83,7 @@ def test_configuration_rejects_invalid_definitions(tmp_path, document):
         load_profile("summary", config=str(path))
 
 
-def test_unknown_profile_invalid_source_and_future_views_fail_at_load(tmp_path):
+def test_unknown_profile_and_invalid_source_fail_at_load(tmp_path):
     path = _config(tmp_path)
     with pytest.raises(RenderingError) as error:
         load_profile("absent", config=str(path))
@@ -92,12 +92,6 @@ def test_unknown_profile_invalid_source_and_future_views_fail_at_load(tmp_path):
     with pytest.raises(RenderingError) as error:
         load_profile("summary", config=str(path))
     assert error.value.code == "jinja_syntax_error"
-    path.write_text(
-        'version = 1\n[profiles.summary]\nview_by = "/outcome"\n[profiles.summary.views]\npass = "layout.j2"'
-    )
-    with pytest.raises(RenderingError) as error:
-        load_profile("summary", config=str(path))
-    assert error.value.code == "profile_views_unsupported"
 
 
 def test_profile_option_conflicts_are_rejected_before_target_access(tmp_path, capsys):
