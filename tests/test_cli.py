@@ -230,12 +230,8 @@ def test_apply_command_surface_parses_full_snapshot_options() -> None:
             "data.json",
             "--schema",
             "schema.json",
-            "--table",
-            ".jobs",
-            "--columns",
-            "name,status",
-            "--title",
-            "Jobs",
+            "--template",
+            "template.j2",
         ]
     )
 
@@ -252,11 +248,7 @@ def test_apply_command_surface_parses_full_snapshot_options() -> None:
     assert parsed.quiet is False
     assert parsed.data == "data.json"
     assert parsed.schema == "schema.json"
-    assert parsed.template is None
-    assert parsed.table == ".jobs"
-    assert parsed.list is None
-    assert parsed.columns == "name,status"
-    assert parsed.title == "Jobs"
+    assert parsed.template == "template.j2"
 
 
 @pytest.mark.parametrize(
@@ -275,8 +267,8 @@ def test_apply_if_revision_must_be_a_positive_integer(revision: str) -> None:
 @pytest.mark.parametrize(
     "options",
     [
-        ["--template", "slate.j2", "--table", ".jobs"],
-        ["--table", ".jobs", "--list", ".notes"],
+        ["--template", "slate.j2", "--profile", "ci"],
+        ["--data", "data.json", "--patch", "patch.json"],
         ["--json", "--quiet"],
     ],
 )
@@ -391,123 +383,13 @@ def test_view_json_and_web_are_mutually_exclusive() -> None:
 @pytest.mark.parametrize(
     "argv",
     [
-        [
-            "data",
-            "get",
-            "ci",
-            ".jobs[]",
-            "--target",
-            "42",
-            "--raw-output",
-            "--compact-output",
-            "--exit-status",
-        ],
-        [
-            "data",
-            "set",
-            "ci",
-            '.["key.with.dot"]',
-            "--value-string",
-            "91",
-            "--target",
-            "42",
-            "--if-revision",
-            "7",
-            "--json",
-        ],
-        [
-            "data",
-            "delete",
-            "ci",
-            ".old",
-            ".jobs.experimental",
-            "--ignore-missing",
-            "--target",
-            "42",
-            "--quiet",
-        ],
-        [
-            "data",
-            "update",
-            "ci",
-            ".jobs[$job] = $result",
-            "--arg",
-            "job",
-            "linux",
-            "--argjson",
-            "result",
-            "@result.json",
-            "--target",
-            "42",
-        ],
-        ["data", "edit", "ci", "--target", "42"],
-        ["schema", "get", "ci", "--target", "42", "--compact-output"],
-        [
-            "schema",
-            "set",
-            "ci",
-            "schema.json",
-            "--target",
-            "42",
-            "--if-revision",
-            "7",
-        ],
-        ["schema", "infer", "ci", "--target", "42", "--apply", "--json"],
-        [
-            "schema",
-            "validate",
-            "ci",
-            "candidate.json",
-            "--target",
-            "42",
-            "--json",
-        ],
+        ["data", "get", "ci"],
+        ["schema", "infer", "ci"],
+        ["apply", "ci", "--table", "."],
+        ["render", "ci", "--list", "."],
     ],
 )
-def test_data_and_schema_command_surfaces_are_registered(
-    argv: list[str],
-) -> None:
-    parsed = build_parser(prog="gh slate").parse_args(argv)
-
-    assert callable(parsed.handler)
-
-
-@pytest.mark.parametrize(
-    "options",
-    [
-        ["--value", "91", "--value-string", "91"],
-        ["--value-file", "value.json", "--value", "{}"],
-        [],
-    ],
-)
-def test_data_set_requires_one_unambiguous_value_source(
-    options: list[str],
-) -> None:
-    parser = build_parser(prog="gh slate")
-
-    with pytest.raises(SystemExit) as exit_info:
-        parser.parse_args(["data", "set", "ci", ".status", *options])
-
-    assert exit_info.value.code == 2
-
-
-@pytest.mark.parametrize(
-    "argv",
-    [
-        ["data", "set", "ci", ".x", "--value", "1", "--json", "--quiet"],
-        ["data", "delete", "ci", ".x", "--json", "--quiet"],
-        ["data", "update", "ci", ".", "--json", "--quiet"],
-        ["data", "edit", "ci", "--json", "--quiet"],
-        ["schema", "set", "ci", "schema.json", "--json", "--quiet"],
-        ["schema", "infer", "ci", "--apply", "--json", "--quiet"],
-    ],
-)
-def test_structured_and_quiet_mutation_output_are_mutually_exclusive(
-    argv: list[str],
-) -> None:
-    parser = build_parser(prog="gh slate")
-
-    with pytest.raises(SystemExit) as exit_info:
-        parser.parse_args(argv)
-
-    assert exit_info.value.code == 2
+def test_removed_legacy_surfaces_are_usage_errors(argv):
+    with pytest.raises(SystemExit) as error:
+        build_parser().parse_args(argv)
+    assert error.value.code == 2

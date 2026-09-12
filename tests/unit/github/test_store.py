@@ -5,14 +5,13 @@ from typing import cast
 
 import pytest
 
-from gh_slate.codec import ControllerV1, StateV1
+from gh_slate.codec import ControllerV1, StateV1, encode_comment, render_sha256
 from gh_slate.errors import ExitCode
 from gh_slate.github.errors import GitHubReadError
 from gh_slate.github.models import GitHubActor
 from gh_slate.github.store import CommentStore
 from gh_slate.rendering import (
     ListRendererV1,
-    materialize_comment,
 )
 
 _EMPTY_HASH = "0" * 64
@@ -81,9 +80,9 @@ def _body(
         renderer=ListRendererV1(
             selector=".status",
         ).to_descriptor(),
-        render_sha256=_EMPTY_HASH,
+        render_sha256=render_sha256(f"- {visible_value}\n"),
     )
-    return materialize_comment(state).encoded.body
+    return encode_comment(state, f"- {visible_value}\n").body
 
 
 def _record(

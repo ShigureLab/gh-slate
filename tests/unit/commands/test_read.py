@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from gh_slate.cli import run
 from gh_slate.codec import (
     ControllerV1,
+    MetaSnapshot,
     RendererDescriptorV1,
     StateV1,
     encode_comment,
@@ -127,13 +128,32 @@ def _materialized(
 ) -> MaterializedComment:
     state = StateV1(
         name=name,
+        format="gh-slate/state-v2",
+        meta=MetaSnapshot.from_json(
+            {
+                "host": HOST,
+                "repository": {
+                    "owner": "owner",
+                    "name": "repo",
+                    "full_name": REPOSITORY,
+                    "url": f"https://{HOST}/{REPOSITORY}",
+                },
+                "target": {
+                    "kind": "pull_request" if "/pull/" in target_url else "issue",
+                    "number": NUMBER,
+                    "id": "I_example",
+                    "url": target_url,
+                },
+                "slate": {"name": name},
+            }
+        ),
         revision=7,
         controller=ControllerV1(login=ACTOR, id=ACTOR_ID),
         data={"status": status},
         renderer=jinja_descriptor(
-            "# {{ slate.name }}\n\n"
-            "{{ slate.repository }}#{{ slate.number }}\n\n"
-            "{{ slate.url }}\n\n"
+            "# {{ meta.slate.name }}\n\n"
+            "{{ meta.repository.full_name }}#{{ meta.target.number }}\n\n"
+            "{{ meta.target.url }}\n\n"
             "status={{ data.status }}"
         ),
         render_sha256=EMPTY_HASH,
@@ -232,7 +252,7 @@ def test_view_default_json_and_web_are_read_only(
         "render_sha256": managed.rendered.render_sha256,
         "renderer": {
             "kind": "jinja",
-            "version": 1,
+            "version": 2,
         },
         "repository": REPOSITORY,
         "revision": 7,
@@ -240,7 +260,7 @@ def test_view_default_json_and_web_are_read_only(
         "profile": None,
         "view": None,
         "data": {"status": "ready"},
-        "meta": None,
+        "meta": managed.state.to_json()["meta"],
         "state_sha256": managed.encoded.state_sha256,
         "status": "valid",
         "url": comment["html_url"],
@@ -389,7 +409,7 @@ def test_state_export_and_verify_preserve_canonical_state_and_report_drift(
     runner.pages = [[clean]]
     assert run(["state", "verify", "ci", "--target", TARGET_URL], prog="gh slate") == 0
     output = capsys.readouterr()
-    assert output.out == f"verified ci revision=7 state={managed.encoded.state_sha256}\n"
+    assert output.out == f"verified (state_and_render) ci revision=7 state={managed.encoded.state_sha256}\n"
     assert output.err == ""
 
     runner.pages = [[drifted]]
@@ -418,7 +438,7 @@ def test_doctor_checks_host_auth_actor_and_local_runtime_without_writes(
     assert run(["doctor", "--host", HOST], prog="gh slate") == 0
     output = capsys.readouterr()
     assert output.out == (
-        f"ok gh: gh version 2.96.0\nok auth: {ACTOR} ({ACTOR_ID})\nok jq, Jinja, JSON Schema draft 2020-12\n"
+        f"ok gh: gh version 2.96.0\nok auth: {ACTOR} ({ACTOR_ID})\nok Jinja, JSON Schema draft 2020-12\n"
     )
     assert output.err == ""
 
@@ -430,7 +450,6 @@ def test_doctor_checks_host_auth_actor_and_local_runtime_without_writes(
         "gh": "gh version 2.96.0",
         "host": HOST,
         "jinja": "ok",
-        "jq": "ok",
         "json_schema": "draft-2020-12",
         "ok": True,
     }
@@ -485,7 +504,9 @@ def test_unknown_renderer_remains_exportable_but_cannot_rerender(
     assert json.loads(capsys.readouterr().out) == state.to_json()
 
     assert run(["render", "future", "--target", TARGET_URL]) == 2
-    assert "renderer_unsupported" in capsys.readouterr().err
-    assert run(["state", "verify", "future", "--target", TARGET_URL]) == 2
-    assert "renderer_unsupported" in capsys.readouterr().err
+    assert "state_migration_required" in capsys.readouterr().err
+    assert run(["state", "verify", "future", "--target", TARGET_URL, "--json"]) == 0
+    verified = json.loads(capsys.readouterr().out)
+    assert verified["verification_scope"] == "envelope"
+    assert verified["migration_required"] is True
     _assert_only_read_calls(runner)

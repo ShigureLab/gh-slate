@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from decimal import ROUND_DOWN, ROUND_UP, Decimal, Inexact, getcontext, localcontext
+from html import unescape
 
 import pytest
 
@@ -10,8 +11,8 @@ from gh_slate.rendering.jinja import (
     DEFAULT_JINJA_LIMITS,
     JinjaLimits,
     SlateContext,
-    jinja_target_fields,
     render_jinja,
+    validate_jinja_source,
 )
 
 
@@ -40,7 +41,7 @@ def _decimal_context_state() -> tuple[object, ...]:
 
 def test_renders_only_canonical_data_and_slate_context() -> None:
     rendered = render_jinja(
-        "{{ data.summary.passed }}/{{ data.ratio }}/{{ slate.name }}/{{ slate.number }}",
+        "{{ data.summary.passed }}/{{ data.ratio }}/{{ meta.slate.name }}/{{ meta.target }}",
         data={
             "summary": {"passed": 3},
             "ratio": Decimal("1.2300"),
@@ -48,12 +49,12 @@ def test_renders_only_canonical_data_and_slate_context() -> None:
         slate=slate(),
     )
 
-    assert rendered == "3/1.23/ci-summary/42"
+    assert rendered == "3/1.23/ci&#45;summary/null"
 
 
 def test_optional_slate_context_fields_are_explicit_nulls() -> None:
     rendered = render_jinja(
-        "{{ slate.repository }}/{{ slate.number }}/{{ slate.url }}",
+        "{{ meta.host }}/{{ meta.repository }}/{{ meta.target }}",
         data={},
         slate=SlateContext(name="local"),
     )
@@ -62,36 +63,13 @@ def test_optional_slate_context_fields_are_explicit_nulls() -> None:
 
 
 @pytest.mark.parametrize(
-    ("source", "expected"),
-    [
-        ("{{ slate.name }}", frozenset()),
-        ("{{ slate.url }}", frozenset({"url"})),
-        ('{{ slate["repository"] }}', frozenset({"repository"})),
-        (
-            "{% if slate[data.field] %}yes{% endif %}",
-            frozenset({"repository", "number", "url"}),
-        ),
-        (
-            "{{ slate | compact_json }}",
-            frozenset({"repository", "number", "url"}),
-        ),
-    ],
-)
-def test_detects_target_dependent_slate_context_access(
-    source: str,
-    expected: frozenset[str],
-) -> None:
-    assert jinja_target_fields(source) == expected
-
-
-@pytest.mark.parametrize(
     ("source", "name"),
     [
         (
-            "{% for slate in data.rows %}{{ slate.repository }}{% endfor %}",
-            "slate",
+            "{% for meta in data.rows %}{{ meta.repository.full_name }}{% endfor %}",
+            "meta",
         ),
-        ("{% set slate = data.row %}{{ slate.repository }}", "slate"),
+        ("{% set meta = data.row %}{{ meta.repository.full_name }}", "meta"),
         (
             "{% for data in data.rows %}{{ data.repository }}{% endfor %}",
             "data",
@@ -101,7 +79,7 @@ def test_detects_target_dependent_slate_context_access(
 )
 def test_rejects_shadowing_reserved_context_names(source: str, name: str) -> None:
     with pytest.raises(RenderingError) as analysis_error:
-        jinja_target_fields(source)
+        validate_jinja_source(source)
     assert analysis_error.value.code == "jinja_construct_forbidden"
     assert analysis_error.value.details == {"name": name}
 
@@ -132,7 +110,7 @@ def test_rendering_is_deterministic() -> None:
     first = render_jinja(source, data=data, slate=slate())
     second = render_jinja(source, data=data, slate=slate())
 
-    assert first == second == '{"a":0,"z":1e+22}'
+    assert unescape(first) == unescape(second) == '{"a":0,"z":1e+22}'
 
 
 @pytest.mark.parametrize(
@@ -230,7 +208,7 @@ def test_compact_json_is_the_only_generic_container_projection() -> None:
         slate=slate(),
     )
 
-    assert rendered == '[1,{"ok":true}]'
+    assert unescape(rendered) == '[1,{"ok":true}]'
 
 
 def test_md_table_uses_the_builtin_markdown_renderer() -> None:

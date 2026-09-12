@@ -203,49 +203,10 @@ def test_apply_create_without_a_renderer_fails_before_transaction_setup(
 @pytest.mark.parametrize(
     ("argv", "error_code"),
     [
-        (
-            [
-                "--columns",
-                "name,status",
-            ],
-            "renderer_option_conflict",
-        ),
-        (
-            [
-                "--template",
-                "unused.md.j2",
-                "--title",
-                "Invalid",
-            ],
-            "renderer_option_conflict",
-        ),
-        (
-            [
-                "--title",
-                "Invalid without a renderer",
-            ],
-            "renderer_option_conflict",
-        ),
-        (
-            [
-                "--data",
-                "-",
-                "--template",
-                "-",
-            ],
-            "stdin_conflict",
-        ),
-        (
-            [
-                "--data",
-                "-",
-                "--schema",
-                "-",
-                "--table",
-                ".jobs",
-            ],
-            "stdin_conflict",
-        ),
+        (["--config", "file.toml"], "renderer_option_conflict"),
+        (["--profile", "ci", "--schema", "file.json"], "renderer_option_conflict"),
+        (["--data", "-", "--template", "-"], "stdin_conflict"),
+        (["--data", "-", "--schema", "-"], "stdin_conflict"),
     ],
 )
 def test_apply_input_conflicts_fail_before_any_transaction(
@@ -302,8 +263,6 @@ def test_apply_reuses_bounded_template_and_strict_json_ingestion(
             [
                 "--data",
                 str(duplicate_data),
-                "--table",
-                ".jobs",
             ],
             "data_invalid",
         ),
@@ -311,8 +270,6 @@ def test_apply_reuses_bounded_template_and_strict_json_ingestion(
             [
                 "--data",
                 str(array_data),
-                "--list",
-                ".",
             ],
             "schema_data_root_not_object",
         ),
@@ -334,7 +291,7 @@ def test_apply_output_modes_cover_human_json_quiet_and_dry_run(
     )
     _install_transaction(monkeypatch, result=result)
 
-    assert run(["apply", "ci", "--target", TARGET_URL, "--table", ".jobs"]) == 0
+    assert run(["apply", "ci", "--target", TARGET_URL]) == 0
     output = capsys.readouterr()
     assert output.out == f"updated ci -> {TARGET_URL}#issuecomment-101\n"
     assert output.err == ""
@@ -346,8 +303,6 @@ def test_apply_output_modes_cover_human_json_quiet_and_dry_run(
                 "ci",
                 "--target",
                 TARGET_URL,
-                "--table",
-                ".jobs",
                 "--json",
             ]
         )
@@ -364,8 +319,6 @@ def test_apply_output_modes_cover_human_json_quiet_and_dry_run(
                 "ci",
                 "--target",
                 TARGET_URL,
-                "--table",
-                ".jobs",
                 "--quiet",
             ]
         )
@@ -388,8 +341,6 @@ def test_apply_output_modes_cover_human_json_quiet_and_dry_run(
                 "ci",
                 "--target",
                 TARGET_URL,
-                "--table",
-                ".jobs",
                 "--dry-run",
             ]
         )
@@ -406,8 +357,6 @@ def test_apply_output_modes_cover_human_json_quiet_and_dry_run(
                 "ci",
                 "--target",
                 TARGET_URL,
-                "--table",
-                ".jobs",
                 "--dry-run",
                 "--json",
             ]

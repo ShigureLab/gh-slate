@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import uuid
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit
 
 import pytest
@@ -50,7 +51,7 @@ def _extension(
 
 def _json_result(
     result: subprocess.CompletedProcess[str],
-) -> dict[str, object]:
+) -> dict[str, Any]:
     assert result.returncode == 0, result.stderr
     assert result.stderr == ""
     value = json.loads(result.stdout)
@@ -128,14 +129,18 @@ def test_live_disposable_issue_and_pr_lifecycle(
     target = os.environ[target_env]
     host, repository = _target_contract(target, kind=kind)
     name = f"live-{uuid.uuid4().hex[:16]}"
-    data_file = tmp_path / f"{kind}.json"
-    data_file.write_text(
-        '{"checks":[{"name":"live","status":"pass"}]}',
-        encoding="utf-8",
-    )
+    definitions = tmp_path / "definitions"
+    shutil.copytree(ROOT / "examples/profiles", definitions)
+    suffix = os.environ.get("GH_SLATE_LIVE_COMMENT_SUFFIX", "")
+    for template in definitions.glob("*.j2"):
+        template.write_text(template.read_text() + "\n" + suffix + "\n")
+    data_file = tmp_path / "candidate.json"
+    data_file.write_text((definitions / "review-changes.json").read_text())
+    config = definitions / "boards.toml"
     comment_id: int | None = None
     deleted = False
 
+    print(f"Live target {target}, slate {name}", flush=True)
     try:
         created = _json_result(
             _extension(
@@ -147,10 +152,10 @@ def test_live_disposable_issue_and_pr_lifecycle(
                 "create",
                 "--data",
                 str(data_file),
-                "--table",
-                ".checks",
-                "--columns",
-                "name,status",
+                "--config",
+                str(config),
+                "--profile",
+                "review",
                 "--json",
             )
         )
@@ -158,6 +163,7 @@ def test_live_disposable_issue_and_pr_lifecycle(
         assert created["revision"] == 1
         assert isinstance(created["comment_id"], int)
         comment_id = created["comment_id"]
+        print(f"Created comment {comment_id}", flush=True)
 
         viewed = _json_result(
             _extension(
@@ -171,47 +177,56 @@ def test_live_disposable_issue_and_pr_lifecycle(
         assert viewed["status"] == "valid"
         assert viewed["revision"] == 1
 
-        updated = _json_result(
-            _extension(
-                "data",
-                "set",
-                name,
-                ".checks[0].status",
-                "--target",
-                target,
-                "--value-string",
-                "fail",
-                "--json",
+        assert viewed["view"] == "changes_requested"
+        assert viewed["meta"]["target"]["kind"] == ("issue" if kind == "issue" else "pull_request")
+        original_comment_id = viewed["comment_id"]
+        source = viewed["data"]["source"]
+        # Every following invocation is a new process with no definition files.
+        shutil.rmtree(definitions)
+        patch_file = tmp_path / "resolve.patch.json"
+        patch_file.write_text(
+            json.dumps(
+                [
+                    {"op": "test", "path": "/findings/F17/status", "value": "open"},
+                    {"op": "replace", "path": "/findings/F17/status", "value": "resolved"},
+                ]
             )
+        )
+        updated = _json_result(
+            _extension("apply", name, "--target", target, "--patch", str(patch_file), "--if-revision", "1", "--json")
         )
         assert updated["action"] == "updated"
         assert updated["revision"] == 2
-
-        queried = _extension(
-            "data",
-            "get",
-            name,
-            ".checks[0].status",
-            "--target",
-            target,
-            "--raw-output",
-        )
-        assert queried.returncode == 0, queried.stderr
-        assert queried.stdout == "fail\n"
-
-        unchanged = _json_result(
-            _extension(
-                "data",
-                "update",
-                name,
-                ".",
-                "--target",
-                target,
-                "--json",
+        queried = _json_result(_extension("view", name, "--target", target, "--json"))
+        assert queried["data"]["findings"]["F17"]["status"] == "resolved"
+        assert queried["data"]["source"] == source
+        data_file.write_text(
+            json.dumps(
+                {"outcome": "error", "source": source, "error": {"message": "Synthetic live-test execution failure"}}
             )
         )
+        failed_view = _json_result(
+            _extension("apply", name, "--target", target, "--data", str(data_file), "--if-revision", "2", "--json")
+        )
+        assert failed_view["view"] == "error"
+        patch_file.write_text(
+            json.dumps(
+                [
+                    {"op": "replace", "path": "/outcome", "value": "approved"},
+                    {"op": "remove", "path": "/error"},
+                    {"op": "add", "path": "/summary", "value": "Synthetic live-test findings resolved"},
+                ]
+            )
+        )
+        approved = _json_result(
+            _extension("apply", name, "--target", target, "--patch", str(patch_file), "--if-revision", "3", "--json")
+        )
+        assert approved["view"] == "approved"
+        assert approved["comment_id"] == original_comment_id
+        assert approved["revision"] == 4
+        unchanged = _json_result(_extension("apply", name, "--target", target, "--json"))
         assert unchanged["action"] == "unchanged"
-        assert unchanged["revision"] == 2
+        assert unchanged["revision"] == 4
 
         comment_endpoint = f"repos/{repository}/issues/comments/{comment_id}"
         fetched = _gh_api(
@@ -225,7 +240,7 @@ def test_live_disposable_issue_and_pr_lifecycle(
         assert isinstance(body, str)
         marker, separator, _visible = body.partition("\n-->\n\n")
         assert separator
-        drifted_body = f"{marker}{separator}manual live-test drift\n"
+        drifted_body = f"{marker}{separator}manual live-test drift\n{suffix}\n"
         drift_write = _gh_api(
             host=host,
             method="PATCH",
@@ -256,7 +271,7 @@ def test_live_disposable_issue_and_pr_lifecycle(
             )
         )
         assert repaired["action"] == "repaired"
-        assert repaired["revision"] == 2
+        assert repaired["revision"] == 4
 
         verified = _json_result(
             _extension(
@@ -282,6 +297,7 @@ def test_live_disposable_issue_and_pr_lifecycle(
         )
         deleted = True
         assert deletion["action"] == "deleted"
+        print(f"Verified create, patch, error/approved views, no-op, repair, delete: {target}", flush=True)
 
         missing = _extension(
             "view",

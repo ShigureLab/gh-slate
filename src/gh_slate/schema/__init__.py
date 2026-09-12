@@ -1,9 +1,8 @@
-"""Offline JSON Schema validation and permissive inference for slate data."""
+"""Offline JSON Schema validation for slate data."""
 
 from __future__ import annotations
 
 from gh_slate.schema.errors import SchemaDiagnostic, SchemaError
-from gh_slate.schema.inference import infer_schema
 from gh_slate.schema.validation import (
     DEFAULT_MAX_ERRORS,
     MAX_DIAGNOSTIC_POINTER_BYTES,
@@ -21,7 +20,6 @@ __all__ = [
     "MAX_DIAGNOSTIC_POINTER_BYTES",
     "SchemaDiagnostic",
     "SchemaError",
-    "infer_schema",
     "replace_schema",
     "validate_data",
     "validate_data_json",

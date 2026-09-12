@@ -26,18 +26,14 @@ EXPECTED_RECIPE_ROUTES = frozenset(
     {
         ("--version",),
         ("apply",),
-        ("data", "delete"),
-        ("data", "edit"),
-        ("data", "get"),
-        ("data", "set"),
-        ("data", "update"),
         ("delete",),
         ("doctor",),
         ("render",),
         ("repair",),
-        ("schema", "validate"),
+        ("state", "export"),
         ("state", "verify"),
         ("view",),
+        ("list",),
     }
 )
 _FRONTMATTER = re.compile(
@@ -106,11 +102,10 @@ def _check_metadata(metadata: dict[str, object]) -> None:
     if set(metadata) != {
         "name",
         "description",
-        "compatibility",
         "license",
         "metadata",
     }:
-        _fail("frontmatter fields must be name, description, compatibility, license, and metadata")
+        _fail("frontmatter fields must be name, description, license, and metadata")
     if metadata["name"] != "gh-slate":
         _fail("frontmatter name must be gh-slate")
     description = metadata["description"]
@@ -127,7 +122,7 @@ def _check_metadata(metadata: dict[str, object]) -> None:
         if term not in description:
             _fail(f"description is missing trigger language: {term!r}")
 
-    compatibility = metadata["compatibility"]
+    compatibility = _mapping(metadata["metadata"], "frontmatter.metadata").get("compatibility")
     if not isinstance(compatibility, str) or "gh-slate >=0.1.0" not in compatibility:
         _fail("compatibility must require gh-slate >=0.1.0")
     if metadata["license"] != "MIT":

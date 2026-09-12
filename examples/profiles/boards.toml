@@ -8,3 +8,11 @@ view_by = "/outcome"
 approved = "review-approved.md.j2"
 changes_requested = "review-changes.md.j2"
 error = "review-error.md.j2"
+
+[profiles.ci]
+schema = "ci.schema.json"
+template = "ci.md.j2"
+
+[profiles.benchmark]
+schema = "benchmark.schema.json"
+template = "benchmark.md.j2"

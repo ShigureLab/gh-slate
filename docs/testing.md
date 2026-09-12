@@ -43,8 +43,9 @@ particular GitHub Enterprise Server release, authentication setup, or live API.
 
 The live harness is skipped by default. It requires two existing, disposable
 targets in a dedicated test repository: one Issue URL and one Pull Request URL.
-It creates only uniquely named comments, exercises create/read/query/update,
-unchanged, visible-drift repair, and delete, and attempts direct cleanup in a
+It creates only uniquely named comments, exercises profile creation, stored-state
+updates after deleting local definitions, revision-pinned JSON Patch, all three
+review views, unchanged, visible-drift repair, and delete. It attempts cleanup in a
 `finally` block if the normal delete path does not finish.
 
 Use a least-privilege token that may read the repository and write Issue/PR
@@ -66,10 +67,35 @@ itself. If a run is interrupted outside Python's cleanup path, search the two
 targets for a slate name beginning with `live-` and delete that comment before
 rerunning.
 
+Set `GH_SLATE_LIVE_COMMENT_SUFFIX` to append an attribution or other required
+notice to every generated template and intentional drift edit.
+
 The repository's regular CI must not set these environment variables. A live
 run is release evidence only when its command output and target type are
 recorded separately; skipped live tests are not evidence of GitHub or GHES
 compatibility.
+
+## Profile-stack acceptance (2026-09-12)
+
+The final V2 profile/patch runtime was validated on macOS with Python 3.12:
+
+- `just ci-test`: 940 passed, 6 skipped (including the opt-in live cases).
+- `just ci-lint` and `just ci-fmt-check`: passed.
+- Isolated Python 3.10 configuration, profile, and patch tests: 46 passed.
+- Wheel/sdist build and installed-artifact smoke: passed. A separate clean
+  environment rendered a table helper successfully with no jq package installed.
+- The credentialed live harness completed both
+  [disposable Issue #32](https://github.com/ShigureLab/gh-slate/issues/32) and
+  [disposable PR #33](https://github.com/ShigureLab/gh-slate/pull/33):
+  `2 passed in 140.51s`. Each ran create, stable-key patch, error/approval view
+  transitions, no-op, drift repair, verify, and delete. Every subsequent command
+  was a new process after the local definition directory had been removed.
+
+The first attempt stopped before writing because proxy-routed GitHub reads
+returned EOF. The successful run used a process-local direct connection;
+system proxy settings were unchanged. Test comments were deleted and temporary
+targets closed. This verifies GitHub.com ordinary Issue/PR comments, not GHES,
+a tagged release, or PyPI publication.
 
 ## Tagged release gate
 

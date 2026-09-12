@@ -100,7 +100,7 @@ def test_profile_option_conflicts_are_rejected_before_target_access(tmp_path, ca
     assert "renderer_option_conflict" in capsys.readouterr().err
     assert run(["apply", "ci", "--config", str(path), "--profile", "summary", "--schema", "missing"]) == 2
     assert "renderer_option_conflict" in capsys.readouterr().err
-    assert run(["render", "ci", "--config", str(path), "--profile", "summary", "--title", "override"]) == 2
+    assert run(["render", "ci", "--config", str(path), "--profile", "summary", "--schema", "override"]) == 2
     assert "renderer_option_conflict" in capsys.readouterr().err
 
 

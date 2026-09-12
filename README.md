@@ -1,14 +1,12 @@
 # gh-slate
 
-`gh-slate` creates named, data-backed dashboard comments on GitHub Issues and
-Pull Requests. It keeps typed JSON, an optional JSON Schema, and the renderer
-definition inside the managed comment, then projects that state as Markdown
-with a built-in table/list renderer or a sandboxed Jinja template.
+`gh-slate` turns typed JSON into named dashboard comments on GitHub Issues and
+Pull Requests. A profile combines an optional JSON Schema with a Jinja template
+or several complete views. The managed comment stores data, metadata, schema,
+and all template sources, so later updates work without the original checkout.
 
-This is a pre-release implementation. The offline codec, renderer, GitHub
-adapter, recovery, fault-injection, packaging, and Actions paths are tested,
-but the credentialed GitHub.com Issue/PR and live GHES gates have not been run.
-The project does not yet claim stable or GA status.
+This is a pre-release implementation. See [testing](docs/testing.md) for offline
+and live acceptance evidence and the remaining release gates.
 
 <p align="center">
    <a href="https://python.org/" target="_blank"><img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-blue?logo=python&style=flat-square"></a>
@@ -83,449 +81,164 @@ currently preview, skill command:
 gh skill install ShigureLab/gh-slate gh-slate --agent codex --scope user
 ```
 
-## Preflight
+## Quick start
 
-Check GitHub authentication first. `doctor` verifies the `gh` version and
-authenticated actor, loads the renderer/schema dependencies, and runs a jq
-smoke query through the isolated worker used by normal commands:
+Check authentication and local dependencies:
 
 ```bash
 gh auth status
 gh slate doctor --json
 ```
 
-Use `gh-slate doctor --json` instead when installed as a Python tool. A full
-Issue or Pull Request URL is the least ambiguous target; numeric targets also
-accept `--repo OWNER/REPO`, while Actions may use `@event`.
-
-## Command map
-
-| What you want to do                           | Command family                    |
-| --------------------------------------------- | --------------------------------- |
-| Preview local data as Markdown                | `render`                          |
-| Create or replace one complete slate snapshot | `apply`                           |
-| Read one slate or list all names on a target  | `view`, `list`                    |
-| Query or mutate embedded typed JSON           | `data get/set/delete/update/edit` |
-| Inspect, infer, validate, or replace a schema | `schema get/infer/validate/set`   |
-| Export or integrity-check the hidden state    | `state export/verify`             |
-| Restore drifted Markdown or remove a comment  | `repair`, `delete`                |
-| Check the local runtime and GitHub access     | `doctor`                          |
-
-Run `gh slate COMMAND --help` for every flag. The examples below use the
-extension spelling; replace `gh slate` with `gh-slate` when using the Python
-tool.
-
-There is no separate `init` command: the first `apply --mode create` or
-`apply --mode upsert` initializes a slate. Names are lowercase, at most 64
-characters, match `[a-z0-9][a-z0-9._-]{0,63}`, and cannot contain `--`.
-
-## Quick start
-
-Assume `report.json` contains:
-
-```json
-{
-   "jobs": [
-      { "name": "linux", "status": "passed" },
-      { "name": "windows", "status": "running" }
-   ],
-   "summary": "2 jobs"
-}
-```
-
-and `report.schema.json` contains:
-
-```json
-{
-   "$schema": "https://json-schema.org/draft/2020-12/schema",
-   "type": "object",
-   "properties": {
-      "jobs": {
-         "type": "array",
-         "items": {
-            "type": "object",
-            "properties": {
-               "name": { "type": "string" },
-               "status": { "type": "string" }
-            },
-            "required": ["name", "status"]
-         }
-      },
-      "summary": { "type": "string" }
-   },
-   "required": ["jobs", "summary"]
-}
-```
-
-Preview a table without writing, then upsert exactly one named slate. A name is
-unique only within one target and controller, so `ci-summary` can be reused on
-another Issue or Pull Request:
+Use the checked-in [CI, review, and benchmark profiles](examples/profiles).
+Preview a review locally, then against a real target before publishing:
 
 ```bash
-gh slate apply ci-summary --target https://github.com/OWNER/REPO/issues/42 --mode upsert --data report.json --schema report.schema.json --table '.jobs' --columns name,status --title 'CI summary' --dry-run
-gh slate apply ci-summary --target https://github.com/OWNER/REPO/issues/42 --mode upsert --data report.json --schema report.schema.json --table '.jobs' --columns name,status --title 'CI summary' --json
+gh slate render review --config examples/profiles/boards.toml --profile review --data examples/profiles/review-changes.json
+gh slate apply review --target https://github.com/OWNER/REPO/pull/42 --config examples/profiles/boards.toml --profile review --data examples/profiles/review-changes.json --dry-run --json
+gh slate apply review --target https://github.com/OWNER/REPO/pull/42 --config examples/profiles/boards.toml --profile review --data examples/profiles/review-changes.json --json
 ```
 
-List all managed slates on the target:
+Replace the target URL before publishing. The examples contain synthetic data.
+Use `gh-slate` in place of `gh slate` with the Python CLI.
+
+Read the current data and revision, or switch to the approval layout by sending
+a new snapshot. Omitting the profile reuses the definition stored on GitHub:
 
 ```bash
-gh slate list --target https://github.com/OWNER/REPO/issues/42 --json
+gh slate view review --target https://github.com/OWNER/REPO/pull/42 --json
+gh slate apply review --target https://github.com/OWNER/REPO/pull/42 --data examples/profiles/review-approved.json --json
+gh slate list --target https://github.com/OWNER/REPO/pull/42 --json
+gh slate state export review --target https://github.com/OWNER/REPO/pull/42
+gh slate state verify review --target https://github.com/OWNER/REPO/pull/42 --json
 ```
 
-The corresponding read-only commands render local input, print the remote
-Markdown, open the exact comment, export the hidden typed state, or print the
-stored schema:
+The review profile maps `data.outcome` to `approved`, `changes_requested`, or
+`error`. Those names belong to the profile; the core only follows its JSON
+Pointer and exact view map. Missing or unknown outcomes fail before writing.
+Each view can have a different layout and schema branch.
+
+For a partial edit, use a standard RFC 6902 patch and the revision read from
+`view --json`. For example, while the review contains finding F17:
 
 ```bash
-gh slate render ci-summary --data report.json --schema report.schema.json --table '.jobs' --columns name,status --title 'CI summary'
-gh slate view ci-summary --target https://github.com/OWNER/REPO/issues/42
-gh slate view ci-summary --target https://github.com/OWNER/REPO/issues/42 --web
-gh slate state export ci-summary --target https://github.com/OWNER/REPO/issues/42
-gh slate schema get ci-summary --target https://github.com/OWNER/REPO/issues/42
+gh slate apply review --target https://github.com/OWNER/REPO/pull/42 --patch examples/profiles/resolve-finding.patch.json --if-revision 3 --dry-run --json
 ```
 
-For the next complete update, pass only the new data. Omitting renderer and
-schema options reuses the versions embedded in the existing slate:
+Replace `3` with the observed revision. The dry-run reports candidate data,
+Markdown, data changes, definition/meta changes, and view transitions. Remove
+`--dry-run` to publish. Patch and full data use the same writer; failure performs
+no write and a no-op preserves revision.
 
-```bash
-gh slate apply ci-summary --target https://github.com/OWNER/REPO/issues/42 --data report.json --json
-```
+## Definitions and templates
 
-Use `--mode create` when an existing name must be an error, or `--mode update`
-when a missing name must be an error. The default is `upsert`.
-
-### List and Jinja renderers
-
-The list renderer stores the same typed state and only changes its Markdown
-projection:
-
-```bash
-gh slate apply release-items --target https://github.com/OWNER/REPO/issues/42 --mode create --data release.json --list '.items' --title 'Release items' --json
-```
-
-For a custom layout, pass trusted Jinja source. Template source is embedded in
-the state, so a later update does not depend on the original checkout:
-
-```jinja2
-## Deployment: {{ meta.slate.name }}
-
-Target: {{ meta.repository.full_name | md_link(meta.target.url) }} #{{ meta.target.number }}
-
-{{ data.checks | md_table(columns=["name", "status"]) }}
-{{ data.notes | md_list }}
-
-Metadata: {{ data.metadata | compact_json | md_code }}
-```
-
-Save that source as `deployment.md.j2`, then preview it against the real target:
-
-```bash
-gh slate apply deployment --target https://github.com/OWNER/REPO/pull/42 --mode create --data deployment.json --schema deployment.schema.json --template deployment.md.j2 --dry-run
-```
-
-New direct templates use `jinja@2`: immutable business `data` and read-only
-`meta` containing the host, repository, target kind/number/node ID/URL, and
-slate name. Apply resolves target metadata through GitHub and saves it with the
-data and template. Stored renders and repairs reuse that snapshot; an identical
-apply does not create a new revision.
-
-For an offline preview, provide `--meta target.json` to `gh slate render`.
-Without a fixture, `meta.slate.name` is available and the host, repository, and
-target are `null`. Use `apply --dry-run` above for a preview with verified GitHub
-metadata. See [the complete fixture and runnable example](examples/templates/README.md).
-
-Ordinary interpolated strings are escaped as Markdown text. Use `md_link`,
-`md_code`, `md_codeblock`, `md_details`, `md_table`, and `md_list` to construct
-Markdown in the appropriate context; their output composes without being
-escaped again. `compact_json`, `length`, and `dictsort` support formatting typed
-data. The sandbox retains strict undefined values, bounded loops and output,
-and no arbitrary calls, imports, files, or network access.
-
-Existing `jinja@1` comments retain their original `data/slate` semantics.
-Updating their data reuses that renderer. Explicitly pass a new `--template`
-using `data/meta` to migrate the same comment to V2 in one write.
-
-### Reuse a named profile
-
-Choose one TOML file with `--config FILE` or `GH_SLATE_CONFIG`. No directories
-are searched. Each profile snapshots its schema and template; relative paths
-are resolved from the config file, regardless of the calling directory.
+Configuration is explicit: `--config FILE` overrides `GH_SLATE_CONFIG`.
+There is no default directory search or config merging. File paths are relative
+to the TOML file, and `--profile NAME` selects a definition:
 
 ```toml
 version = 1
 
-[profiles.review]
-schema = "review.schema.json"
-template = "review.md.j2"
-```
-
-```bash
-gh slate render review --config examples/templates/boards.toml --profile review --data examples/templates/review.json
-gh slate apply review --target <ISSUE_OR_PR_URL> --config /path/to/boards.toml --profile review --data review.json
-```
-
-A later `apply --data` uses the saved definition without consulting local
-files. Pass `--profile` again to reload the definition atomically with the
-candidate data. CLI `--config` takes precedence over the environment variable;
-`--config` requires `--profile`. Profile mode rejects direct definition
-overrides such as `--template`, `--schema`, `--table`, or `--list`.
-
-For outcomes that need different page layouts, map a JSON Pointer to named views:
-
-```toml
-version = 1
+[profiles.ci]
+schema = "ci.schema.json"
+template = "ci.md.j2"
 
 [profiles.review]
 schema = "review.schema.json"
 view_by = "/outcome"
 
 [profiles.review.views]
-approved = "review-approved.md.j2"
-changes_requested = "review-changes.md.j2"
-error = "review-error.md.j2"
+approved = "approved.md.j2"
+changes_requested = "changes.md.j2"
+error = "error.md.j2"
 ```
 
-The producer supplies `data.outcome`; gh-slate validates the complete data and
-matches the configured view exactly. Missing, non-string, or unknown values
-fail before writing. All view sources are checked and saved together, so an
-outcome change works without local files. There is no separate `--view`
-override. See [the runnable three-outcome review profile](examples/profiles/README.md).
+Single-template definitions also work directly with `--template FILE` and
+optional `--schema FILE`. Profile and direct definition overrides are mutually
+exclusive. Pass `--profile` explicitly to reload a changed definition; normal
+data updates never read local config files.
 
-### Add or change a JSON Schema
+Templates receive business `data` and read-only `meta`:
 
-Schemas use JSON Schema draft 2020-12 and are stored with the data. `$ref`
-and `$dynamicRef` may only point to an empty or same-document `#...`
-fragment; remote URLs, files, and relative registry references are rejected
-without I/O. Validate a candidate against the current schema, infer a
-permissive starting point, or replace the schema explicitly:
+```jinja2
+## {{ meta.slate.name }}
+{% if meta.target is not none %}
+Target: {{ meta.repository.full_name | md_link(meta.target.url) }} #{{ meta.target.number }}
+{% endif %}
+
+{{ data.jobs | md_table(columns=["name", "status"]) }}
+{{ data.notes | md_list }}
+```
+
+Ordinary interpolated strings are escaped. Use `md_text`, `md_link`, `md_code`,
+`md_codeblock`, `md_table`, `md_list`, and `md_details` for composable Markdown.
+Sandbox limits bound template source, loops, output, and the complete comment.
+There is no include loader, filesystem access, or arbitrary Python call.
+
+`meta` contains host, repository identity, target kind/number/node ID/URL, and
+slate name. Apply obtains it from GitHub and stores the exact render snapshot.
+Local render sets host/repository/target to null unless given `--meta FILE`.
+Use `apply --dry-run` for a preview with real target metadata. An analyzed
+commit, run ID, or timestamp belongs in `data.source`; gh-slate never replaces
+it with a newer revision merely because the target changed.
+
+## Read, recover, and migrate
+
+| Task                                             | Command                          |
+| ------------------------------------------------ | -------------------------------- |
+| Local or stored-state preview                    | `render`                         |
+| Publish a full snapshot or RFC 6902 patch        | `apply --data` / `apply --patch` |
+| Read current data, metadata, revision, and view  | `view --json`                    |
+| List managed comments                            | `list --json`                    |
+| Export the complete embedded definition and data | `state export`                   |
+| Verify integrity and reproduce V2 rendering      | `state verify`                   |
+| Restore visible Markdown from V2 state           | `repair --from-state`            |
+| Remove one managed comment                       | `delete --confirm NAME`          |
+| Check authentication and local dependencies      | `doctor`                         |
 
 ```bash
-gh slate schema validate ci-summary report.json --target https://github.com/OWNER/REPO/issues/42 --json
-gh slate schema infer ci-summary --target https://github.com/OWNER/REPO/issues/42
-gh slate schema set ci-summary report.schema.json --target https://github.com/OWNER/REPO/issues/42 --if-revision 1 --json
+gh slate render review --target https://github.com/OWNER/REPO/pull/42
+gh slate view review --target https://github.com/OWNER/REPO/pull/42 --web
+gh slate repair review --target https://github.com/OWNER/REPO/pull/42 --from-state --if-revision 3 --json
+gh slate delete review --target https://github.com/OWNER/REPO/pull/42 --confirm review --json
 ```
 
-`schema infer` only prints by default; add `--apply` and an observed
-`--if-revision` to store the inferred schema. The `schema set` example
-assumes you edited `report.schema.json` after the initial apply; setting an
-identical schema is intentionally reported as `unchanged`.
+V1 comments remain readable, exportable, integrity-checkable, and deletable.
+`state verify` reports `verification_scope: "envelope"` for V1; it does not
+claim to reproduce an old renderer. Updating or repairing V1 requires explicit
+migration with `apply --profile ... --config ...` or `apply --template ...`.
+Migration reuses stored data unless new data or a patch is supplied, then
+validates and publishes V2 in the same comment. Convert legacy `slate.*` template
+variables to `meta.*`; arbitrary jq selectors are not translated automatically.
 
-### Query and update typed data
+The former `data`/`schema` command trees, editor wrapper, Schema inference, and
+`--table`/`--list` renderers have been removed. Use `view --json` or `state export`
+for data access, external tools for queries, `apply --patch` for partial edits,
+`apply --schema` for direct schema replacement, and Jinja helpers for tables/lists.
 
-Queries use jq syntax and never scrape the visible table:
+## Publishing guarantees
 
-```bash
-gh slate data get ci-summary '.jobs[] | select(.status != "passed") | .name' --target https://github.com/OWNER/REPO/issues/42 --raw-output
-```
+Names are scoped to target and controller; they match
+`[a-z0-9][a-z0-9._-]{0,63}` and cannot contain `--`. Default apply mode is `upsert`;
+`create` rejects an existing instance and `update` rejects a missing one.
 
-First inspect the slate with `view --json`. If it reports revision `1`, choose
-one of these writes: mutate one static path, delete paths, or transform the
-complete data object with jq. Each example below is an alternative write from
-revision `1`; all pin that observation and reject an already-stale read:
+A managed comment is one state container. Decode, schema, rendering, identity,
+size, drift, duplicate-name, and revision checks run before publishing. An
+uncertain write response triggers readback and never automatically replays a
+patch. GitHub has no atomic compare-and-swap for comments: serialize publishers
+by target/name and refetch before a later update after a conflict.
 
-```bash
-gh slate data set ci-summary '.jobs[1].status' --target https://github.com/OWNER/REPO/issues/42 --value-string passed --if-revision 1 --json
-gh slate data set ci-summary '.coverage' --target https://github.com/OWNER/REPO/issues/42 --value 91.7 --if-revision 1 --json
-gh slate data set ci-summary '.jobs[1]' --target https://github.com/OWNER/REPO/issues/42 --value-file windows-result.json --if-revision 1 --json
-gh slate data delete ci-summary '.jobs[1]' --target https://github.com/OWNER/REPO/issues/42 --if-revision 1 --json
-gh slate data update ci-summary '.jobs |= map(if .name == $name then .status = "passed" else . end)' --target https://github.com/OWNER/REPO/issues/42 --arg name windows --if-revision 1 --json
-gh slate data update ci-summary '.jobs[$index] = $result' --target https://github.com/OWNER/REPO/issues/42 --argjson index 1 --argjson result @windows-result.json --if-revision 1 --json
-```
+Visible Markdown is a projection. Manual edits produce drift and block normal
+updates; repair explicitly restores the stored projection. A V2 state copied
+to a different target cannot be adopted for publishing. Embedded state is
+public to anyone who can read the comment, including template sources; keep
+credentials and private logs out of it.
 
-`data set` and `data delete` accept static jq-compatible paths such as
-`.status`, `.jobs[1].status`, and `.["key.with.dot"]`. A path cannot depend on
-the current data, arithmetic, a pipe, or interpolation; use `data update` for
-computed transforms. This keeps path selection independent of jq's IEEE-754
-number projection while untouched JSON numbers remain exact.
+For automation, aggregate parallel jobs into one snapshot and publish through
+one writer. Use trusted templates and reducer code in privileged workflows.
+The [Actions examples](examples/actions) demonstrate current-resource refetch,
+serialization, and fork-safe reduction. gh-slate publishes ordinary comments;
+its local Markdown output can also feed a separate review workflow.
 
-Value sources are explicit and mutually exclusive: `--value` parses one strict
-JSON value, `--value-string` stores exact text, and `--value-file` parses one
-JSON document, so `91`, `"91"`, `true`, and `"true"` remain distinct. For
-`data update`, `--arg` binds text while `--argjson` binds typed JSON; prefix its
-value with `@` to load a JSON file. Deleting an absent path is an error unless
-`--ignore-missing` is requested.
-
-jq runs in a bounded isolated subprocess. Environment access, extra inputs,
-imports/includes/modules, and host-introspection builtins are unavailable;
-deterministic renderer selectors additionally reject time/date and
-platform-dependent math builtins. libjq projects numbers through IEEE-754, so
-`data get` and renderer selectors can round integers outside the exact range.
-Store precision-sensitive IDs and large integers as strings when they must pass
-through jq.
-
-`data update` is stricter because it writes canonical state. Its input,
-`--argjson` values, numeric filter literals, and output must preserve identity
-through jq's number model, otherwise the command fails before writing. The
-filter must produce exactly one JSON object; zero results, multiple results,
-scalars, and arrays are errors. Use `data set` or `data delete` when exact
-large numbers must remain numeric.
-
-For an interactive typed edit, set `GH_EDITOR`, `GIT_EDITOR`, `VISUAL`, or
-`EDITOR`, then run:
-
-```bash
-gh slate data edit ci-summary --target https://github.com/OWNER/REPO/issues/42 --if-revision 1 --json
-```
-
-Refetch before any subsequent write. Inspect and verify the result:
-
-```bash
-gh slate view ci-summary --target https://github.com/OWNER/REPO/issues/42 --json
-gh slate state verify ci-summary --target https://github.com/OWNER/REPO/issues/42 --json
-```
-
-### Repair visible drift and delete a slate
-
-A manual edit to visible Markdown is drift, not new canonical data. Mutations
-fail closed until the projection is explicitly restored:
-
-```bash
-gh slate repair ci-summary --from-state --target https://github.com/OWNER/REPO/issues/42 --if-revision 2 --json
-```
-
-Repair rerenders stored state and may keep the same functional revision.
-Deleting the whole managed comment requires the exact name or an explicit
-non-interactive confirmation:
-
-```bash
-gh slate delete ci-summary --target https://github.com/OWNER/REPO/issues/42 --confirm ci-summary --json
-gh slate delete ci-summary --target https://github.com/OWNER/REPO/issues/42 --yes --quiet
-```
-
-### Recover an interrupted or ambiguous write
-
-Mutating commands perform at most one remote write. If the response or
-verification handoff is interrupted, gh-slate does a read-only refetch instead
-of replaying that write. When the intended revision is found and verified, the
-JSON result reports `"recovered": true`; treat that as a successful observed
-write.
-
-If the command still fails with
-`post_write_verification_unknown`, `write_timeout_unknown`,
-`write_outcome_unknown`, `repair_outcome_unknown`, or
-`delete_outcome_unknown`, do not blindly retry. Observe the target first:
-
-```bash
-gh slate list --target https://github.com/OWNER/REPO/issues/42 --json
-gh slate view ci-summary --target https://github.com/OWNER/REPO/issues/42 --json
-gh slate state verify ci-summary --target https://github.com/OWNER/REPO/issues/42 --json
-```
-
-If the intended state is already present, stop. For an update, repair, or
-delete whose current outcome is now unambiguous, choose any next operation from
-the newly observed revision and pin that revision with `--if-revision`; never
-replay a mutation pinned to the old observation.
-
-An unknown `create` or `upsert` needs extra care. If the slate was missing
-before the write and remains absent on the first refetch, that absence does not
-prove the create POST failed: GitHub's comment listing may not have exposed it
-yet, and there is no revision to pin. Do not recreate solely from that one
-missing read. Continue read-only observation with `list`, inspect the target's
-comments or API for the original managed comment, and retry `view`/`state verify`
-once it appears. Create again only after an explicit human decision that
-accepts the duplicate-comment risk.
-
-## State and safety model
-
-The hidden typed `StateV1` envelope is the source of truth. Visible Markdown is
-a deterministic, one-way projection:
-
-```text
-managed comment envelope  <-- encode/decode -->  typed StateV1
-                                                    |
-                                                  render
-                                                    v
-                                             visible Markdown
-```
-
-Tables and lists cannot losslessly represent JSON types such as `null`, numeric
-versus string `001`, nested objects, or missing fields. `gh-slate` therefore
-decodes data and schema metadata from the hidden envelope; it does not claim a
-Markdown-to-state round trip. Integrity hashes detect manual projection edits.
-
-Important operational boundaries:
-
-- Do not store tokens, credentials, private logs, or other secrets in data,
-  schemas, or templates. Hidden comment metadata is still GitHub comment data.
-- Use only trusted jq and Jinja source, especially in privileged Actions
-  workflows. Never evaluate a template supplied by an untrusted fork under
-  `pull_request_target`.
-- Prefer a complete `apply --data FILE` snapshot and one writer in CI.
-  Repository workflow `concurrency` prevents more races than incremental
-  updates from multiple jobs.
-- Actions concurrency does not guarantee FIFO event ordering. If a dashboard
-  mirrors Issue or Pull Request fields, use the webhook only to identify the
-  target and refetch the current resource inside the serialized job immediately
-  before `apply`; do not render an old event snapshot. The checked-in examples
-  follow this pattern.
-- `--if-revision` plus the pre-write refetch detects observed stale state, but
-  GitHub issue-comment updates provide no atomic compare-and-swap (CAS).
-  It is an optimistic guard, not a lock; two writers can still race after their
-  final reads.
-- Treat `created`, `updated`, `repaired`, `deleted`, and `unchanged` as distinct
-  successful outcomes. Do not claim a remote write succeeded until the command
-  returns its verified result.
-- Drift, duplicate names, corrupt state, unknown write outcomes, and revision
-  conflicts fail closed; there is no generic `--force` escape hatch.
-
-See the checked-in [Actions examples](examples/actions/README.md) for minimal
-permissions and trusted-data patterns.
-
-## Verification status
-
-The default suite is offline. It includes canonical state round trips, bounded
-decoder fuzzing, renderer/schema/jq coverage, Issue and Pull Request subprocess
-tests through a persistent fake `gh`, recovery fault injection, Actions static
-validation, and offline artifact layout/entrypoint checks.
-
-Run the local packaging gate against the exact wheel and sdist:
-
-```bash
-just clean-builds
-just build
-just release-verify
-```
-
-`just release` adds all deterministic gates and tag/version verification, then
-pushes only that version tag. One tag-triggered workflow requires the commit to
-be on the default branch, runs the full deterministic and live gates, builds
-and verifies the release artifacts once, and stages those exact files in a
-draft GitHub Release. Its PyPI OIDC job has only two steps: download the
-verified artifact set and invoke the pinned official PyPI publishing action.
-Only after PyPI succeeds does the workflow make the draft GitHub Release
-stable. Every referenced Action is pinned to a full commit SHA. Direct
-`just publish` is disabled so it cannot bypass this ordering.
-
-This private repository's release trust boundary is exclusive write access:
-only release maintainers may have write or admin permission, while all other
-contributors must use fork-based pull requests. Keep the default Actions token
-read-only and do not store release credentials as Actions secrets. Configure
-the PyPI Trusted Publisher for `ShigureLab/gh-slate` and the top-level
-`.github/workflows/release.yml` without an Environment claim. Before granting
-any non-release-maintainer write access, move publishing to a separately
-controlled repository or enable repository protections that provide an
-equivalent external approval boundary. See [testing](docs/testing.md) for the
-full model and disposable target variables. Before the first release, also set
-the repository's default Actions token to read-only, disable pull-request
-approval through that token, configure both disposable live-target variables,
-and register the exact PyPI Trusted Publisher. Release one tag at a time; wait
-for its publisher run to finish, and do not move the tag or edit its draft
-release while that run is active.
-
-An opt-in live harness exists for disposable GitHub.com Issue and Pull Request
-targets, but it is skipped unless the exact confirmation and both target URLs
-are supplied. It has not been executed as current release evidence. The GHES
-fixtures prove event and hostname contracts only, not live server
-compatibility. See [testing](docs/testing.md) for the exact gate and cleanup
-procedure.
-
-This README is the user guide. [CLI design](docs/cli.md) is the early protocol
-and implementation record; normal use should not require it.
-
-The [incremental redesign proposal](docs/redesign.md) describes configurable
-profiles, multiple views, data/meta context, and a staged implementation plan.
-It is a proposal, not the current command contract.
-
-## License
-
-[MIT](LICENSE)
+See [CLI and state reference](docs/cli.md), [testing and release gates](docs/testing.md),
+and the [redesign plan](docs/redesign.md).

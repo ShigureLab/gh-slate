@@ -42,6 +42,8 @@ def test_local_table_render_supports_typed_columns(
     tmp_path: Path,
     capsys,
 ) -> None:
+    template = tmp_path / "table.j2"
+    template.write_text('{{ data.jobs | md_table(columns=["name", "passed"]) }}')
     data = tmp_path / "data.json"
     data.write_text(
         '{"jobs":[{"name":"linux","passed":true}]}',
@@ -55,10 +57,8 @@ def test_local_table_render_supports_typed_columns(
                 "ci",
                 "--data",
                 str(data),
-                "--table",
-                ".jobs",
-                "--columns",
-                "name,passed",
+                "--template",
+                str(template),
             ]
         )
         == 0
@@ -67,7 +67,7 @@ def test_local_table_render_supports_typed_columns(
 
 
 def test_render_rejects_renderer_option_and_stdin_conflicts(capsys) -> None:
-    assert run(["render", "ci", "--template", "x", "--columns", "name"]) == 2
+    assert run(["render", "ci", "--profile", "ci", "--schema", "x"]) == 2
     first = capsys.readouterr()
     assert "renderer_option_conflict" in first.err
 
@@ -101,8 +101,8 @@ def test_local_and_remote_render_options_are_unambiguous(capsys) -> None:
                 "42",
                 "--repo",
                 "owner/repo",
-                "--list",
-                ".",
+                "--template",
+                "template.j2",
             ]
         )
         == 2

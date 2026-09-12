@@ -139,7 +139,7 @@ def test_offline_artifact_layout_and_installed_cli_match_the_root_launcher(
     )
     assert installed_help.returncode == 0, installed_help.stderr
     assert installed_help.stdout.startswith("usage: gh-slate")
-    assert "{render,apply,view,list,repair,delete,data,schema,state,doctor}" in (installed_help.stdout)
+    assert "{render,apply,view,list,repair,delete,state,doctor}" in (installed_help.stdout)
 
     if os.name == "nt" or shutil.which("bash") is None:
         return

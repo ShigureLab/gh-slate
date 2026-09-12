@@ -29,6 +29,7 @@ from gh_slate.github.target import (
 from gh_slate.github.write import GhWriteOutcomeUnknown, GhWriteTimeout
 from gh_slate.patching import apply_data_patch, data_diff, prepare_patch
 from gh_slate.rendering import SlateContext, render
+from gh_slate.rendering.engine import migration_required
 from gh_slate.rendering.routing import selected_view
 
 if TYPE_CHECKING:
@@ -497,6 +498,8 @@ def _desired_state(
     meta: MetaSnapshot | None,
 ) -> tuple[State, str, str, str, bool]:
     previous = None if existing is None else existing.state
+    if previous is not None and previous.meta is None and request.renderer is None:
+        raise migration_required()
     if previous is None:
         data = {} if request.data is None else request.data
         renderer = request.renderer
@@ -506,7 +509,7 @@ def _desired_state(
                 "creating a slate requires a renderer",
                 code="renderer_required",
                 exit_code=ExitCode.VALIDATION,
-                hints=("pass a Jinja, table, or list renderer",),
+                hints=("pass --profile or --template",),
             )
         reuse_renderer = False
         reuse_schema = False

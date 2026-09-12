@@ -7,9 +7,9 @@ description: >-
    Markdown table/list comment, structured comment data query or update, slate
    verification, drift repair, or managed-comment cleanup, even if they do not
    say "gh-slate".
-compatibility: Requires gh, authenticated GitHub access, and gh-slate >=0.1.0. Dual-prefix recipes use Bash; on Windows use the gh-slate Python CLI directly.
 license: MIT
 metadata:
+   compatibility: Requires gh, authenticated GitHub access, and gh-slate >=0.1.0. Dual-prefix recipes use Bash; on Windows use the gh-slate Python CLI directly.
    primary-tools:
       - gh-slate
       - gh
@@ -18,8 +18,8 @@ metadata:
 
 # gh-slate
 
-Coordinate the CLI; do not recreate its state codec, jq path semantics,
-renderer, schema validator, or GitHub client.
+Use profiles and typed JSON to maintain one named dashboard comment. The CLI
+owns encoding, validation, rendering, conflict checks, and publishing.
 
 ## Resolve one command prefix
 
@@ -101,275 +101,121 @@ gh auth status
 "${GH_SLATE[@]}" doctor --json
 ```
 
-## Safe operating workflow
+## Definitions and context
 
-1. Resolve an explicit `OWNER_REPO`, Issue/PR `TARGET`, and stable lowercase
-   `NAME`. Keep one name for one producer and purpose.
-2. Inspect an existing slate before mutation. Read its revision, state hash,
-   drift status, renderer, and URL.
-3. Validate candidate data against the stored schema when one exists. Preview a
-   new renderer or material layout change locally and with `apply --dry-run`.
-4. Prefer one complete `apply --data FILE` snapshot, especially in CI.
-   Incremental jq mutations are for a single writer and should pin the revision
-   read in step 2.
-5. Treat the returned JSON as the write evidence. Distinguish `created`,
-   `updated`, `repaired`, `deleted`, and `unchanged`; do not claim success
-   before the command returns a confirmed result.
-6. On conflict or unknown outcome, refetch and report what is observed. Do not
-   blindly replay any mutation. In particular, one missing read after an
-   unknown create is not proof that GitHub rejected the POST.
+Check installed apply help for `--profile` and `--patch` before using these
+recipes. Earlier pre-release checkouts may share version 0.1.0 while exposing
+the former command surface; update that installation first.
 
-Inspect and validate:
+Choose an explicit config path with `--config` or `GH_SLATE_CONFIG` and a named
+`--profile`. Paths are relative to the config; there is no special directory or
+config search. A profile stores schema plus one template or a JSON Pointer
+`view_by` and complete `views`. Direct `--template` plus optional `--schema`
+works too; it cannot combine with `--profile`.
 
-```bash
-"${GH_SLATE[@]}" view "$NAME" \
-  --target "$TARGET" \
-  --repo "$OWNER_REPO" \
-  --json
+Templates use business `data` and read-only `meta`. Apply fetches target
+identity from GitHub. Offline rendering can use `--meta FILE`; absent metadata
+has null host/repository/target. Store the analyzed revision and run provenance
+in `data.source`, not in live metadata. Producers decide outcomes; missing or
+unknown routed values fail rather than implying success.
 
-"${GH_SLATE[@]}" state verify "$NAME" \
-  --target "$TARGET" \
-  --repo "$OWNER_REPO" \
-  --json
+Ordinary strings are escaped. Use `md_text`, `md_link`, `md_code`,
+`md_codeblock`, `md_table`, `md_list`, and `md_details` to compose Markdown.
+Templates and schemas are public inside the managed comment. Use trusted default-branch
+sources in privileged workflows and never embed credentials or private logs.
 
-"${GH_SLATE[@]}" schema validate "$NAME" candidate.json \
-  --target "$TARGET" \
-  --repo "$OWNER_REPO" \
-  --json
-```
+## Inspect, preview, publish
 
-## Trust boundaries
-
-- Keep credentials, tokens, private logs, and secrets out of data, schemas, and
-  templates. Put large or sensitive artifacts elsewhere and publish a bounded
-  summary plus links.
-- Treat visible Markdown as a projection. Query canonical state with
-  `data get` or `state export`; never reverse-parse Markdown into typed data.
-- Treat Jinja source and jq filters as executable input. A privileged workflow
-  must use trusted default-branch templates, schemas, filters, and reducer code,
-  never a fork checkout.
-- Fail closed on drift, duplicate markers, schema/render errors, stale
-  revisions, or an unknown remote outcome. There is no generic force path.
-- GitHub comment updates do not provide server-side compare-and-swap.
-  Revision checks and second reads reduce risk but do not make concurrent
-  incremental writes atomic.
-- GitHub Actions concurrency groups serialize matching jobs but do not promise
-  FIFO event order. Treat webhook payloads as wake-ups and target identity, not
-  as current Issue or Pull Request state. When the slate mirrors GitHub fields,
-  refetch the current resource inside the serialized writer immediately before
-  `apply`; do not persist an old event's action, title, state, draft flag, or
-  head SHA.
-
-## Copy-ready recipes
-
-### Preview and apply a table snapshot
-
-Render locally first:
+Resolve `TARGET`, `OWNER_REPO`, and a stable lowercase `NAME` from the task.
+Inspect existing data and revision before partial changes; never reverse-parse Markdown
+into typed data:
 
 ```bash
-"${GH_SLATE[@]}" render "$NAME" \
-  --data ci.json \
-  --schema ci.schema.json \
-  --table '.jobs' \
-  --columns name,status,duration_ms \
-  --title 'CI matrix'
+"${GH_SLATE[@]}" view "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --json
+"${GH_SLATE[@]}" state export "$NAME" --target "$TARGET" --repo "$OWNER_REPO"
 ```
 
-Then exercise the remote read/validation path without writing:
+Preview a selected profile, then use the same candidate for publishing within
+the user's authorized scope:
 
 ```bash
-"${GH_SLATE[@]}" apply "$NAME" \
-  --target "$TARGET" \
-  --repo "$OWNER_REPO" \
-  --mode upsert \
-  --data ci.json \
-  --schema ci.schema.json \
-  --table '.jobs' \
-  --columns name,status,duration_ms \
-  --title 'CI matrix' \
-  --dry-run \
-  --json
+"${GH_SLATE[@]}" render "$NAME" --config boards.toml --profile review --data review.json
+"${GH_SLATE[@]}" render "$NAME" --template report.j2 --schema report.schema.json --data report.json --meta target.json
+"${GH_SLATE[@]}" apply "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --config boards.toml --profile review --data review.json --dry-run --json
+"${GH_SLATE[@]}" apply "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --config boards.toml --profile review --data review.json --json
 ```
 
-Apply exactly one complete snapshot after the preview is correct:
+Later full snapshots need only data. Definitions are embedded and are reloaded
+only when explicitly selected, even in a new process without the original files:
 
 ```bash
-"${GH_SLATE[@]}" apply "$NAME" \
-  --target "$TARGET" \
-  --repo "$OWNER_REPO" \
-  --mode upsert \
-  --data ci.json \
-  --schema ci.schema.json \
-  --table '.jobs' \
-  --columns name,status,duration_ms \
-  --title 'CI matrix' \
-  --json
+"${GH_SLATE[@]}" apply "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --data next.json --json
+"${GH_SLATE[@]}" state verify "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --json
 ```
 
-For another presentation, preview exactly one trusted renderer:
+## Partial updates
+
+Use RFC 6902 operations on the data root. Prefer stable object keys such as
+`/findings/F17/status` over moving array positions. Read `REVISION` from the
+preceding view. Patch requires that revision and an existing instance:
 
 ```bash
-"${GH_SLATE[@]}" render "$NAME" \
-  --data release.json \
-  --list '.changes' \
-  --title 'Release notes'
-
-"${GH_SLATE[@]}" render "$NAME" \
-  --data dashboard.json \
-  --schema dashboard.schema.json \
-  --template .github/slates/dashboard.md.j2
+"${GH_SLATE[@]}" apply "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --patch patch.json --if-revision "$REVISION" --dry-run --json
+"${GH_SLATE[@]}" apply "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --patch patch.json --if-revision "$REVISION" --json
 ```
 
-### Query structured data
+Patch and data are mutually exclusive. A patch cannot change metadata,
+controller, or definition; explicitly selecting a new profile can replace the
+definition in the same apply. The full batch is validated and routed once after
+all operations, so cross-view transitions can remove old fields and add the new
+shape together. A failed test, stale revision, invalid schema, or unknown view
+performs no write. No-op keeps revision. There are no embedded jq mutations,
+editor wrappers, or Schema inference commands; use JSON output with external
+query tools when needed.
 
-Queries read the embedded typed state, not the visible Markdown:
+## Conflicts and recovery
 
-```bash
-"${GH_SLATE[@]}" data get "$NAME" \
-  '.jobs[] | select(.status == "failed")' \
-  --target "$TARGET" \
-  --repo "$OWNER_REPO" \
-  --compact-output \
-  --exit-status
-```
+Use a single writer per target/name. GitHub has no server-side compare-and-swap and
+concurrency groups do not guarantee FIFO event order. For a current dashboard, refetch the current resource
+inside the writer. Preserve the actual
+analyzed commit for reviews and benchmarks instead of relabelling older work.
+See the repository [Actions examples](https://github.com/ShigureLab/gh-slate/tree/main/examples/actions)
+for trusted fork reducers and single-writer publication.
 
-### Perform a revision-pinned typed update
-
-Set `REVISION` from the preceding `view --json` result. Keep identifiers or
-large integers that jq must preserve exactly as strings.
-
-```bash
-"${GH_SLATE[@]}" data update "$NAME" \
-  '.jobs |= map(if .name == $name then . + $result else . end)' \
-  --arg name linux \
-  --argjson result @linux-result.json \
-  --target "$TARGET" \
-  --repo "$OWNER_REPO" \
-  --if-revision "$REVISION" \
-  --json
-```
-
-For static paths, retain JSON types explicitly. Use `data update` when path
-selection itself must be computed from current data:
-
-```bash
-"${GH_SLATE[@]}" data set "$NAME" '.coverage' \
-  --value-file coverage.json \
-  --target "$TARGET" \
-  --repo "$OWNER_REPO" \
-  --if-revision "$REVISION" \
-  --json
-
-"${GH_SLATE[@]}" data delete "$NAME" '.legacy' \
-  --ignore-missing \
-  --target "$TARGET" \
-  --repo "$OWNER_REPO" \
-  --if-revision "$REVISION" \
-  --json
-```
-
-### Publish one full snapshot from GitHub Actions
-
-Aggregate parallel job outputs before this single writer:
-
-```bash
-"${GH_SLATE[@]}" apply ci \
-  --target "$PR_NUMBER" \
-  --repo "$GITHUB_REPOSITORY" \
-  --data ci.json \
-  --schema ci.schema.json \
-  --table '.jobs' \
-  --columns name,status,duration_ms \
-  --json
-```
-
-Pair it with the narrowest target permission and a target/name concurrency key:
-
-```yaml
-permissions:
-   contents: read
-   pull-requests: write
-
-concurrency:
-   group: gh-slate-${{ github.repository_id }}-${{ github.event.pull_request.number }}-ci
-   cancel-in-progress: false
-```
-
-Concurrency alone is not a freshness check. If `ci.json` includes Issue or
-Pull Request fields copied from a webhook, fetch those fields again inside this
-serialized job immediately before the apply. The repository's direct and
-fork-safe examples implement that pattern.
-
-For fork Pull Requests, use the bounded reducer and trusted consumer pattern in
-the repository's
-[Actions examples](https://github.com/ShigureLab/gh-slate/tree/main/examples/actions);
-never execute a downloaded artifact.
-
-### Resolve visible drift
-
-Offer the operator two explicit choices. Repair discards only the visible edit
-and rerenders canonical state:
-
-```bash
-"${GH_SLATE[@]}" repair "$NAME" \
-  --from-state \
-  --target "$TARGET" \
-  --repo "$OWNER_REPO" \
-  --if-revision "$REVISION" \
-  --json
-```
-
-Edit canonical data when the visible change represented an intended data
-change:
-
-```bash
-"${GH_SLATE[@]}" data edit "$NAME" \
-  --target "$TARGET" \
-  --repo "$OWNER_REPO" \
-  --if-revision "$REVISION" \
-  --json
-```
-
-### Delete a managed slate
-
-Delete only when the operator explicitly requests removal. Repeat the exact
-case-sensitive name; do not turn duplicate matches into bulk deletion:
-
-```bash
-"${GH_SLATE[@]}" delete "$NAME" \
-  --target "$TARGET" \
-  --repo "$OWNER_REPO" \
-  --confirm "$NAME" \
-  --json
-```
-
-### Recover an unknown remote outcome
-
-Treat `post_write_verification_unknown`, `write_timeout_unknown`,
-`write_outcome_unknown`, `repair_outcome_unknown`, and
-`delete_outcome_unknown` as unresolved remote state, not ordinary retryable
-errors. Perform only read operations first:
+For `post_write_verification_unknown`, `write_timeout_unknown`,
+`write_outcome_unknown`, `repair_outcome_unknown`, or `delete_outcome_unknown`,
+treat the unknown outcome as unresolved and inspect before any later write;
+never blindly replay:
 
 ```bash
 "${GH_SLATE[@]}" list --target "$TARGET" --repo "$OWNER_REPO" --json
 "${GH_SLATE[@]}" view "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --json
-"${GH_SLATE[@]}" state verify "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --json
 ```
 
-Stop when the intended state is present. For an existing slate whose outcome
-is now unambiguous, refetch and pin any later mutation to the newly observed
-revision. If a slate was missing before an unknown create and is still missing
-on the first refetch, do not create or upsert it again: keep observing the
-target's comments/API until the original managed comment can be identified.
-Only an explicit operator decision may accept the duplicate-comment risk.
+Stop when the intended state is observed. If an unknown create is still absent,
+one read is not proof that GitHub rejected it. Keep the outcome unresolved;
+another create requires a deliberate operator decision accepting duplicate risk.
+Do not turn duplicate matches into bulk cleanup.
 
-## Report the result
+Visible drift blocks normal apply. When the user wants to discard the visible
+edit, restore V2 state with the observed revision:
 
-For a write, report the returned `action`, `revision`, `state_sha256`, and
-comment URL. Say when a live write was not attempted. A skipped credentialed
-test, dry run, or parser check is not evidence that GitHub was updated.
+```bash
+"${GH_SLATE[@]}" repair "$NAME" --from-state --target "$TARGET" --repo "$OWNER_REPO" --if-revision "$REVISION" --json
+```
 
-For an unfamiliar option, inspect the installed command's help output first. The
-repository [README](https://github.com/ShigureLab/gh-slate#readme) is the user
-guide; `docs/cli.md` is the early protocol and implementation record, not a
-required operating manual.
+V1 remains readable/exportable/deletable; verification covers its envelope only.
+Update or repair requires explicit migration by applying a V2 profile/template.
+Translate old `slate.*` variables to `meta.*`; do not execute or guess a legacy
+jq renderer. A drifted V1 still requires resolving the drift deliberately.
+
+Delete when requested, using the exact name:
+
+```bash
+"${GH_SLATE[@]}" delete "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --confirm "$NAME" --json
+```
+
+Report the confirmed action (`created`, `updated`, `unchanged`, or recovery action),
+revision, and comment URL. Distinguish dry-run from
+publication. For an unfamiliar flag, read installed command help; the repository
+[README](https://github.com/ShigureLab/gh-slate#readme) provides runnable profiles.

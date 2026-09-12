@@ -178,6 +178,8 @@ def test_cli_to_gh_contract_create_update_unchanged_and_readback(
         lambda: reader,
     )
 
+    template = tmp_path / "table.j2"
+    template.write_text('{{ data.jobs | md_table(columns=["name", "status"]) }}')
     data = tmp_path / "data.json"
     data.write_text(
         '{"jobs":[{"name":"linux","status":"pass"}]}',
@@ -193,10 +195,8 @@ def test_cli_to_gh_contract_create_update_unchanged_and_readback(
         "create",
         "--data",
         str(data),
-        "--table",
-        ".jobs",
-        "--columns",
-        "name,status",
+        "--template",
+        str(template),
         "--json",
     ]
     assert run(create, prog="gh slate") == 0

@@ -1,15 +1,8 @@
 from __future__ import annotations
 
-import re
-import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from decimal import Decimal, DecimalException
-from typing import TYPE_CHECKING, NoReturn, cast
-
-from referencing import Registry
-from referencing.exceptions import NoSuchResource, Unresolvable
-from referencing.jsonschema import DRAFT202012
+from typing import cast
 
 from gh_slate.codec import (
     ControllerV1,
@@ -35,27 +28,11 @@ from gh_slate.codec.model import (
 )
 from gh_slate.codec.text import utf8_size
 from gh_slate.rendering.errors import RenderingError
-from gh_slate.rendering.jinja import SlateContext, jinja_target_fields, render_jinja
-from gh_slate.rendering.jq import select_one
+from gh_slate.rendering.jinja import SlateContext, render_jinja
 from gh_slate.rendering.limits import DEFAULT_RENDER_LIMITS, RenderLimits
-from gh_slate.rendering.list import render_list
-from gh_slate.rendering.model import (
-    ListRendererV1,
-    TableRendererV1,
-    parse_renderer_descriptor,
-)
 from gh_slate.rendering.routing import selected_view
-from gh_slate.rendering.table import render_table, resolve_table_renderer
 from gh_slate.schema import validate_data, validate_schema
-from gh_slate.schema._interop import SlateDraft202012Validator
-from gh_slate.schema.keywords import evaluation_budget
 
-if TYPE_CHECKING:
-    from referencing._core import Resolver
-
-_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_JQ_INDEX_LITERAL = re.compile(r"-?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
-_MAX_SCHEMA_PROJECTION_PARTS = 2048
 _PREFLIGHT_CONTROLLER_LOGIN = "0123456789abcdefghijklmnopqrstuvwxyz-a0"
 _PREFLIGHT_CONTROLLER_COMPRESSED_RESERVE = 4 * MAX_GITHUB_LOGIN_BYTES
 _PREFLIGHT_CONTROLLER_ENCODED_RESERVE = 4 * ((_PREFLIGHT_CONTROLLER_COMPRESSED_RESERVE + 2) // 3) + 4
@@ -83,7 +60,15 @@ class MaterializedComment:
     encoded: EncodedComment
 
 
-def jinja_descriptor(source: str, *, version: int = 1) -> RendererDescriptorV1:
+def migration_required() -> RenderingError:
+    return RenderingError(
+        "legacy state requires an explicit V2 definition before rendering or updating",
+        code="state_migration_required",
+        hints=("use apply NAME --profile PROFILE --config FILE or apply NAME --template FILE to migrate stored data",),
+    )
+
+
+def jinja_descriptor(source: str, *, version: int = 2) -> RendererDescriptorV1:
     if not isinstance(source, str):
         raise RenderingError(
             "Jinja source must be text",
@@ -97,7 +82,7 @@ def jinja_descriptor(source: str, *, version: int = 1) -> RendererDescriptorV1:
 
 
 def _parse_jinja_source(descriptor: RendererDescriptorV1, data: object) -> tuple[str, str | None]:
-    if descriptor.version not in {1, 2}:
+    if descriptor.kind != "jinja" or descriptor.version != 2:
         raise RenderingError(
             "renderer version is not supported for rendering",
             code="renderer_unsupported",
@@ -107,7 +92,7 @@ def _parse_jinja_source(descriptor: RendererDescriptorV1, data: object) -> tuple
             },
         )
     config = descriptor.configuration
-    allowed = {"source", "profile", "views", "view_by"} if descriptor.version == 2 else {"source"}
+    allowed = {"source", "profile", "views", "view_by"}
     if set(config) - allowed:
         raise RenderingError("Jinja renderer contains unknown fields", code="renderer_config_invalid")
     if "profile" in config and (
@@ -170,431 +155,6 @@ def _enforce_components(
     )
 
 
-def _selector_path(selector: str) -> tuple[str | int, ...] | None:
-    """Parse the non-transforming jq subset usable for schema projection."""
-
-    selector = selector.strip()
-    if selector == ".":
-        return ()
-    if not selector.startswith("."):
-        return None
-
-    path: list[str | int] = []
-    position = 0
-    while position < len(selector):
-        if selector[position] == ".":
-            position += 1
-            if position < len(selector) and selector[position] == "[":
-                continue
-            match = _IDENTIFIER.match(selector, position)
-            if match is None:
-                return None
-            path.append(match.group())
-            position = match.end()
-            continue
-        if not selector.startswith("[", position):
-            return None
-        token_start = position + 1
-        if token_start >= len(selector):
-            return None
-        if selector[token_start] != '"':
-            closing_bracket = selector.find("]", token_start)
-            if closing_bracket < 0:
-                return None
-            token = selector[token_start:closing_bracket].strip()
-            if _JQ_INDEX_LITERAL.fullmatch(token) is None:
-                return None
-            try:
-                numeric_index = Decimal(token)
-                if (
-                    not numeric_index.is_finite()
-                    or numeric_index != numeric_index.to_integral_value()
-                    or numeric_index < -sys.maxsize - 1
-                    or numeric_index > sys.maxsize
-                ):
-                    return None
-                index = int(numeric_index)
-            except (DecimalException, ValueError, OverflowError):
-                return None
-            path.append(index)
-            position = closing_bracket + 1
-            continue
-        cursor = token_start + 1
-        escaped = False
-        while cursor < len(selector):
-            character = selector[cursor]
-            if escaped:
-                escaped = False
-            elif character == "\\":
-                escaped = True
-            elif character == '"':
-                break
-            cursor += 1
-        closing_quote = cursor
-        closing_bracket = closing_quote + 1
-        if closing_quote >= len(selector) or closing_bracket >= len(selector) or selector[closing_bracket] != "]":
-            return None
-        token = selector[token_start : closing_quote + 1]
-        try:
-            key = strict_loads(token)
-        except Exception:
-            return None
-        if not isinstance(key, str):
-            return None
-        path.append(key)
-        position = closing_bracket + 1
-    return tuple(path)
-
-
-def _deny_schema_retrieve(uri: str) -> NoReturn:
-    raise NoSuchResource(ref=uri)
-
-
-@dataclass(frozen=True, slots=True)
-class _ProjectionInstances:
-    values: tuple[object, ...] = ()
-
-
-_NO_PROJECTION_INSTANCES = _ProjectionInstances()
-
-
-def _schema_matches(
-    schema: bool | Mapping[str, object],
-    resolver: Resolver,
-    instance: object,
-) -> bool | None:
-    if isinstance(schema, bool):
-        return schema
-    try:
-        schema_resolver = resolver.in_subresource(
-            DRAFT202012.create_resource(schema),
-        )
-        validator = SlateDraft202012Validator(schema)
-        return (
-            next(
-                validator.descend(
-                    instance,
-                    schema,
-                    resolver=schema_resolver,
-                ),
-                None,
-            )
-            is None
-        )
-    except Exception:
-        # Projection is advisory. If a condition cannot be evaluated locally,
-        # retaining both outcomes is safer than silently dropping columns.
-        return None
-
-
-def _projects_for_instances(
-    schema: bool | Mapping[str, object],
-    resolver: Resolver,
-    instances: _ProjectionInstances,
-) -> bool:
-    if not instances.values:
-        return True
-    for instance in instances.values:
-        matched = _schema_matches(schema, resolver, instance)
-        if matched is not False:
-            return True
-    return False
-
-
-@dataclass(slots=True)
-class _SchemaProjection:
-    parts_seen: int = 0
-
-    def parts(
-        self,
-        schema: object,
-        resolver: Resolver,
-        *,
-        instances: _ProjectionInstances = _NO_PROJECTION_INSTANCES,
-        active: frozenset[int] = frozenset(),
-    ) -> tuple[tuple[Mapping[str, object], Resolver], ...]:
-        if not isinstance(schema, Mapping):
-            return ()
-        typed = cast("Mapping[str, object]", schema)
-        identity = id(typed)
-        if identity in active or self.parts_seen >= _MAX_SCHEMA_PROJECTION_PARTS:
-            return ()
-        self.parts_seen += 1
-        nested_resolver = resolver.in_subresource(
-            DRAFT202012.create_resource(typed),
-        )
-        next_active = active | {identity}
-        result: list[tuple[Mapping[str, object], Resolver]] = []
-
-        # Draft 2020-12 permits siblings next to references. Expand the
-        # referenced base first, then retain this schema's own annotations.
-        for keyword in ("$ref", "$dynamicRef"):
-            reference = typed.get(keyword)
-            if not isinstance(reference, str):
-                continue
-            try:
-                resolved = nested_resolver.lookup(reference)
-            except Unresolvable:
-                continue
-            result.extend(
-                self.parts(
-                    resolved.contents,
-                    resolved.resolver,
-                    instances=instances,
-                    active=next_active,
-                )
-            )
-
-        result.append((typed, nested_resolver))
-        all_of = typed.get("allOf")
-        if isinstance(all_of, tuple):
-            for subschema in all_of:
-                result.extend(
-                    self.parts(
-                        subschema,
-                        nested_resolver,
-                        instances=instances,
-                        active=next_active,
-                    )
-                )
-        for keyword in ("oneOf", "anyOf"):
-            alternatives = typed.get(keyword)
-            if not isinstance(alternatives, tuple):
-                continue
-            for subschema in alternatives:
-                if not isinstance(subschema, (bool, Mapping)) or not _projects_for_instances(
-                    cast("bool | Mapping[str, object]", subschema),
-                    nested_resolver,
-                    instances,
-                ):
-                    continue
-                result.extend(
-                    self.parts(
-                        subschema,
-                        nested_resolver,
-                        instances=instances,
-                        active=next_active,
-                    )
-                )
-        condition = typed.get("if")
-        if isinstance(condition, (bool, Mapping)):
-            outcomes: set[bool] = set()
-            if not instances.values:
-                outcomes.update((condition,) if isinstance(condition, bool) else (False, True))
-            else:
-                for instance in instances.values:
-                    matched = _schema_matches(
-                        cast("bool | Mapping[str, object]", condition),
-                        nested_resolver,
-                        instance,
-                    )
-                    if matched is None:
-                        outcomes.update((False, True))
-                        break
-                    outcomes.add(matched)
-            for outcome, keyword in ((True, "then"), (False, "else")):
-                subschema = typed.get(keyword)
-                if outcome not in outcomes or not isinstance(subschema, Mapping):
-                    continue
-                result.extend(
-                    self.parts(
-                        subschema,
-                        nested_resolver,
-                        instances=instances,
-                        active=next_active,
-                    )
-                )
-        dependent = typed.get("dependentSchemas")
-        if isinstance(dependent, Mapping):
-            for trigger, subschema in dependent.items():
-                if not any(
-                    isinstance(instance, Mapping) and trigger in instance for instance in instances.values
-                ) or not isinstance(subschema, Mapping):
-                    continue
-                result.extend(
-                    self.parts(
-                        subschema,
-                        nested_resolver,
-                        instances=instances,
-                        active=next_active,
-                    )
-                )
-        return tuple(result)
-
-
-def _project_table_item_schema(
-    snapshot: SchemaSnapshotV1 | None,
-    selector: str,
-    data: Mapping[str, JsonValue],
-    *,
-    max_rows: int,
-) -> object:
-    if snapshot is None or not isinstance(snapshot.document, Mapping):
-        return None
-    path = _selector_path(selector)
-    if path is None:
-        return None
-
-    root = snapshot.document
-    projection = _SchemaProjection()
-    resolver: Resolver = Registry(
-        retrieve=_deny_schema_retrieve,
-    ).resolver_with_root(
-        DRAFT202012.create_resource(root),
-    )
-    candidates: tuple[tuple[object, Resolver, _ProjectionInstances], ...] = (
-        (root, resolver, _ProjectionInstances((data,))),
-    )
-    for key in path:
-        next_candidates: list[tuple[object, Resolver, _ProjectionInstances]] = []
-        for candidate, candidate_resolver, candidate_instances in candidates:
-            for fragment, fragment_resolver in projection.parts(
-                candidate,
-                candidate_resolver,
-                instances=candidate_instances,
-            ):
-                subschemas: list[object] = []
-                if isinstance(key, str):
-                    property_covered = False
-                    properties = fragment.get("properties")
-                    if isinstance(properties, Mapping) and key in properties:
-                        subschemas.append(cast("Mapping[str, object]", properties)[key])
-                        property_covered = True
-                    pattern_covered = False
-                    pattern_properties = fragment.get("patternProperties")
-                    if isinstance(pattern_properties, Mapping):
-                        for pattern_value, pattern_schema in pattern_properties.items():
-                            matched = _schema_matches(
-                                {"pattern": str(pattern_value)},
-                                fragment_resolver,
-                                key,
-                            )
-                            if matched is not False:
-                                subschemas.append(pattern_schema)
-                            if matched is True:
-                                pattern_covered = True
-                    if not property_covered and not pattern_covered:
-                        additional_properties = fragment.get("additionalProperties")
-                        if isinstance(additional_properties, (bool, Mapping)):
-                            subschemas.append(additional_properties)
-                else:
-                    schema_indexes: tuple[int, ...]
-                    if key >= 0:
-                        schema_indexes = (key,)
-                    else:
-                        schema_indexes = tuple(
-                            dict.fromkeys(
-                                len(instance) + key
-                                for instance in candidate_instances.values
-                                if isinstance(instance, tuple) and len(instance) + key >= 0
-                            )
-                        )
-                    prefix_items = fragment.get("prefixItems")
-                    for schema_index in schema_indexes:
-                        if isinstance(prefix_items, tuple) and schema_index < len(prefix_items):
-                            subschemas.append(prefix_items[schema_index])
-                        else:
-                            items = fragment.get("items")
-                            if isinstance(items, (bool, Mapping)):
-                                subschemas.append(items)
-                for subschema in subschemas:
-                    if not isinstance(subschema, (bool, Mapping)):
-                        continue
-                    if isinstance(key, str):
-                        child_instances = tuple(
-                            cast("Mapping[object, object]", instance)[key]
-                            for instance in candidate_instances.values
-                            if isinstance(instance, Mapping) and key in instance
-                        )
-                    else:
-                        child_instances = tuple(
-                            instance[key]
-                            for instance in candidate_instances.values
-                            if isinstance(instance, tuple) and -len(instance) <= key < len(instance)
-                        )
-                    next_candidates.append(
-                        (
-                            subschema,
-                            fragment_resolver,
-                            _ProjectionInstances(child_instances),
-                        )
-                    )
-        if not next_candidates:
-            return None
-        candidates = tuple(next_candidates)
-
-    item_candidates: list[tuple[object, Resolver, _ProjectionInstances]] = []
-    for candidate, candidate_resolver, candidate_instances in candidates:
-        for fragment, fragment_resolver in projection.parts(
-            candidate,
-            candidate_resolver,
-            instances=candidate_instances,
-        ):
-            prefix_items = fragment.get("prefixItems")
-            prefix_count = min(len(prefix_items), max_rows) if isinstance(prefix_items, tuple) else 0
-            if isinstance(prefix_items, tuple):
-                for row_index, row_schema in enumerate(prefix_items[:max_rows]):
-                    if not isinstance(row_schema, (bool, Mapping)):
-                        continue
-                    rows = tuple(
-                        instance[row_index]
-                        for instance in candidate_instances.values
-                        if isinstance(instance, tuple) and row_index < len(instance)
-                    )
-                    item_candidates.append(
-                        (
-                            row_schema,
-                            fragment_resolver,
-                            _ProjectionInstances(rows),
-                        )
-                    )
-            items = fragment.get("items")
-            if isinstance(items, (bool, Mapping)) and max_rows > prefix_count:
-                rows: list[object] = []
-                for instance in candidate_instances.values:
-                    if isinstance(instance, tuple):
-                        rows.extend(instance[prefix_count:max_rows])
-                item_candidates.append(
-                    (
-                        items,
-                        fragment_resolver,
-                        _ProjectionInstances(tuple(rows)),
-                    )
-                )
-
-    properties_in_order: dict[str, object] = {}
-    for candidate, candidate_resolver, candidate_instances in item_candidates:
-        for fragment, _fragment_resolver in projection.parts(
-            candidate,
-            candidate_resolver,
-            instances=candidate_instances,
-        ):
-            properties = fragment.get("properties")
-            if not isinstance(properties, Mapping):
-                continue
-            for key in properties:
-                if isinstance(key, str):
-                    properties_in_order.setdefault(key, {})
-
-    return {"properties": properties_in_order} if properties_in_order else None
-
-
-def _table_item_schema(
-    snapshot: SchemaSnapshotV1 | None,
-    selector: str,
-    data: Mapping[str, JsonValue],
-    *,
-    max_rows: int,
-) -> object:
-    with evaluation_budget():
-        return _project_table_item_schema(
-            snapshot,
-            selector,
-            data,
-            max_rows=max_rows,
-        )
-
-
 def _enforce_output(markdown: str, limits: RenderLimits) -> None:
     actual = utf8_size(markdown, field="rendered Markdown")
     if actual > limits.max_output_bytes:
@@ -655,23 +215,6 @@ def _preflight_materialization(
     )
 
 
-def _missing_jinja_target_fields(
-    source: str,
-    slate: SlateContext,
-) -> tuple[str, ...]:
-    referenced = jinja_target_fields(source)
-    missing: list[str] = []
-    if "repository" in referenced and (not isinstance(slate.repository, str) or not slate.repository):
-        missing.append("repository")
-    if "number" in referenced and (
-        isinstance(slate.number, bool) or not isinstance(slate.number, int) or slate.number <= 0
-    ):
-        missing.append("number")
-    if "url" in referenced and (not isinstance(slate.url, str) or not slate.url):
-        missing.append("url")
-    return tuple(missing)
-
-
 def _render(
     data: object,
     renderer: RendererDescriptorV1,
@@ -682,65 +225,16 @@ def _render(
     limits: RenderLimits = DEFAULT_RENDER_LIMITS,
     preflight: bool,
 ) -> RenderResult:
-    if renderer.kind == "jinja" and renderer.version == 2:
-        meta = MetaSnapshot.local(slate.name) if meta is None else meta
-        if meta.name != slate.name:
-            raise RenderingError("meta.slate.name must match the slate name", code="render_context_mismatch")
-    elif meta is not None:
-        raise RenderingError("meta requires a jinja@2 template", code="render_context_mismatch")
+    if renderer.kind != "jinja" or renderer.version != 2:
+        raise migration_required()
+    meta = MetaSnapshot.local(slate.name) if meta is None else meta
+    if meta.name != slate.name:
+        raise RenderingError("meta.slate.name must match the slate name", code="render_context_mismatch")
     canonical, snapshot = _canonical_data(data, schema)
     resolved_descriptor = renderer
     _enforce_components(canonical, snapshot, renderer)
-
-    view = None
-    if renderer.kind == "jinja":
-        source, view = _parse_jinja_source(renderer, canonical)
-        missing_target_fields = (
-            _missing_jinja_target_fields(source, slate) if preflight and renderer.version == 1 else ()
-        )
-        if missing_target_fields:
-            raise RenderingError(
-                "target-dependent Jinja previews require their real GitHub target context",
-                code="render_context_required",
-                details={"missing_fields": list(missing_target_fields)},
-                hints=("use apply --dry-run with the intended --target and --repo",),
-            )
-        visible = render_jinja(
-            source,
-            data=canonical,
-            slate=slate,
-            meta=meta,
-            version=renderer.version,
-            render_limits=limits,
-        )
-    else:
-        parsed = parse_renderer_descriptor(renderer)
-        selected = select_one(canonical, parsed.selector)
-        if isinstance(parsed, TableRendererV1):
-            item_schema = (
-                None
-                if parsed.columns
-                else _table_item_schema(
-                    snapshot,
-                    parsed.selector,
-                    canonical,
-                    max_rows=min(parsed.max_rows, limits.max_table_rows),
-                )
-            )
-            resolved = resolve_table_renderer(
-                parsed,
-                selected,
-                item_schema,
-            )
-            resolved_descriptor = resolved.to_descriptor()
-            visible = render_table(selected, resolved, limits)
-        elif isinstance(parsed, ListRendererV1):
-            visible = render_list(selected, parsed, limits)
-        else:  # pragma: no cover - exhaustive for the current RendererV1 alias
-            raise RenderingError(
-                "renderer kind is not supported for rendering",
-                code="renderer_unsupported",
-            )
+    source, view = _parse_jinja_source(renderer, canonical)
+    visible = render_jinja(source, data=canonical, slate=slate, meta=meta, render_limits=limits)
 
     markdown = normalize_visible_markdown(visible)
     _enforce_output(markdown, limits)
@@ -804,21 +298,8 @@ def render_state(
             code="render_context_mismatch",
             details={"context_name": context.name, "state_name": state.name},
         )
-    if state.renderer.kind == "jinja" and state.renderer.version == 1:
-        missing_fields: list[str] = []
-        if not isinstance(context.repository, str) or not context.repository:
-            missing_fields.append("repository")
-        if isinstance(context.number, bool) or not isinstance(context.number, int) or context.number <= 0:
-            missing_fields.append("number")
-        if not isinstance(context.url, str) or not context.url:
-            missing_fields.append("url")
-        if missing_fields:
-            raise RenderingError(
-                "rerendering a Jinja state requires its complete target context",
-                code="render_context_required",
-                details={"missing_fields": missing_fields},
-                hints=("supply the repository, issue or pull request number, and URL from the comment target",),
-            )
+    if state.format != STATE_FORMAT_V2:
+        raise migration_required()
     rendered = _render(
         state.data,
         state.renderer,
@@ -828,24 +309,6 @@ def render_state(
         limits=limits,
         preflight=False,
     )
-    if state.renderer.kind != "jinja":
-        parsed = parse_renderer_descriptor(state.renderer)
-        resolved = parse_renderer_descriptor(rendered.renderer)
-        if (
-            isinstance(parsed, TableRendererV1)
-            and not parsed.columns
-            and isinstance(resolved, TableRendererV1)
-            and resolved.columns
-        ):
-            # An unresolved table descriptor is not stable state: schema
-            # canonicalization can reorder its properties before the next
-            # render. Persist the columns chosen from the original schema.
-            return rendered
-
-    # Decoding and rerendering an existing resolved state must not silently
-    # migrate its renderer descriptor. This preserves permanent state-v1
-    # fixtures and unknown default spellings byte-for-byte at the state
-    # boundary.
     return replace(rendered, renderer=state.renderer)
 
 

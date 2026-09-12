@@ -1,0 +1,26 @@
+{
+   "summary": "Synthetic measurements: tokenize latency improved; peak memory increased.",
+   "source": {
+      "base_sha": "example-base-123",
+      "head_sha": "example-head-456"
+   },
+   "environment": "Same machine, Python 3.12, median of 10 runs; illustrative data.",
+   "metrics": {
+      "tokenize": {
+         "before": 100,
+         "after": 87,
+         "change": "-13%",
+         "unit": "ms"
+      },
+      "peak_memory": {
+         "before": 240,
+         "after": 252,
+         "change": "+5%",
+         "unit": "MiB"
+      }
+   },
+   "notes": [
+      "Lower latency and lower memory are preferable in this example.",
+      "The producer computes changes and decides significance."
+   ]
+}

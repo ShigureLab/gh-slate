@@ -135,8 +135,6 @@ _V2_FILTERS = {
 }
 _LOOP_GUARD_FILTER = "__gh_slate_loop_guard"
 _MAX_AST_DEPTH = 64
-_TARGET_CONTEXT_FIELDS = frozenset({"repository", "number", "url"})
-_RESERVED_CONTEXT_NAMES = frozenset({"data", "slate"})
 
 _FORBIDDEN_NODES = (
     nodes.Add,
@@ -281,13 +279,13 @@ def _environment(
     loop_budget: _LoopBudget,
     render_limits: RenderLimits,
     *,
-    version: int = 1,
+    version: int = 2,
 ) -> _SlateSandbox:
     environment = _SlateSandbox(
         loader=None,
         autoescape=False,
         undefined=StrictUndefined,
-        finalize=_finalize if version == 1 else _finalize_v2,
+        finalize=_finalize_v2,
         enable_async=False,
     )
     defined_test = environment.tests["defined"]
@@ -344,13 +342,10 @@ def _environment(
             render_limits,
         )
 
-    environment.filters["md_table"] = (
-        md_table if version == 1 else lambda value, columns=None: Markdown(md_table(value, columns))
-    )
-    environment.filters["md_list"] = md_list if version == 1 else lambda value: Markdown(md_list(value))
-    if version == 2:
-        environment.filters.update(_V2_FILTERS)
-        environment.filters.update(standard_filters)
+    environment.filters["md_table"] = lambda value, columns=None: Markdown(md_table(value, columns))
+    environment.filters["md_list"] = lambda value: Markdown(md_list(value))
+    environment.filters.update(_V2_FILTERS)
+    environment.filters.update(standard_filters)
     return environment
 
 
@@ -359,7 +354,7 @@ def _validated_syntax_tree(
     *,
     environment: _SlateSandbox,
     limits: JinjaLimits,
-    version: int = 1,
+    version: int = 2,
 ) -> tuple[nodes.Template, list[nodes.Node]]:
     if not isinstance(source, str):
         raise RenderingError(
@@ -419,9 +414,7 @@ def _validated_syntax_tree(
         (
             node
             for node in all_nodes
-            if isinstance(node, nodes.Name)
-            and node.ctx in {"param", "store"}
-            and node.name in (_RESERVED_CONTEXT_NAMES if version == 1 else {"data", "meta"})
+            if isinstance(node, nodes.Name) and node.ctx in {"param", "store"} and node.name in {"data", "meta"}
         ),
         None,
     )
@@ -449,49 +442,6 @@ def _validated_syntax_tree(
     return syntax_tree, all_nodes
 
 
-def jinja_target_fields(
-    source: str,
-    *,
-    limits: JinjaLimits = DEFAULT_JINJA_LIMITS,
-) -> frozenset[str]:
-    """Return target-dependent ``slate`` fields referenced by a template."""
-
-    environment = _environment(
-        limits,
-        _LoopBudget(limits.max_loop_iterations),
-        DEFAULT_RENDER_LIMITS,
-    )
-    _syntax_tree, all_nodes = _validated_syntax_tree(
-        source,
-        environment=environment,
-        limits=limits,
-    )
-    fields: set[str] = set()
-    direct_bases: set[int] = set()
-    for node in all_nodes:
-        field: object = None
-        base: nodes.Node | None = None
-        if isinstance(node, nodes.Getattr):
-            base = node.node
-            field = node.attr
-        elif isinstance(node, nodes.Getitem):
-            base = node.node
-            field = node.arg.value if isinstance(node.arg, nodes.Const) else None
-        if not isinstance(base, nodes.Name) or base.name != "slate":
-            continue
-        direct_bases.add(id(base))
-        if field in _TARGET_CONTEXT_FIELDS:
-            fields.add(cast("str", field))
-        elif field != "name":
-            fields.update(_TARGET_CONTEXT_FIELDS)
-
-    if any(
-        isinstance(node, nodes.Name) and node.name == "slate" and id(node) not in direct_bases for node in all_nodes
-    ):
-        fields.update(_TARGET_CONTEXT_FIELDS)
-    return frozenset(fields)
-
-
 def validate_jinja_source(source: str) -> None:
     """Validate a new definition without requiring branch-specific data."""
     limits = DEFAULT_JINJA_LIMITS
@@ -509,10 +459,12 @@ def render_jinja(
     data: object,
     slate: SlateContext,
     meta: MetaSnapshot | None = None,
-    version: int = 1,
+    version: int = 2,
     limits: JinjaLimits = DEFAULT_JINJA_LIMITS,
     render_limits: RenderLimits = DEFAULT_RENDER_LIMITS,
 ) -> str:
+    if version != 2:
+        raise RenderingError("legacy Jinja requires migration to data/meta", code="state_migration_required")
     loop_budget = _LoopBudget(limits.max_loop_iterations)
     environment = _environment(limits, loop_budget, render_limits, version=version)
     syntax_tree, _all_nodes = _validated_syntax_tree(
@@ -522,12 +474,8 @@ def render_jinja(
         version=version,
     )
     canonical_data = _canonical_mapping(data, subject="data")
-    context = {"data": canonical_data}
-    if version == 2:
-        snapshot = MetaSnapshot.local(slate.name) if meta is None else meta
-        context["meta"] = _canonical_mapping(snapshot.to_json(), subject="meta context")
-    else:
-        context["slate"] = _canonical_mapping(slate.to_mapping(), subject="slate context")
+    snapshot = MetaSnapshot.local(slate.name) if meta is None else meta
+    context = {"data": canonical_data, "meta": _canonical_mapping(snapshot.to_json(), subject="meta context")}
 
     try:
         with localcontext(_JINJA_DECIMAL_CONTEXT):
@@ -595,6 +543,5 @@ __all__ = [
     "DEFAULT_JINJA_LIMITS",
     "JinjaLimits",
     "SlateContext",
-    "jinja_target_fields",
     "render_jinja",
 ]

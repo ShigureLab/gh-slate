@@ -18,7 +18,7 @@ from gh_slate.github.target import (
     resolve_target,
     target_from_comment_url,
 )
-from gh_slate.rendering import SlateContext, render_state, select_one
+from gh_slate.rendering import SlateContext, render_state
 from gh_slate.rendering.routing import selected_view
 
 if TYPE_CHECKING:
@@ -264,10 +264,14 @@ def run_state_export(args: Namespace) -> int:
 
 def run_state_verify(args: Namespace) -> int:
     target, slate = _read_slate(args)
-    _verified_render(target, slate)
+    legacy = slate.decoded.state.meta is None
+    if not legacy:
+        _verified_render(target, slate)
     record = {
         **_view_record(target, slate),
         "verified": not slate.decoded.drifted,
+        "verification_scope": "envelope" if legacy else "state_and_render",
+        "migration_required": legacy,
     }
     if args.json:
         _write_json(record)
@@ -283,7 +287,9 @@ def run_state_verify(args: Namespace) -> int:
             hints=("use repair --from-state to restore the projection, or edit canonical typed data instead",),
         )
     else:
-        print(f"verified {slate.name} revision={slate.decoded.state.revision} state={slate.decoded.state_sha256}")
+        print(
+            f"verified ({record['verification_scope']}) {slate.name} revision={slate.decoded.state.revision} state={slate.decoded.state_sha256}"
+        )
     return 0 if not slate.decoded.drifted else int(ExitCode.CONFLICT)
 
 
@@ -293,16 +299,20 @@ def run_doctor(args: Namespace) -> int:
     version = process.version()
     process.auth_status(host)
     actor = process.current_actor(host)
-    # Exercise the installed native jq binding through the same isolated
-    # adapter used by renderers, not a separate jq executable.
-    select_one({"ready": True}, ".ready")
+    from gh_slate.rendering import jinja_descriptor, render
+
+    render(
+        {"ready": True},
+        jinja_descriptor("{{ data.ready }}"),
+        slate=SlateContext(name="doctor"),
+        schema={"type": "object"},
+    )
     record = {
         "ok": True,
         "gh": version,
         "host": host,
         "actor": actor.login,
         "actor_id": actor.id,
-        "jq": "ok",
         "jinja": "ok",
         "json_schema": "draft-2020-12",
     }
@@ -311,7 +321,7 @@ def run_doctor(args: Namespace) -> int:
     else:
         print(f"ok gh: {version}")
         print(f"ok auth: {actor.login} ({actor.id})")
-        print("ok jq, Jinja, JSON Schema draft 2020-12")
+        print("ok Jinja, JSON Schema draft 2020-12")
     return 0
 
 

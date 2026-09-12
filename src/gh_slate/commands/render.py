@@ -8,11 +8,8 @@ from gh_slate.codec.json import DEFAULT_JSON_LIMITS
 from gh_slate.configuration import ProfileDefinition, load_profile
 from gh_slate.inputs import read_bytes as _read_bytes, template_source as _template_source
 from gh_slate.rendering import (
-    ListRendererV1,
     RenderingError,
     SlateContext,
-    TableColumn,
-    TableRendererV1,
     jinja_descriptor,
     render,
 )
@@ -29,10 +26,6 @@ _LOCAL_OPTIONS = (
     "profile",
     "schema",
     "template",
-    "table",
-    "list",
-    "columns",
-    "title",
 )
 _REMOTE_OPTIONS = (
     "target",
@@ -40,23 +33,6 @@ _REMOTE_OPTIONS = (
     "controller",
     "host",
 )
-
-
-def _table_columns(value: str | None) -> tuple[TableColumn, ...]:
-    if value is None:
-        return ()
-    names = tuple(item.strip() for item in value.split(","))
-    if not names or any(not item for item in names):
-        raise RenderingError(
-            "--columns must be a comma-separated list of non-empty keys",
-            code="renderer_config_invalid",
-        )
-    if len(set(names)) != len(names):
-        raise RenderingError(
-            "--columns must not contain duplicate keys",
-            code="renderer_config_invalid",
-        )
-    return tuple(TableColumn(path=(name,), header=name) for name in names)
 
 
 def _ensure_single_stdin(args: Namespace) -> None:
@@ -85,10 +61,7 @@ def _selected_profile(args: Namespace) -> ProfileDefinition | None:
         if config is not None:
             raise RenderingError("--config requires --profile", code="renderer_option_conflict")
         return None
-    if any(
-        getattr(args, option, None) is not None
-        for option in ("schema", "template", "table", "list", "columns", "title")
-    ):
+    if any(getattr(args, option, None) is not None for option in ("schema", "template")):
         raise RenderingError("--profile cannot be combined with definition overrides", code="renderer_option_conflict")
     return load_profile(name, config=config)
 
@@ -97,22 +70,11 @@ def _run_local_render(args: Namespace) -> int:
     _ensure_single_stdin(args)
     name = validate_slate_name(args.name)
     profile = _selected_profile(args)
-    if profile is None and args.template is None and args.table is None and args.list is None:
+    if profile is None and args.template is None:
         raise RenderingError(
-            "local render requires --profile, --template, --table, or --list",
+            "local render requires --profile or --template",
             code="renderer_required",
         )
-    if args.columns is not None and args.table is None:
-        raise RenderingError(
-            "--columns requires --table",
-            code="renderer_option_conflict",
-        )
-    if args.title is not None and args.template is not None:
-        raise RenderingError(
-            "--title is available only with --table or --list",
-            code="renderer_option_conflict",
-        )
-
     schema = (
         validate_schema_json(
             _read_bytes(
@@ -139,19 +101,8 @@ def _run_local_render(args: Namespace) -> int:
 
     if profile is not None:
         descriptor = profile.renderer
-    elif args.template is not None:
-        descriptor = jinja_descriptor(_template_source(args.template), version=2)
-    elif args.table is not None:
-        descriptor = TableRendererV1(
-            selector=args.table,
-            title=args.title,
-            columns=_table_columns(args.columns),
-        ).to_descriptor()
     else:
-        descriptor = ListRendererV1(
-            selector=args.list,
-            title=args.title,
-        ).to_descriptor()
+        descriptor = jinja_descriptor(_template_source(args.template))
 
     meta_file = getattr(args, "meta", None)
     meta = (

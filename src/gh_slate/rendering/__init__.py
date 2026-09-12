@@ -12,12 +12,6 @@ from gh_slate.rendering.engine import (
 )
 from gh_slate.rendering.errors import RenderingError
 from gh_slate.rendering.jinja import JinjaLimits, SlateContext
-from gh_slate.rendering.jq import (
-    DEFAULT_JQ_LIMITS,
-    JqLimits,
-    evaluate,
-    select_one,
-)
 from gh_slate.rendering.limits import RenderLimits
 from gh_slate.rendering.model import (
     ListRendererV1,
@@ -26,9 +20,7 @@ from gh_slate.rendering.model import (
 )
 
 __all__ = [
-    "DEFAULT_JQ_LIMITS",
     "JinjaLimits",
-    "JqLimits",
     "ListRendererV1",
     "MaterializedComment",
     "RenderLimits",
@@ -39,8 +31,6 @@ __all__ = [
     "TableRendererV1",
     "jinja_descriptor",
     "materialize_comment",
-    "evaluate",
     "render",
     "render_state",
-    "select_one",
 ]

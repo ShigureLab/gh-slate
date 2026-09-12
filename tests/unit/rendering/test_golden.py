@@ -6,10 +6,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from gh_slate.rendering import (
-    ListRendererV1,
     SlateContext,
-    TableColumn,
-    TableRendererV1,
     jinja_descriptor,
     render,
 )
@@ -41,12 +38,9 @@ def _table_case() -> tuple[object, RendererDescriptorV1]:
             },
         ]
     }
-    columns = tuple(TableColumn(path=(name,), header=name) for name in ("name", "status", "empty", "nested", "path"))
-    descriptor = TableRendererV1(
-        selector=".jobs",
-        title="Matrix <main>",
-        columns=columns,
-    ).to_descriptor()
+    descriptor = jinja_descriptor(
+        '## Matrix &#60;main&#62;\n\n{{ data.jobs | md_table(columns=["name", "status", "empty", "nested", "path"]) }}'
+    )
     return data, descriptor
 
 
@@ -59,10 +53,7 @@ def _list_case() -> tuple[object, RendererDescriptorV1]:
             "blank": "",
         }
     }
-    return data, ListRendererV1(
-        selector=".changes",
-        title="Release | notes",
-    ).to_descriptor()
+    return data, jinja_descriptor("## Release &#124; notes\n\n{{ data.changes | md_list }}")
 
 
 def _jinja_case() -> tuple[object, RendererDescriptorV1]:
@@ -70,9 +61,7 @@ def _jinja_case() -> tuple[object, RendererDescriptorV1]:
         "jobs": [{"name": "linux|x64", "ok": True}],
         "meta": {"z": None, "a": 1},
     }
-    source = (
-        '# {{ slate.name }}\n\n{{ data.jobs | md_table(columns=["name", "ok"]) }}\n\n{{ data.meta | compact_json }}'
-    )
+    source = '# {{ meta.slate.name }}\n\n{{ data.jobs | md_table(columns=["name", "ok"]) }}\n\n{{ data.meta | compact_json }}'
     return data, jinja_descriptor(source)
 
 

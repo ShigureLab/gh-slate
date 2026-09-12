@@ -99,5 +99,5 @@ def test_v2_state_roundtrip_preserves_snapshot_and_hash() -> None:
 def test_fixture_name_must_match_and_legacy_renderer_cannot_use_meta() -> None:
     with pytest.raises(RenderingError, match="match"):
         render({}, jinja_descriptor("ok", version=2), slate=SlateContext(name="ci"), meta=MetaSnapshot.local("other"))
-    with pytest.raises(RenderingError, match="jinja@2"):
-        render({}, jinja_descriptor("ok"), slate=SlateContext(name="ci"), meta=MetaSnapshot.local("ci"))
+    with pytest.raises(RenderingError, match="legacy state"):
+        render({}, jinja_descriptor("ok", version=1), slate=SlateContext(name="ci"), meta=MetaSnapshot.local("ci"))

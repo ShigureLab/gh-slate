@@ -9,10 +9,13 @@ import pytest
 
 from gh_slate.codec import (
     ControllerV1,
+    MetaSnapshot,
     RendererDescriptorV1,
     SchemaSnapshotV1,
     StateV1,
     decode_comment,
+    encode_comment,
+    render_sha256,
 )
 from gh_slate.errors import ExitCode, GhSlateError
 from gh_slate.github.apply import (
@@ -56,7 +59,7 @@ OTHER_ACTOR_ID = 202
 
 
 def _renderer() -> RendererDescriptorV1:
-    return ListRendererV1(selector=".status").to_descriptor()
+    return jinja_descriptor("- {{ data.status if data.status is defined else none }}")
 
 
 def _body(
@@ -72,6 +75,25 @@ def _body(
     descriptor = _renderer() if renderer is None else renderer
     state = StateV1(
         name="ci",
+        format="gh-slate/state-v2",
+        meta=MetaSnapshot.from_json(
+            {
+                "host": HOST,
+                "repository": {
+                    "owner": "owner",
+                    "name": "repo",
+                    "full_name": REPOSITORY,
+                    "url": f"https://{HOST}/{REPOSITORY}",
+                },
+                "target": {
+                    "kind": "pull_request" if "/pull/" in page_url else "issue",
+                    "number": NUMBER,
+                    "id": "I_example",
+                    "url": page_url,
+                },
+                "slate": {"name": "ci"},
+            }
+        ),
         revision=revision,
         controller=ControllerV1(login=controller, id=controller_id),
         data={"status": status},
@@ -89,6 +111,31 @@ def _body(
         state,
         slate=context,
     ).encoded.body
+
+
+def _legacy_body() -> str:
+    visible = "old\n"
+    state = StateV1(
+        name="ci",
+        revision=1,
+        controller=ControllerV1(login="ci-bot", id=ACTOR_ID),
+        data={"status": "old"},
+        renderer=RendererDescriptorV1(kind="jinja", version=1, config={"source": "{{ data.status }}"}),
+        render_sha256=render_sha256(visible),
+    )
+    return encode_comment(state, visible).body
+
+
+def test_legacy_update_requires_explicit_definition_and_never_runs_old_template():
+    remote = FakeGitHub(comments=[_record(100, _legacy_body())])
+    with pytest.raises(GhSlateError) as error:
+        _apply(remote, data={"status": "new"})
+    assert error.value.code == "state_migration_required"
+    assert remote.write_calls == []
+    migrated = _apply(remote, renderer=jinja_descriptor("{{ data.status }}"), if_revision=1)
+    assert migrated.revision == 2
+    assert _stored(remote).data == {"status": "old"}
+    assert _stored(remote).meta is not None
 
 
 def _record(
@@ -264,7 +311,7 @@ def _apply(
 
 def test_create_uses_canonical_target_metadata_and_exactly_one_post() -> None:
     remote = FakeGitHub(target_html_url=PULL_URL)
-    renderer = jinja_descriptor("{{ slate.repository }}#{{ slate.number }} {{ slate.url }}")
+    renderer = jinja_descriptor("{{ meta.repository.full_name }}#{{ meta.target.number }} {{ meta.target.url }}")
 
     result = _apply(
         remote,
@@ -286,7 +333,7 @@ def test_create_uses_canonical_target_metadata_and_exactly_one_post() -> None:
     assert remote.write_calls[0][1] == (f"repos/{REPOSITORY}/issues/{NUMBER}/comments")
     assert remote.write_calls[0][3] == HOST
     decoded = decode_comment(cast("str", remote.comments[0]["body"]))
-    assert decoded.visible_markdown == f"{REPOSITORY}#{NUMBER} {PULL_URL}\n"
+    assert unescape(decoded.visible_markdown) == f"{REPOSITORY}#{NUMBER} {PULL_URL}\n"
     assert decoded.state.controller == ControllerV1(
         login="ci-bot",
         id=ACTOR_ID,
@@ -340,6 +387,7 @@ def test_update_reuses_renderer_schema_and_controller_then_patches_once() -> Non
     comments_endpoint = f"repos/{REPOSITORY}/issues/{NUMBER}/comments?per_page=100"
     assert remote.events == [
         ("GET", comments_endpoint),
+        ("GET", f"repos/{REPOSITORY}/issues/{NUMBER}"),
         ("GET", comments_endpoint),
         ("PATCH", f"repos/{REPOSITORY}/issues/comments/7"),
         ("GET", comments_endpoint),
@@ -630,7 +678,7 @@ def test_renderer_failure_and_missing_create_renderer_write_nothing() -> None:
 
 @pytest.mark.parametrize(
     "failure",
-    ["jinja", "jq", "schema", "size"],
+    ["jinja", "legacy_renderer", "schema", "size"],
 )
 def test_full_pipeline_failures_happen_before_any_write(
     failure: str,
@@ -652,7 +700,7 @@ def test_full_pipeline_failures_happen_before_any_write(
         changes = {
             "renderer": jinja_descriptor("{{ data.missing }}"),
         }
-    elif failure == "jq":
+    elif failure == "legacy_renderer":
         remote = FakeGitHub()
         changes = {
             "data": {"jobs": [{"name": "a"}, {"name": "b"}]},
@@ -1113,7 +1161,7 @@ def test_v2_meta_snapshot_create_noop_and_explicit_v1_migration(url: str, kind: 
     assert unchanged.revision == created.revision == 1
     assert len(github.write_calls) == 1
 
-    legacy = FakeGitHub(comments=[_record(100, _body(), page_url=url)], target_html_url=url)
+    legacy = FakeGitHub(comments=[_record(100, _legacy_body(), page_url=url)], target_html_url=url)
     migrated = apply(ApplyRequest(target=TARGET, name="ci", renderer=descriptor), reader=legacy, writer=legacy)
     upgraded = decode_comment(cast("str", legacy.comments[0]["body"]))
     assert migrated.revision == 2

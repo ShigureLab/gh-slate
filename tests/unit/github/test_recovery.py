@@ -7,11 +7,13 @@ import pytest
 
 from gh_slate.codec import (
     ControllerV1,
+    MetaSnapshot,
     StateV1,
     decode_comment,
+    encode_comment,
 )
 from gh_slate.codec.marker import encode_marker, parse_marker
-from gh_slate.errors import ExitCode
+from gh_slate.errors import ExitCode, GhSlateError
 from gh_slate.github.models import GitHubActor
 from gh_slate.github.recovery import (
     DeleteRequest,
@@ -23,7 +25,7 @@ from gh_slate.github.recovery import (
 )
 from gh_slate.github.target import ResolvedTarget
 from gh_slate.github.write import GhWriteOutcomeUnknown
-from gh_slate.rendering import ListRendererV1, SlateContext, materialize_comment
+from gh_slate.rendering import SlateContext, jinja_descriptor, materialize_comment
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -58,6 +60,8 @@ def _body(
 ) -> str:
     state = StateV1(
         name="ci",
+        format="gh-slate/state-v2",
+        meta=MetaSnapshot.local("ci"),
         revision=revision,
         controller=ControllerV1(
             login=controller_login,
@@ -65,7 +69,7 @@ def _body(
         ),
         data={"status": "ready"},
         data_schema=None,
-        renderer=ListRendererV1(selector=".").to_descriptor(),
+        renderer=jinja_descriptor("{{ data | md_list }}"),
         render_sha256="0" * 64,
     )
     body = materialize_comment(
@@ -98,6 +102,18 @@ def _corrupt_body() -> str:
             state_sha256=different_hash,
         )
     )
+
+
+def test_legacy_can_be_deleted_but_cannot_be_repaired():
+    decoded = decode_comment(_body())
+    legacy = replace(decoded.state, format="gh-slate/state-v1", meta=None)
+    remote = FakeGitHub(comments=[_record(encode_comment(legacy, decoded.visible_markdown).body)])
+    with pytest.raises(GhSlateError) as error:
+        repair(RepairRequest(target=TARGET, name="ci", if_revision=3, from_state=True), reader=remote, writer=remote)
+    assert error.value.code == "state_migration_required"
+    assert remote.write_calls == []
+    result = delete(DeleteRequest(target=TARGET, name="ci", confirm="ci"), reader=remote, writer=remote)
+    assert result.action == "deleted"
 
 
 def _record(
