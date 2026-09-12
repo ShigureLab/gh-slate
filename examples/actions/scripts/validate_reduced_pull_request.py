@@ -18,7 +18,6 @@ MAX_TARGET_NUMBER = 2**63 - 1
 _EXPECTED_KEYS = frozenset(
     {
         "repository",
-        "schema_version",
         "target_number",
     }
 )
@@ -90,8 +89,6 @@ def _validate_schema(value: dict[str, object], path: Path) -> None:
 
 
 def _validate(value: dict[str, object], expected_repository: str) -> tuple[str, int]:
-    if value["schema_version"] != 1 or isinstance(value["schema_version"], bool):
-        _fail("schema_version must be 1")
     repository = _text(value["repository"], "repository", maximum=201)
     if _REPOSITORY.fullmatch(repository) is None or repository.casefold() != expected_repository.casefold():
         _fail("repository does not match the trusted workflow repository")

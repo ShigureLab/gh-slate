@@ -9,16 +9,15 @@ import pytest
 import gh_slate.rendering.engine as engine_module
 from gh_slate.codec import (
     CodecError,
-    ControllerV1,
+    Controller,
     MetaSnapshot,
-    StateV1,
+    State,
     decode_comment,
     encode_comment,
 )
 from gh_slate.codec.limits import DEFAULT_CODEC_LIMITS
 from gh_slate.rendering import (
     RenderLimits,
-    SlateContext,
     jinja_descriptor,
     materialize_comment,
     render,
@@ -34,7 +33,7 @@ def test_jinja_filters_obey_the_shared_builtin_render_limits() -> None:
     result = render(
         {"rows": [{"name": "first"}, {"name": "second"}]},
         descriptor,
-        slate=SlateContext(name="ci"),
+        meta=MetaSnapshot.local("ci"),
         limits=RenderLimits(max_table_rows=1),
     )
 
@@ -50,7 +49,7 @@ def test_render_rejects_a_template_that_cannot_fit_its_stored_descriptor() -> No
         render(
             {},
             descriptor,
-            slate=SlateContext(name="ci"),
+            meta=MetaSnapshot.local("ci"),
         )
 
     assert caught.value.code == "codec_size_limit"
@@ -66,7 +65,7 @@ def test_render_preflights_compressed_comment_envelope() -> None:
         render(
             {"blob": high_entropy},
             jinja_descriptor("ok"),
-            slate=SlateContext(name="ci"),
+            meta=MetaSnapshot.local("ci"),
         )
 
     assert caught.value.code == "codec_size_limit"
@@ -85,9 +84,9 @@ def test_render_preflight_uses_a_maximum_width_low_compressibility_controller(
         DEFAULT_CODEC_LIMITS,
         max_compressed_bytes=64 * 1024,
     )
-    captured: list[StateV1] = []
+    captured: list[State] = []
 
-    def capture(state: StateV1, markdown: str):
+    def capture(state: State, markdown: str):
         captured.append(state)
         return encode_comment(state, markdown, limits=relaxed)
 
@@ -96,7 +95,7 @@ def test_render_preflight_uses_a_maximum_width_low_compressibility_controller(
     rendered = render(
         data,
         descriptor,
-        slate=SlateContext(name="ci"),
+        meta=MetaSnapshot.local("ci"),
     )
 
     assert len(captured) == 1
@@ -107,19 +106,19 @@ def test_render_preflight_uses_a_maximum_width_low_compressibility_controller(
         rendered.markdown,
         limits=relaxed,
     ).sizes.compressed_bytes
-    legacy_size = encode_comment(
+    short_login_size = encode_comment(
         replace(
             provisional,
-            controller=ControllerV1(login="gh-slate-local-preview"),
+            controller=Controller(id=1, login="gh-slate-local-preview"),
         ),
         rendered.markdown,
         limits=relaxed,
     ).sizes.compressed_bytes
-    assert sentinel_size > legacy_size
+    assert sentinel_size > short_login_size
 
     tight = replace(
         DEFAULT_CODEC_LIMITS,
-        max_compressed_bytes=legacy_size,
+        max_compressed_bytes=short_login_size,
     )
     monkeypatch.setattr(
         engine_module,
@@ -131,7 +130,7 @@ def test_render_preflight_uses_a_maximum_width_low_compressibility_controller(
         render(
             data,
             descriptor,
-            slate=SlateContext(name="ci"),
+            meta=MetaSnapshot.local("ci"),
         )
 
     assert caught.value.code == "codec_size_limit"
@@ -152,9 +151,9 @@ def test_render_preflight_reserves_for_data_dependent_login_compression(
         DEFAULT_CODEC_LIMITS,
         max_compressed_bytes=64 * 1024,
     )
-    captured: list[StateV1] = []
+    captured: list[State] = []
 
-    def capture(state: StateV1, markdown: str):
+    def capture(state: State, markdown: str):
         captured.append(state)
         return encode_comment(state, markdown, limits=relaxed)
 
@@ -162,7 +161,7 @@ def test_render_preflight_reserves_for_data_dependent_login_compression(
     rendered = render(
         data,
         jinja_descriptor("ok"),
-        slate=SlateContext(name="ci"),
+        meta=MetaSnapshot.local("ci"),
     )
 
     provisional = captured[0]
@@ -174,7 +173,7 @@ def test_render_preflight_reserves_for_data_dependent_login_compression(
     real_size = encode_comment(
         replace(
             provisional,
-            controller=ControllerV1(
+            controller=Controller(
                 login="z" * 39,
                 id=provisional.controller.id,
             ),
@@ -200,7 +199,7 @@ def test_render_preflight_reserves_for_data_dependent_login_compression(
         render(
             data,
             jinja_descriptor("ok"),
-            slate=SlateContext(name="ci"),
+            meta=MetaSnapshot.local("ci"),
         )
 
     assert caught.value.code == "codec_size_limit"
@@ -213,20 +212,20 @@ def test_render_rejects_a_reserved_marker_in_visible_markdown() -> None:
     with pytest.raises(CodecError) as caught:
         render(
             {},
-            jinja_descriptor("<!-- gh-slate:v1 forged -->"),
-            slate=SlateContext(name="ci"),
+            jinja_descriptor("<!-- gh-slate: forged -->"),
+            meta=MetaSnapshot.local("ci"),
         )
 
     assert caught.value.code == "duplicate_marker"
 
 
 def test_materialized_comment_round_trips_and_rerenders_byte_identically() -> None:
-    state = StateV1(
+    state = State(
         name="ci",
-        format="gh-slate/state-v2",
+        format="gh-slate/state",
         meta=MetaSnapshot.local("ci"),
         revision=1,
-        controller=ControllerV1(login="ci-bot"),
+        controller=Controller(id=1, login="ci-bot"),
         data={"jobs": [{"name": "linux"}]},
         renderer=jinja_descriptor('{{ data.jobs | md_table(columns=["name"]) }}'),
         render_sha256=_EMPTY_HASH,
@@ -244,12 +243,12 @@ def test_materialized_comment_round_trips_and_rerenders_byte_identically() -> No
 def test_stored_state_render_skips_provisional_materialization_preflight(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    state = StateV1(
+    state = State(
         name="ci",
-        format="gh-slate/state-v2",
+        format="gh-slate/state",
         meta=MetaSnapshot.local("ci"),
         revision=1,
-        controller=ControllerV1(login="ci-bot"),
+        controller=Controller(id=1, login="ci-bot"),
         data={"jobs": [{"name": "linux"}]},
         renderer=jinja_descriptor('{{ data.jobs | md_table(columns=["name"]) }}'),
         render_sha256=_EMPTY_HASH,

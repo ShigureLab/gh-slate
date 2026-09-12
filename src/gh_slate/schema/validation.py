@@ -24,7 +24,7 @@ from gh_slate.codec.limits import (
     SizeReport,
     enforce_size_limits,
 )
-from gh_slate.codec.model import JSON_SCHEMA_DIALECT_2020_12, SchemaSnapshotV1
+from gh_slate.codec.model import JSON_SCHEMA_DIALECT_2020_12, SchemaSnapshot
 from gh_slate.schema._interop import (
     SlateDraft202012Validator,
     to_metaschema_value,
@@ -154,9 +154,9 @@ def _validate_max_errors(max_errors: int) -> None:
         )
 
 
-def _snapshot(document: bool | Mapping[str, object], *, dialect: str) -> SchemaSnapshotV1:
+def _snapshot(document: bool | Mapping[str, object], *, dialect: str) -> SchemaSnapshot:
     try:
-        return SchemaSnapshotV1(dialect=dialect, document=document)
+        return SchemaSnapshot(dialect=dialect, document=document)
     except CodecError as error:
         raise SchemaError(
             "schema document is not valid JSON",
@@ -179,7 +179,7 @@ def _schema_size_error(error: CodecError, *, schema_bytes: int | None = None) ->
     )
 
 
-def _enforce_schema_size(snapshot: SchemaSnapshotV1) -> None:
+def _enforce_schema_size(snapshot: SchemaSnapshot) -> None:
     schema_bytes: int | None = None
     try:
         schema_bytes = len(canonical_json_bytes(snapshot.to_json()))
@@ -188,7 +188,7 @@ def _enforce_schema_size(snapshot: SchemaSnapshotV1) -> None:
         raise _schema_size_error(error, schema_bytes=schema_bytes) from None
 
 
-def _check_dialect(snapshot: SchemaSnapshotV1) -> None:
+def _check_dialect(snapshot: SchemaSnapshot) -> None:
     if snapshot.dialect != JSON_SCHEMA_DIALECT_2020_12:
         _raise_single(
             "only JSON Schema draft 2020-12 is supported",
@@ -295,7 +295,7 @@ def validate_schema(
     document: bool | Mapping[str, object],
     *,
     dialect: str = JSON_SCHEMA_DIALECT_2020_12,
-) -> SchemaSnapshotV1:
+) -> SchemaSnapshot:
     """Validate and freeze a local-only draft 2020-12 schema snapshot."""
 
     snapshot = _snapshot(document, dialect=dialect)
@@ -329,7 +329,7 @@ def validate_schema_json(
     source: str | bytes,
     *,
     dialect: str = JSON_SCHEMA_DIALECT_2020_12,
-) -> SchemaSnapshotV1:
+) -> SchemaSnapshot:
     """Strictly ingest JSON text and validate it as a schema snapshot."""
 
     try:
@@ -536,7 +536,7 @@ def _freeze_data(data: object) -> Mapping[str, JsonValue]:
 
 def validate_data(
     data: object,
-    schema: SchemaSnapshotV1 | bool | Mapping[str, object] | None = None,
+    schema: SchemaSnapshot | bool | Mapping[str, object] | None = None,
     *,
     dialect: str = JSON_SCHEMA_DIALECT_2020_12,
     max_errors: int = DEFAULT_MAX_ERRORS,
@@ -550,7 +550,7 @@ def validate_data(
 
     snapshot = (
         validate_schema(schema.document, dialect=schema.dialect)
-        if isinstance(schema, SchemaSnapshotV1)
+        if isinstance(schema, SchemaSnapshot)
         else validate_schema(schema, dialect=dialect)
     )
     validator_schema = cast(
@@ -607,7 +607,7 @@ def validate_data(
 
 def validate_data_json(
     source: str | bytes,
-    schema: SchemaSnapshotV1 | bool | Mapping[str, object] | None = None,
+    schema: SchemaSnapshot | bool | Mapping[str, object] | None = None,
     *,
     dialect: str = JSON_SCHEMA_DIALECT_2020_12,
     max_errors: int = DEFAULT_MAX_ERRORS,
@@ -645,7 +645,7 @@ def replace_schema(
     document: bool | Mapping[str, object],
     *,
     dialect: str = JSON_SCHEMA_DIALECT_2020_12,
-) -> SchemaSnapshotV1:
+) -> SchemaSnapshot:
     """Validate a replacement schema and current data without side effects."""
 
     snapshot = validate_schema(document, dialect=dialect)

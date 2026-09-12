@@ -5,16 +5,16 @@ from html import unescape
 
 import pytest
 
-from gh_slate.codec import ControllerV1, MetaSnapshot, State, decode_comment
-from gh_slate.rendering import RenderingError, SlateContext, jinja_descriptor, materialize_comment, render
+from gh_slate.codec import Controller, MetaSnapshot, State, decode_comment
+from gh_slate.rendering import RenderingError, jinja_descriptor, materialize_comment
 from gh_slate.rendering.jinja import render_jinja
 
 
 def _render(source: str, data: object = None) -> str:
-    return render_jinja(source, data={} if data is None else data, slate=SlateContext(name="ci"), version=2)
+    return render_jinja(source, data={} if data is None else data, meta=MetaSnapshot.local("ci"))
 
 
-def test_v2_interpolation_is_literal_and_helpers_compose_in_tables() -> None:
+def test_interpolation_is_literal_and_helpers_compose_in_tables() -> None:
     source = '{{ [{"result": data.label | md_link(data.url), "code": data.code | md_code}] | md_table(columns=["code", "result"]) }}'
     output = _render(source, {"label": "A|B <img> [x]", "url": "https://example.com/a?x=1&y=2|3", "code": "`x|y`"})
     assert '<a href="https://example.com/a?x=1&amp;y=2%7C3">' in output
@@ -56,12 +56,12 @@ def test_link_rejects_invalid_or_non_web_urls(url) -> None:
         "{{ slate.name }}",
     ],
 )
-def test_v2_retains_sandbox_and_reserves_new_context(source) -> None:
+def test_retains_sandbox_and_reserves_new_context(source) -> None:
     with pytest.raises(RenderingError):
         _render(source)
 
 
-def test_v2_canonical_values_and_local_missing_meta() -> None:
+def test_canonical_values_and_local_missing_meta() -> None:
     assert (
         _render(
             "{{ data.value }} / {{ data.flag }} / {{ meta.slate.name }} / {{ meta.target }}",
@@ -79,14 +79,14 @@ def test_v2_canonical_values_and_local_missing_meta() -> None:
     )
 
 
-def test_v2_state_roundtrip_preserves_snapshot_and_hash() -> None:
+def test_state_roundtrip_preserves_snapshot_and_hash() -> None:
     state = State(
         name="ci",
         revision=1,
-        controller=ControllerV1(login="bot", id=1),
+        controller=Controller(login="bot", id=1),
         data={"x": "<value>"},
-        renderer=jinja_descriptor("{{ meta.slate.name }} {{ data.x }}", version=2),
-        format="gh-slate/state-v2",
+        renderer=jinja_descriptor("{{ meta.slate.name }} {{ data.x }}"),
+        format="gh-slate/state",
         meta=MetaSnapshot.local("ci"),
         render_sha256="0" * 64,
     )
@@ -94,10 +94,3 @@ def test_v2_state_roundtrip_preserves_snapshot_and_hash() -> None:
     decoded = decode_comment(materialized.encoded.body)
     assert materialize_comment(decoded.state).encoded.body == materialized.encoded.body
     assert decoded.state.meta == state.meta
-
-
-def test_fixture_name_must_match_and_legacy_renderer_cannot_use_meta() -> None:
-    with pytest.raises(RenderingError, match="match"):
-        render({}, jinja_descriptor("ok", version=2), slate=SlateContext(name="ci"), meta=MetaSnapshot.local("other"))
-    with pytest.raises(RenderingError, match="legacy state"):
-        render({}, jinja_descriptor("ok", version=1), slate=SlateContext(name="ci"), meta=MetaSnapshot.local("ci"))

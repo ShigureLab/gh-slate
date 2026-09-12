@@ -268,7 +268,7 @@ def test_cli_to_gh_contract_create_update_unchanged_and_readback(
 
 
 @pytest.mark.parametrize("kind", ["issues", "pull"])
-def test_v2_target_preview_matches_offline_fixture_and_stored_render(kind, tmp_path, monkeypatch, capsys):
+def test_target_preview_matches_offline_fixture_and_stored_render(kind, tmp_path, monkeypatch, capsys):
     page_url = f"https://{HOST}/{REPOSITORY}/{kind}/{NUMBER}"
     backend = FakeGhBackend(page_url=page_url)
     reader = GhProcess(runner=ReadRunner(backend))
@@ -326,7 +326,7 @@ def test_profile_updates_use_stored_definition_until_explicit_reload(tmp_path, m
     schema.write_text(
         '{"type":"object","required":["message"],"additionalProperties":false,"properties":{"message":{"type":"string"}}}'
     )
-    config.write_text('version = 1\n[profiles.summary]\ntemplate = "template.j2"\nschema = "schema.json"\n')
+    config.write_text('[profiles.summary]\ntemplate = "template.j2"\nschema = "schema.json"\n')
     template.write_text("Original: {{ data.message }}")
     data = tmp_path / "data.json"
     data.write_text('{"message":"first"}')
@@ -349,7 +349,7 @@ def test_profile_updates_use_stored_definition_until_explicit_reload(tmp_path, m
     assert run([*base, *definition]) == 2
     capsys.readouterr()
     assert len([event for event in backend.events if event[0] in {"POST", "PATCH"}]) == writes
-    config.write_text('version = 1\n[profiles.summary]\ntemplate = "template.j2"\n')
+    config.write_text('[profiles.summary]\ntemplate = "template.j2"\n')
     data.write_text('{"message":"third","extra":true}')
     assert run([*base, *definition, "--data", str(data)]) == 0
     assert json.loads(capsys.readouterr().out)["revision"] == 4
@@ -376,7 +376,7 @@ def test_multi_view_updates_switch_one_comment_without_local_files(tmp_path, mon
     monkeypatch.setattr(read_commands, "_new_process", lambda: reader)
     config = tmp_path / "boards.toml"
     config.write_text(
-        'version = 1\n[profiles.review]\nview_by = "/outcome"\n[profiles.review.views]\napproved = "approved.j2"\nchanges_requested = "changes.j2"\nerror = "error.j2"'
+        '[profiles.review]\nview_by = "/outcome"\n[profiles.review.views]\napproved = "approved.j2"\nchanges_requested = "changes.j2"\nerror = "error.j2"'
     )
     for filename, source in {
         "approved.j2": "Passed: {{ data.summary }}",

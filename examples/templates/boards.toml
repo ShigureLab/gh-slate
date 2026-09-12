@@ -1,4 +1,3 @@
-version = 1
 
 [profiles.review]
 schema = "review.schema.json"

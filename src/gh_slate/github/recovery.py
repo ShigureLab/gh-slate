@@ -13,7 +13,7 @@ from gh_slate.github.models import GitHubActor
 from gh_slate.github.store import CommentStore
 from gh_slate.github.target import ResolvedTarget, target_from_comment_url
 from gh_slate.github.write import GhWriteOutcomeUnknown
-from gh_slate.rendering import SlateContext, render_state
+from gh_slate.rendering import render_state
 
 if TYPE_CHECKING:
     from gh_slate.github.models import SlateCandidate
@@ -373,19 +373,13 @@ def _repair_body(
 ) -> str:
     decoded = candidate.decoded
     assert decoded is not None
-    canonical_target = target_from_comment_url(
+    target_from_comment_url(
         candidate.comment.url,
         expected=target,
         expected_comment_id=candidate.comment.id,
     )
     rendered = render_state(
         decoded.state,
-        slate=SlateContext(
-            name=decoded.state.name,
-            repository=canonical_target.repository,
-            number=canonical_target.number,
-            url=canonical_target.url,
-        ),
     )
     if rendered.render_sha256 != decoded.expected_render_sha256:
         raise _validation_error(

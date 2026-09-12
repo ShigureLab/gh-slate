@@ -9,7 +9,6 @@ from gh_slate.configuration import ProfileDefinition, load_profile
 from gh_slate.inputs import read_bytes as _read_bytes, template_source as _template_source
 from gh_slate.rendering import (
     RenderingError,
-    SlateContext,
     jinja_descriptor,
     render,
 )
@@ -106,17 +105,18 @@ def _run_local_render(args: Namespace) -> int:
 
     meta_file = getattr(args, "meta", None)
     meta = (
-        None
+        MetaSnapshot.local(name)
         if meta_file is None
         else MetaSnapshot.from_json(
             strict_loads(_read_bytes(meta_file, subject="meta", max_bytes=DEFAULT_JSON_LIMITS.max_input_bytes))
         )
     )
+    if meta.name != name:
+        raise RenderingError("meta.slate.name must match the slate name", code="render_context_mismatch")
     result = render(
         data,
         descriptor,
         schema=schema,
-        slate=SlateContext(name=name),
         meta=meta,
     )
     if args.json:
@@ -125,10 +125,10 @@ def _run_local_render(args: Namespace) -> int:
                 {
                     "markdown": result.markdown,
                     "data": result.data,
-                    "meta": None if result.meta is None else result.meta.to_json(),
+                    "meta": result.meta.to_json(),
                     "meta_source": "fixture" if meta_file is not None else "local",
-                    "renderer": {"kind": result.renderer.kind, "version": result.renderer.version},
-                    "profile": result.renderer.configuration.get("profile"),
+                    "renderer": result.renderer.to_json(),
+                    "profile": result.renderer.config.get("profile"),
                     "view": result.view,
                 }
             ).decode("utf-8")

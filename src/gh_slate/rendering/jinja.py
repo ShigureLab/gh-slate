@@ -11,8 +11,7 @@ from decimal import (
     Overflow,
     localcontext,
 )
-from types import MappingProxyType
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from jinja2 import StrictUndefined, TemplateError, Undefined, UndefinedError, nodes
 from jinja2.sandbox import ImmutableSandboxedEnvironment, SecurityError
@@ -24,7 +23,6 @@ from gh_slate.codec.json import (
     canonical_number,
     strict_loads,
 )
-from gh_slate.codec.meta import MetaSnapshot
 from gh_slate.codec.text import utf8_size
 from gh_slate.rendering.errors import RenderingError
 from gh_slate.rendering.limits import DEFAULT_RENDER_LIMITS, RenderLimits
@@ -40,11 +38,14 @@ from gh_slate.rendering.markdown import (
     md_text,
 )
 from gh_slate.rendering.model import (
-    ListRendererV1,
+    ListOptions,
     TableColumn,
-    TableRendererV1,
+    TableOptions,
 )
 from gh_slate.rendering.table import render_table, resolve_table_renderer
+
+if TYPE_CHECKING:
+    from gh_slate.codec.meta import MetaSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,23 +83,6 @@ _JINJA_DECIMAL_CONTEXT = Context(
 )
 
 
-@dataclass(frozen=True, slots=True)
-class SlateContext:
-    name: str
-    repository: str | None = None
-    number: int | None = None
-    url: str | None = None
-
-    def to_mapping(self) -> Mapping[str, object]:
-        value: dict[str, object] = {
-            "name": self.name,
-            "repository": self.repository,
-            "number": self.number,
-            "url": self.url,
-        }
-        return MappingProxyType(value)
-
-
 class _SlateSandbox(ImmutableSandboxedEnvironment):
     def getattr(self, obj: object, attribute: str) -> object:
         if attribute.startswith("_"):
@@ -126,7 +110,7 @@ class _SlateSandbox(ImmutableSandboxedEnvironment):
         return False
 
 
-_V2_FILTERS = {
+_MARKDOWN_FILTERS = {
     "md_text": md_text,
     "md_link": md_link,
     "md_code": md_code,
@@ -224,6 +208,8 @@ class _GuardLoops(NodeTransformer):
 
 
 def _finalize(value: object) -> object:
+    if isinstance(value, Markdown):
+        return value
     if isinstance(value, Undefined):
         return value
     if value is None:
@@ -242,20 +228,12 @@ def _finalize(value: object) -> object:
             code="jinja_container_interpolation",
         )
     if isinstance(value, str):
-        return value
+        return escape_markdown_text(value)
     raise RenderingError(
         "Jinja expressions must produce JSON scalar values or filter output",
         code="jinja_value_invalid",
         details={"value_type": type(value).__name__},
     )
-
-
-def _finalize_v2(value: object) -> object:
-    if isinstance(value, Markdown):
-        return value
-    if isinstance(value, str):
-        return escape_markdown_text(value)
-    return _finalize(value)
 
 
 def _canonical_mapping(data: object, *, subject: str) -> Mapping[str, object]:
@@ -278,14 +256,12 @@ def _environment(
     limits: JinjaLimits,
     loop_budget: _LoopBudget,
     render_limits: RenderLimits,
-    *,
-    version: int = 2,
 ) -> _SlateSandbox:
     environment = _SlateSandbox(
         loader=None,
         autoescape=False,
         undefined=StrictUndefined,
-        finalize=_finalize_v2,
+        finalize=_finalize,
         enable_async=False,
     )
     defined_test = environment.tests["defined"]
@@ -317,8 +293,7 @@ def _environment(
             typed_columns = tuple(TableColumn(path=(column,), header=column) for column in column_names)
         row_count = len(value) if isinstance(value, (tuple, list)) else 1
         renderer = resolve_table_renderer(
-            TableRendererV1(
-                selector=".",
+            TableOptions(
                 title=None,
                 columns=typed_columns,
                 max_rows=max(
@@ -333,8 +308,7 @@ def _environment(
     def md_list(value: object) -> str:
         return render_list(
             value,
-            ListRendererV1(
-                selector=".",
+            ListOptions(
                 title=None,
                 max_depth=min(4, limits.max_loop_iterations),
                 max_items=min(500, limits.max_loop_iterations),
@@ -344,7 +318,7 @@ def _environment(
 
     environment.filters["md_table"] = lambda value, columns=None: Markdown(md_table(value, columns))
     environment.filters["md_list"] = lambda value: Markdown(md_list(value))
-    environment.filters.update(_V2_FILTERS)
+    environment.filters.update(_MARKDOWN_FILTERS)
     environment.filters.update(standard_filters)
     return environment
 
@@ -354,7 +328,6 @@ def _validated_syntax_tree(
     *,
     environment: _SlateSandbox,
     limits: JinjaLimits,
-    version: int = 2,
 ) -> tuple[nodes.Template, list[nodes.Node]]:
     if not isinstance(source, str):
         raise RenderingError(
@@ -445,8 +418,8 @@ def _validated_syntax_tree(
 def validate_jinja_source(source: str) -> None:
     """Validate a new definition without requiring branch-specific data."""
     limits = DEFAULT_JINJA_LIMITS
-    environment = _environment(limits, _LoopBudget(limits.max_loop_iterations), DEFAULT_RENDER_LIMITS, version=2)
-    syntax_tree, _ = _validated_syntax_tree(source, environment=environment, limits=limits, version=2)
+    environment = _environment(limits, _LoopBudget(limits.max_loop_iterations), DEFAULT_RENDER_LIMITS)
+    syntax_tree, _ = _validated_syntax_tree(source, environment=environment, limits=limits)
     try:
         environment.compile(_GuardLoops().visit(syntax_tree))
     except TemplateError as error:
@@ -457,25 +430,19 @@ def render_jinja(
     source: str,
     *,
     data: object,
-    slate: SlateContext,
-    meta: MetaSnapshot | None = None,
-    version: int = 2,
+    meta: MetaSnapshot,
     limits: JinjaLimits = DEFAULT_JINJA_LIMITS,
     render_limits: RenderLimits = DEFAULT_RENDER_LIMITS,
 ) -> str:
-    if version != 2:
-        raise RenderingError("legacy Jinja requires migration to data/meta", code="state_migration_required")
     loop_budget = _LoopBudget(limits.max_loop_iterations)
-    environment = _environment(limits, loop_budget, render_limits, version=version)
+    environment = _environment(limits, loop_budget, render_limits)
     syntax_tree, _all_nodes = _validated_syntax_tree(
         source,
         environment=environment,
         limits=limits,
-        version=version,
     )
     canonical_data = _canonical_mapping(data, subject="data")
-    snapshot = MetaSnapshot.local(slate.name) if meta is None else meta
-    context = {"data": canonical_data, "meta": _canonical_mapping(snapshot.to_json(), subject="meta context")}
+    context = {"data": canonical_data, "meta": _canonical_mapping(meta.to_json(), subject="meta context")}
 
     try:
         with localcontext(_JINJA_DECIMAL_CONTEXT):
@@ -512,9 +479,7 @@ def render_jinja(
         raise RenderingError(
             "Jinja template references an undefined value",
             code="jinja_undefined",
-            hints=("for target fields in a local preview, pass --meta FILE or use apply --dry-run",)
-            if version == 2
-            else (),
+            hints=("for target fields in a local preview, pass --meta FILE or use apply --dry-run",),
         ) from None
     except SecurityError:
         raise RenderingError(
@@ -542,6 +507,5 @@ def render_jinja(
 __all__ = [
     "DEFAULT_JINJA_LIMITS",
     "JinjaLimits",
-    "SlateContext",
     "render_jinja",
 ]

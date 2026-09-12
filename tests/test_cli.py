@@ -389,7 +389,7 @@ def test_view_json_and_web_are_mutually_exclusive() -> None:
         ["render", "ci", "--list", "."],
     ],
 )
-def test_removed_legacy_surfaces_are_usage_errors(argv):
+def test_unknown_commands_and_options_are_usage_errors(argv):
     with pytest.raises(SystemExit) as error:
         build_parser().parse_args(argv)
     assert error.value.code == 2

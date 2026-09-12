@@ -4,9 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from gh_slate.codec import ControllerV1, State, decode_comment, strict_loads
+from gh_slate.codec import Controller, State, decode_comment, strict_loads
+from gh_slate.codec.meta import MetaSnapshot
 from gh_slate.configuration import load_profile
-from gh_slate.rendering import SlateContext, materialize_comment, render, render_state
+from gh_slate.rendering import materialize_comment, render, render_state
 
 PROFILES = Path(__file__).resolve().parents[2] / "examples" / "profiles"
 
@@ -27,17 +28,16 @@ def test_profiles_render_and_reproduce_embedded_definition(profile, fixture, hea
         strict_loads((PROFILES / fixture).read_bytes()),
         definition.renderer,
         schema=definition.schema,
-        slate=SlateContext(name=profile),
+        meta=MetaSnapshot.local(profile),
     )
     assert heading in result.markdown
     assert result.view == view
-    assert result.meta is not None
     state = State(
         name=profile,
         revision=1,
-        format="gh-slate/state-v2",
+        format="gh-slate/state",
         meta=result.meta,
-        controller=ControllerV1(login="example", id=1),
+        controller=Controller(login="example", id=1),
         data=result.data,
         data_schema=result.data_schema,
         renderer=result.renderer,

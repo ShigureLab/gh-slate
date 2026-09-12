@@ -3,11 +3,12 @@ from __future__ import annotations
 import pytest
 
 from gh_slate.codec.errors import CodecError
+from gh_slate.codec.meta import MetaSnapshot
 from gh_slate.codec.model import (
     MAX_REVISION,
-    ControllerV1,
-    RendererDescriptorV1,
-    StateDraftV1,
+    Controller,
+    RendererDescriptor,
+    StateDraft,
 )
 from gh_slate.codec.revision import resolve_revision
 
@@ -16,15 +17,14 @@ def _draft(
     *,
     data: dict[str, object] | None = None,
     render_hash: str = "a" * 64,
-) -> StateDraftV1:
-    return StateDraftV1(
+) -> StateDraft:
+    return StateDraft(
+        meta=MetaSnapshot.local("ci"),
         name="ci",
-        controller=ControllerV1(login="octocat", id=1),
+        controller=Controller(login="octocat", id=1),
         data={"value": 1} if data is None else data,
-        renderer=RendererDescriptorV1(
-            kind="builtin-list",
-            version=1,
-            config={"selector": "."},
+        renderer=RendererDescriptor(
+            config={"source": "{{ data | md_list }}"},
         ),
         render_sha256=render_hash,
     )

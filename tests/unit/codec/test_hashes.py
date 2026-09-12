@@ -13,19 +13,19 @@ from gh_slate.codec.hashes import (
     render_sha256,
     state_sha256,
 )
-from gh_slate.codec.model import ControllerV1, RendererDescriptorV1, StateV1
+from gh_slate.codec.meta import MetaSnapshot
+from gh_slate.codec.model import Controller, RendererDescriptor, State
 
 
-def _state(*, revision: int = 1, data: dict[str, object] | None = None) -> StateV1:
-    return StateV1(
+def _state(*, revision: int = 1, data: dict[str, object] | None = None) -> State:
+    return State(
+        meta=MetaSnapshot.local("ci"),
         name="ci",
         revision=revision,
-        controller=ControllerV1(login="octocat", id=1),
+        controller=Controller(login="octocat", id=1),
         data={"value": 1} if data is None else data,
-        renderer=RendererDescriptorV1(
-            kind="builtin-list",
-            version=1,
-            config={"selector": "."},
+        renderer=RendererDescriptor(
+            config={"source": "{{ data | md_list }}"},
         ),
         render_sha256="a" * 64,
     )

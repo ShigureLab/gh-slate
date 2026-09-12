@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import NoReturn, cast
 
@@ -10,11 +10,9 @@ from gh_slate.codec.errors import CodecError
 from gh_slate.codec.json import freeze_json
 from gh_slate.codec.meta import MetaSnapshot
 
-STATE_FORMAT_V1 = "gh-slate/state-v1"
-STATE_FORMAT_V2 = "gh-slate/state-v2"
+STATE_FORMAT = "gh-slate/state"
 JSON_SCHEMA_DIALECT_2020_12 = "https://json-schema.org/draft/2020-12/schema"
 MAX_REVISION = 2**63 - 1
-MAX_RENDERER_VERSION = 2**31 - 1
 MAX_GITHUB_USER_ID = 2**63 - 1
 MAX_GITHUB_LOGIN_BYTES = 39
 
@@ -127,9 +125,9 @@ def _thaw_json(value: object) -> object:
 
 
 @dataclass(frozen=True, slots=True)
-class ControllerV1:
+class Controller:
     login: str
-    id: int | None = None
+    id: int
 
     def __post_init__(self) -> None:
         login = _require_string(self.login, path="controller.login")
@@ -143,111 +141,53 @@ class ControllerV1:
                 path="controller.login",
             )
         object.__setattr__(self, "login", login)
-        if self.id is not None:
-            object.__setattr__(
-                self,
-                "id",
-                _require_integer(
-                    self.id,
-                    path="controller.id",
-                    minimum=1,
-                    maximum=MAX_GITHUB_USER_ID,
-                ),
-            )
+        object.__setattr__(
+            self,
+            "id",
+            _require_integer(
+                self.id,
+                path="controller.id",
+                minimum=1,
+                maximum=MAX_GITHUB_USER_ID,
+            ),
+        )
 
     def to_json(self) -> dict[str, object]:
-        result: dict[str, object] = {"login": self.login}
-        if self.id is not None:
-            result["id"] = self.id
-        return result
+        return {"login": self.login, "id": self.id}
 
     @classmethod
-    def from_json(cls, value: object) -> ControllerV1:
+    def from_json(cls, value: object) -> Controller:
         obj = _require_object(value, path="controller")
         fields = frozenset({"id", "login"})
         _reject_unknown_fields(obj, allowed=fields, path="controller")
-        _require_fields(obj, required=frozenset({"login"}), path="controller")
+        _require_fields(obj, required=fields, path="controller")
         return cls(
             login=_require_string(obj["login"], path="controller.login"),
-            id=(
-                None
-                if "id" not in obj
-                else _require_integer(
-                    obj["id"],
-                    path="controller.id",
-                    minimum=1,
-                    maximum=MAX_GITHUB_USER_ID,
-                )
-            ),
+            id=_require_integer(obj["id"], path="controller.id", minimum=1, maximum=MAX_GITHUB_USER_ID),
         )
 
 
 @dataclass(frozen=True, slots=True)
-class RendererDescriptorV1:
-    """A lossless renderer descriptor.
+class RendererDescriptor:
+    """The stored template source or routed views, with optional profile provenance."""
 
-    The codec understands only the common ``kind`` and ``version`` fields.
-    Renderer adapters validate their own configuration. Keeping the remaining
-    fields opaque lets read-only commands export state created by a newer
-    renderer without silently discarding its options.
-    """
-
-    kind: str
-    version: int
-    config: Mapping[str, object] = field(default_factory=dict)
+    config: Mapping[str, object]
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "kind", _require_string(self.kind, path="renderer.kind"))
-        object.__setattr__(
-            self,
-            "version",
-            _require_integer(
-                self.version,
-                path="renderer.version",
-                minimum=1,
-                maximum=MAX_RENDERER_VERSION,
-            ),
-        )
-        frozen = _require_object(self.config, path="renderer.config")
-        collisions = sorted({"kind", "version"} & set(frozen))
-        if collisions:
-            raise CodecError(
-                "renderer config must not redefine kind or version",
-                code="invalid_renderer_config",
-                details={"fields": collisions},
-            )
-        object.__setattr__(self, "config", frozen)
-
-    @property
-    def configuration(self) -> Mapping[str, object]:
-        return self.config
+        config = _require_object(self.config, path="renderer")
+        _reject_unknown_fields(config, allowed=frozenset({"source", "profile", "views", "view_by"}), path="renderer")
+        object.__setattr__(self, "config", config)
 
     def to_json(self) -> dict[str, object]:
-        return {
-            "kind": self.kind,
-            "version": self.version,
-            **{key: _thaw_json(value) for key, value in self.config.items()},
-        }
+        return {key: _thaw_json(value) for key, value in self.config.items()}
 
     @classmethod
-    def from_json(cls, value: object) -> RendererDescriptorV1:
-        obj = _require_object(value, path="renderer")
-        _require_fields(obj, required=frozenset({"kind", "version"}), path="renderer")
-        config = {key: item for key, item in obj.items() if key not in {"kind", "version"}}
-        return cls(
-            kind=_require_string(obj["kind"], path="renderer.kind"),
-            version=_require_integer(
-                obj["version"],
-                path="renderer.version",
-                minimum=1,
-                maximum=MAX_RENDERER_VERSION,
-            ),
-            config=config,
-        )
+    def from_json(cls, value: object) -> RendererDescriptor:
+        return cls(config=_require_object(value, path="renderer"))
 
 
 @dataclass(frozen=True, slots=True)
-class SchemaSnapshotV1:
+class SchemaSnapshot:
     dialect: str
     document: bool | Mapping[str, object]
 
@@ -272,7 +212,7 @@ class SchemaSnapshotV1:
         }
 
     @classmethod
-    def from_json(cls, value: object) -> SchemaSnapshotV1:
+    def from_json(cls, value: object) -> SchemaSnapshot:
         obj = _require_object(value, path="data_schema")
         fields = frozenset({"dialect", "document"})
         _reject_unknown_fields(obj, allowed=fields, path="data_schema")
@@ -292,35 +232,32 @@ class SchemaSnapshotV1:
 @dataclass(frozen=True, slots=True)
 class StateDraft:
     name: str
-    controller: ControllerV1
+    controller: Controller
     data: Mapping[str, object]
-    renderer: RendererDescriptorV1
+    renderer: RendererDescriptor
     render_sha256: str
-    data_schema: SchemaSnapshotV1 | None = None
-    format: str = STATE_FORMAT_V1
-    meta: MetaSnapshot | None = None
+    meta: MetaSnapshot
+    data_schema: SchemaSnapshot | None = None
+    format: str = STATE_FORMAT
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "format", _require_string(self.format, path="format"))
-        if self.format not in {STATE_FORMAT_V1, STATE_FORMAT_V2}:
+        if self.format != STATE_FORMAT:
             raise CodecError(
                 f"unsupported state format: {self.format}",
                 code="unsupported_state_format",
                 details={"format": self.format},
             )
         object.__setattr__(self, "name", validate_slate_name(self.name))
-        if self.format == STATE_FORMAT_V2:
-            if not isinstance(self.meta, MetaSnapshot) or self.meta.name != self.name:
-                _invalid("state-v2 requires matching meta", path="meta")
-        elif self.meta is not None:
-            _invalid("state-v1 must not contain meta", path="meta")
-        if not isinstance(self.controller, ControllerV1):
-            _invalid("controller must be a ControllerV1", path="controller")
+        if not isinstance(self.meta, MetaSnapshot) or self.meta.name != self.name:
+            _invalid("state requires matching meta", path="meta")
+        if not isinstance(self.controller, Controller):
+            _invalid("controller must be a Controller", path="controller")
         object.__setattr__(self, "data", _require_object(self.data, path="data"))
-        if not isinstance(self.renderer, RendererDescriptorV1):
-            _invalid("renderer must be a RendererDescriptorV1", path="renderer")
-        if self.data_schema is not None and not isinstance(self.data_schema, SchemaSnapshotV1):
-            _invalid("data_schema must be a SchemaSnapshotV1 or null", path="data_schema")
+        if not isinstance(self.renderer, RendererDescriptor):
+            _invalid("renderer must be a RendererDescriptor", path="renderer")
+        if self.data_schema is not None and not isinstance(self.data_schema, SchemaSnapshot):
+            _invalid("data_schema must be a SchemaSnapshot or null", path="data_schema")
         object.__setattr__(
             self,
             "render_sha256",
@@ -329,7 +266,7 @@ class StateDraft:
 
     def to_json(self) -> dict[str, object]:
         return {
-            **({"meta": self.meta.to_json()} if self.meta is not None else {}),
+            "meta": self.meta.to_json(),
             "format": self.format,
             "name": self.name,
             "controller": self.controller.to_json(),
@@ -358,6 +295,7 @@ class StateDraft:
         required = frozenset(
             {
                 "format",
+                "meta",
                 "name",
                 "controller",
                 "data",
@@ -366,18 +304,16 @@ class StateDraft:
                 "render_sha256",
             }
         )
-        if obj.get("format") == STATE_FORMAT_V2:
-            required = required | {"meta"}
         _reject_unknown_fields(obj, allowed=required, path="state")
         _require_fields(obj, required=required, path="state")
         return cls(
             format=_require_string(obj["format"], path="format"),
-            meta=MetaSnapshot.from_json(obj["meta"]) if "meta" in obj else None,
+            meta=MetaSnapshot.from_json(obj["meta"]),
             name=validate_slate_name(obj["name"]),
-            controller=ControllerV1.from_json(obj["controller"]),
+            controller=Controller.from_json(obj["controller"]),
             data=_require_object(obj["data"], path="data"),
-            data_schema=(SchemaSnapshotV1.from_json(obj["data_schema"]) if obj["data_schema"] is not None else None),
-            renderer=RendererDescriptorV1.from_json(obj["renderer"]),
+            data_schema=(SchemaSnapshot.from_json(obj["data_schema"]) if obj["data_schema"] is not None else None),
+            renderer=RendererDescriptor.from_json(obj["renderer"]),
             render_sha256=_validate_sha256(obj["render_sha256"], path="render_sha256"),
         )
 
@@ -386,28 +322,25 @@ class StateDraft:
 class State:
     name: str
     revision: int
-    controller: ControllerV1
+    controller: Controller
     data: Mapping[str, object]
-    renderer: RendererDescriptorV1
+    renderer: RendererDescriptor
     render_sha256: str
-    data_schema: SchemaSnapshotV1 | None = None
-    format: str = STATE_FORMAT_V1
-    meta: MetaSnapshot | None = None
+    meta: MetaSnapshot
+    data_schema: SchemaSnapshot | None = None
+    format: str = STATE_FORMAT
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "format", _require_string(self.format, path="format"))
-        if self.format not in {STATE_FORMAT_V1, STATE_FORMAT_V2}:
+        if self.format != STATE_FORMAT:
             raise CodecError(
                 f"unsupported state format: {self.format}",
                 code="unsupported_state_format",
                 details={"format": self.format},
             )
         object.__setattr__(self, "name", validate_slate_name(self.name))
-        if self.format == STATE_FORMAT_V2:
-            if not isinstance(self.meta, MetaSnapshot) or self.meta.name != self.name:
-                _invalid("state-v2 requires matching meta", path="meta")
-        elif self.meta is not None:
-            _invalid("state-v1 must not contain meta", path="meta")
+        if not isinstance(self.meta, MetaSnapshot) or self.meta.name != self.name:
+            _invalid("state requires matching meta", path="meta")
         object.__setattr__(
             self,
             "revision",
@@ -418,13 +351,13 @@ class State:
                 maximum=MAX_REVISION,
             ),
         )
-        if not isinstance(self.controller, ControllerV1):
-            _invalid("controller must be a ControllerV1", path="controller")
+        if not isinstance(self.controller, Controller):
+            _invalid("controller must be a Controller", path="controller")
         object.__setattr__(self, "data", _require_object(self.data, path="data"))
-        if not isinstance(self.renderer, RendererDescriptorV1):
-            _invalid("renderer must be a RendererDescriptorV1", path="renderer")
-        if self.data_schema is not None and not isinstance(self.data_schema, SchemaSnapshotV1):
-            _invalid("data_schema must be a SchemaSnapshotV1 or null", path="data_schema")
+        if not isinstance(self.renderer, RendererDescriptor):
+            _invalid("renderer must be a RendererDescriptor", path="renderer")
+        if self.data_schema is not None and not isinstance(self.data_schema, SchemaSnapshot):
+            _invalid("data_schema must be a SchemaSnapshot or null", path="data_schema")
         object.__setattr__(
             self,
             "render_sha256",
@@ -454,6 +387,7 @@ class State:
         required = frozenset(
             {
                 "format",
+                "meta",
                 "name",
                 "revision",
                 "controller",
@@ -463,13 +397,11 @@ class State:
                 "render_sha256",
             }
         )
-        if obj.get("format") == STATE_FORMAT_V2:
-            required = required | {"meta"}
         _reject_unknown_fields(obj, allowed=required, path="state")
         _require_fields(obj, required=required, path="state")
         return cls(
             format=_require_string(obj["format"], path="format"),
-            meta=MetaSnapshot.from_json(obj["meta"]) if "meta" in obj else None,
+            meta=MetaSnapshot.from_json(obj["meta"]),
             name=validate_slate_name(obj["name"]),
             revision=_require_integer(
                 obj["revision"],
@@ -477,14 +409,9 @@ class State:
                 minimum=1,
                 maximum=MAX_REVISION,
             ),
-            controller=ControllerV1.from_json(obj["controller"]),
+            controller=Controller.from_json(obj["controller"]),
             data=_require_object(obj["data"], path="data"),
-            data_schema=(SchemaSnapshotV1.from_json(obj["data_schema"]) if obj["data_schema"] is not None else None),
-            renderer=RendererDescriptorV1.from_json(obj["renderer"]),
+            data_schema=(SchemaSnapshot.from_json(obj["data_schema"]) if obj["data_schema"] is not None else None),
+            renderer=RendererDescriptor.from_json(obj["renderer"]),
             render_sha256=_validate_sha256(obj["render_sha256"], path="render_sha256"),
         )
-
-
-# Source compatibility for clients of the original codec. The wire format stays explicit.
-StateDraftV1 = StateDraft
-StateV1 = State

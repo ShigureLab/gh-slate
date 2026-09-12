@@ -136,7 +136,6 @@ There is no default directory search or config merging. File paths are relative
 to the TOML file, and `--profile NAME` selects a definition:
 
 ```toml
-version = 1
 
 [profiles.ci]
 schema = "ci.schema.json"
@@ -181,7 +180,7 @@ Use `apply --dry-run` for a preview with real target metadata. An analyzed
 commit, run ID, or timestamp belongs in `data.source`; gh-slate never replaces
 it with a newer revision merely because the target changed.
 
-## Read, recover, and migrate
+## Read and recover
 
 | Task                                             | Command                          |
 | ------------------------------------------------ | -------------------------------- |
@@ -190,8 +189,8 @@ it with a newer revision merely because the target changed.
 | Read current data, metadata, revision, and view  | `view --json`                    |
 | List managed comments                            | `list --json`                    |
 | Export the complete embedded definition and data | `state export`                   |
-| Verify integrity and reproduce V2 rendering      | `state verify`                   |
-| Restore visible Markdown from V2 state           | `repair --from-state`            |
+| Verify integrity and reproduce rendering         | `state verify`                   |
+| Restore visible Markdown from state              | `repair --from-state`            |
 | Remove one managed comment                       | `delete --confirm NAME`          |
 | Check authentication and local dependencies      | `doctor`                         |
 
@@ -201,19 +200,6 @@ gh slate view review --target https://github.com/OWNER/REPO/pull/42 --web
 gh slate repair review --target https://github.com/OWNER/REPO/pull/42 --from-state --if-revision 3 --json
 gh slate delete review --target https://github.com/OWNER/REPO/pull/42 --confirm review --json
 ```
-
-V1 comments remain readable, exportable, integrity-checkable, and deletable.
-`state verify` reports `verification_scope: "envelope"` for V1; it does not
-claim to reproduce an old renderer. Updating or repairing V1 requires explicit
-migration with `apply --profile ... --config ...` or `apply --template ...`.
-Migration reuses stored data unless new data or a patch is supplied, then
-validates and publishes V2 in the same comment. Convert legacy `slate.*` template
-variables to `meta.*`; arbitrary jq selectors are not translated automatically.
-
-The former `data`/`schema` command trees, editor wrapper, Schema inference, and
-`--table`/`--list` renderers have been removed. Use `view --json` or `state export`
-for data access, external tools for queries, `apply --patch` for partial edits,
-`apply --schema` for direct schema replacement, and Jinja helpers for tables/lists.
 
 ## Publishing guarantees
 
@@ -228,7 +214,7 @@ patch. GitHub has no atomic compare-and-swap for comments: serialize publishers
 by target/name and refetch before a later update after a conflict.
 
 Visible Markdown is a projection. Manual edits produce drift and block normal
-updates; repair explicitly restores the stored projection. A V2 state copied
+updates; repair explicitly restores the stored projection. A state copied
 to a different target cannot be adopted for publishing. Embedded state is
 public to anyone who can read the comment, including template sources; keep
 credentials and private logs out of it.

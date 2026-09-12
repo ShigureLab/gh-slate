@@ -257,7 +257,7 @@ def test_extension_assets_are_exact_executable_self_extracting_bundles(
     assert b"BASHPID" not in header
     assert b"lock_dir=" not in header
     assert b"timed out waiting" not in header
-    assert b"gh-slate-extension-v2" in header
+    assert b"gh-slate-extension" in header
     assert b"mktemp -d" in header
     assert b'payload_file="${stage_dir}/.payload"' in header
     assert b'rm -f "${install_dir}"' not in header
@@ -288,7 +288,7 @@ def test_extension_assets_are_exact_executable_self_extracting_bundles(
     os.name == "nt" or shutil.which("bash") is None,
     reason="the self-extracting extension assets require Bash and Unix symlinks",
 )
-def test_extension_asset_ignores_stale_legacy_lock_and_orphan_stage(
+def test_extension_asset_ignores_stale_lock_and_orphan_stage(
     tmp_path: Path,
 ) -> None:
     project = _project(tmp_path)
@@ -306,9 +306,9 @@ def test_extension_asset_ignores_stale_legacy_lock_and_orphan_stage(
     digest = digest_match.group(1).decode("ascii")
 
     cache = tmp_path / "cache"
-    legacy_lock = cache / "gh-slate-extension" / f"{VERSION}-{digest}.lock"
-    legacy_lock.mkdir(parents=True)
-    install_root = cache / "gh-slate-extension-v2"
+    stale_lock = cache / "gh-slate-extension" / f"{VERSION}-{digest}.lock"
+    stale_lock.mkdir(parents=True)
+    install_root = cache / "gh-slate-extension"
     orphan = install_root / f".{VERSION}-{digest}.stage.orphan"
     orphan.mkdir(parents=True)
     environment = os.environ.copy()
@@ -331,7 +331,7 @@ def test_extension_asset_ignores_stale_legacy_lock_and_orphan_stage(
     install = install_root / f"{VERSION}-{digest}"
     assert install.is_symlink()
     assert (install / ".ready").is_file()
-    assert legacy_lock.is_dir()
+    assert stale_lock.is_dir()
     assert orphan.is_dir()
 
 
@@ -378,7 +378,7 @@ def test_extension_asset_concurrently_publishes_one_ready_cache(
     assert all(result.returncode == 0 for result in results)
     assert all(result.stdout == "gh slate test\n" for result in results)
     assert all(result.stderr == "" for result in results)
-    install_root = cache / "gh-slate-extension-v2"
+    install_root = cache / "gh-slate-extension"
     install = install_root / f"{VERSION}-{digest}"
     assert install.is_symlink()
     assert (install / ".ready").is_file()
@@ -414,7 +414,7 @@ def test_extension_asset_recovers_a_dangling_published_cache(
     digest = digest_match.group(1).decode("ascii")
 
     cache = tmp_path / "cache"
-    install_root = cache / "gh-slate-extension-v2"
+    install_root = cache / "gh-slate-extension"
     install_root.mkdir(parents=True)
     install = install_root / f"{VERSION}-{digest}"
     install.symlink_to(install_root / "missing-stage")
@@ -460,7 +460,7 @@ def test_extension_asset_concurrently_recovers_one_dangling_cache(
     digest = digest_match.group(1).decode("ascii")
 
     cache = tmp_path / "cache"
-    install_root = cache / "gh-slate-extension-v2"
+    install_root = cache / "gh-slate-extension"
     install_root.mkdir(parents=True)
     install = install_root / f"{VERSION}-{digest}"
     install.symlink_to(install_root / "missing-stage")
@@ -535,7 +535,7 @@ def test_extension_asset_finishes_a_previously_elected_recovery(
     )
     assert initial.returncode == 0, initial.stderr
 
-    install_root = cache / "gh-slate-extension-v2"
+    install_root = cache / "gh-slate-extension"
     install = install_root / f"{VERSION}-{digest}"
     published_stage = install.resolve()
     recovery = Path(f"{install}.recover")
@@ -603,7 +603,7 @@ def test_extension_asset_re_elects_a_dangling_recovery_chain(
 
     initial = invoke()
     assert initial.returncode == 0, initial.stderr
-    install_root = cache / "gh-slate-extension-v2"
+    install_root = cache / "gh-slate-extension"
     install = install_root / f"{VERSION}-{digest}"
     first_stage = install.resolve()
     recovery = Path(f"{install}.recover")
@@ -722,7 +722,7 @@ def test_extension_asset_preserves_multihop_install_chain_when_publication_fails
 
     initial = invoke()
     assert initial.returncode == 0, initial.stderr
-    install_root = cache / "gh-slate-extension-v2"
+    install_root = cache / "gh-slate-extension"
     install = install_root / f"{VERSION}-{digest}"
     first_bridge = install.resolve(strict=True)
     terminal_bridge = install_root / f".{VERSION}-{digest}.stage.multihop"
@@ -791,7 +791,7 @@ def test_extension_asset_rejects_an_out_of_cache_recovery_target(
     assert digest_match is not None
     digest = digest_match.group(1).decode("ascii")
     cache = tmp_path / "cache"
-    install_root = cache / "gh-slate-extension-v2"
+    install_root = cache / "gh-slate-extension"
     install_root.mkdir(parents=True)
     install = install_root / f"{VERSION}-{digest}"
     install.symlink_to(install_root / "missing-stage")
@@ -867,7 +867,7 @@ def test_extension_asset_preserves_a_stage_when_signalled_during_publish(
     )
 
     assert interrupted.returncode != 0
-    install_root = cache / "gh-slate-extension-v2"
+    install_root = cache / "gh-slate-extension"
     install = install_root / f"{VERSION}-{digest}"
     assert install.is_symlink()
     published_stage = install.resolve()

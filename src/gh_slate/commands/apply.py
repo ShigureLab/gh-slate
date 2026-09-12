@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 from gh_slate.codec import (
     JsonValue,
-    RendererDescriptorV1,
-    SchemaSnapshotV1,
+    RendererDescriptor,
+    SchemaSnapshot,
     canonical_json_bytes,
     strict_loads,
     validate_slate_name,
@@ -76,7 +76,7 @@ def _new_transaction() -> ApplyTransaction:
     )
 
 
-def _renderer(args: Namespace) -> RendererDescriptorV1 | None:
+def _renderer(args: Namespace) -> RendererDescriptor | None:
     return None if args.template is None else jinja_descriptor(_template_source(args.template))
 
 
@@ -85,8 +85,8 @@ def _prepare_request_parts(
 ) -> tuple[
     str,
     Mapping[str, JsonValue] | None,
-    SchemaSnapshotV1 | None,
-    RendererDescriptorV1 | None,
+    SchemaSnapshot | None,
+    RendererDescriptor | None,
 ]:
     name = validate_slate_name(args.name)
     profile = _selected_profile(args)

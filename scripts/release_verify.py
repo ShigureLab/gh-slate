@@ -456,7 +456,7 @@ set -euo pipefail
 payload_offset={payload_offset:020d}
 payload_sha256={payload_sha256}
 cache_home="${{XDG_CACHE_HOME:-${{HOME:?HOME must be set}}/.cache}}"
-install_root="${{cache_home}}/gh-slate-extension-v2"
+install_root="${{cache_home}}/gh-slate-extension"
 install_dir="${{install_root}}/{version}-${{payload_sha256}}"
 ready_file="${{install_dir}}/.ready"
 recovery_link="${{install_dir}}.recover"

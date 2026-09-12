@@ -14,25 +14,25 @@
   {
     "id": "marker-not-at-start",
     "kind": "text",
-    "value": "prefix\n<!-- gh-slate:v1 name=ci encoding=zlib+base64 state=0000000000000000000000000000000000000000000000000000000000000000\nAAAA\n-->\n\nvisible",
+    "value": "prefix\n<!-- gh-slate: name=ci encoding=zlib+base64 state=0000000000000000000000000000000000000000000000000000000000000000\nAAAA\n-->\n\nvisible",
     "error_code": "marker_not_at_start"
   },
   {
-    "id": "unsupported-version",
+    "id": "unexpected-header-token",
     "kind": "text",
-    "value": "<!-- gh-slate:v999 name=ci encoding=zlib+base64 state=0000000000000000000000000000000000000000000000000000000000000000\nAAAA\n-->\n\nvisible",
-    "error_code": "unsupported_marker_version"
+    "value": "<!-- gh-slate: unexpected name=ci encoding=zlib+base64 state=0000000000000000000000000000000000000000000000000000000000000000\nAAAA\n-->\n\nvisible",
+    "error_code": "invalid_marker"
   },
   {
     "id": "invalid-marker-shape",
     "kind": "text",
-    "value": "<!-- gh-slate:v1 name=ci encoding=zlib+base64 state=not-a-hash\n!!!!\n-->\n\nvisible",
+    "value": "<!-- gh-slate: name=ci encoding=zlib+base64 state=not-a-hash\n!!!!\n-->\n\nvisible",
     "error_code": "invalid_marker"
   },
   {
     "id": "valid-base64-invalid-zlib",
     "kind": "text",
-    "value": "<!-- gh-slate:v1 name=ci encoding=zlib+base64 state=0000000000000000000000000000000000000000000000000000000000000000\nAAAA\n-->\n\nvisible",
+    "value": "<!-- gh-slate: name=ci encoding=zlib+base64 state=0000000000000000000000000000000000000000000000000000000000000000\nAAAA\n-->\n\nvisible",
     "error_code": "invalid_zlib"
   },
   {

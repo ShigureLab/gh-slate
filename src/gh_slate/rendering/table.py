@@ -3,25 +3,25 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import cast
 
-from gh_slate.codec.model import SchemaSnapshotV1
+from gh_slate.codec.model import SchemaSnapshot
 from gh_slate.codec.text import utf8_size
 from gh_slate.rendering.errors import RenderingError
 from gh_slate.rendering.limits import DEFAULT_RENDER_LIMITS, RenderLimits
 from gh_slate.rendering.markdown import MISSING, escape_markdown_text, render_value
-from gh_slate.rendering.model import TableColumn, TableRendererV1
+from gh_slate.rendering.model import TableColumn, TableOptions
 
 
 def _rows(value: object) -> tuple[Mapping[str, object], ...]:
     if not isinstance(value, (tuple, list)):
         raise RenderingError(
-            "builtin-table selector must produce an array",
+            "table input must be an array",
             code="table_shape_invalid",
         )
     rows: list[Mapping[str, object]] = []
     for index, row in enumerate(value):
         if not isinstance(row, Mapping):
             raise RenderingError(
-                "builtin-table rows must all be objects",
+                "table rows must all be objects",
                 code="table_shape_invalid",
                 details={"row": index, "value_type": type(row).__name__},
             )
@@ -30,7 +30,7 @@ def _rows(value: object) -> tuple[Mapping[str, object], ...]:
 
 
 def _schema_columns(schema: object) -> tuple[TableColumn, ...]:
-    if isinstance(schema, SchemaSnapshotV1):
+    if isinstance(schema, SchemaSnapshot):
         schema = schema.document
     if not isinstance(schema, Mapping):
         return ()
@@ -49,10 +49,10 @@ def _schema_columns(schema: object) -> tuple[TableColumn, ...]:
 
 
 def resolve_table_renderer(
-    renderer: TableRendererV1,
+    renderer: TableOptions,
     rows: object,
     schema: object = None,
-) -> TableRendererV1:
+) -> TableOptions:
     typed_rows = _rows(rows)
     if renderer.columns:
         return renderer
@@ -63,7 +63,7 @@ def resolve_table_renderer(
             for key in row:
                 if not isinstance(key, str):
                     raise RenderingError(
-                        "builtin-table row keys must be strings",
+                        "table row keys must be strings",
                         code="table_shape_invalid",
                         details={
                             "row": row_index,
@@ -72,8 +72,7 @@ def resolve_table_renderer(
                     )
                 keys.add(key)
         columns = tuple(TableColumn(path=(key,), header=key) for key in sorted(keys))
-    return TableRendererV1(
-        selector=renderer.selector,
+    return TableOptions(
         title=renderer.title,
         columns=columns,
         max_rows=renderer.max_rows,
@@ -117,7 +116,7 @@ def _enforce_output(markdown: str, limits: RenderLimits) -> None:
 
 def render_table(
     value: object,
-    renderer: TableRendererV1,
+    renderer: TableOptions,
     limits: RenderLimits = DEFAULT_RENDER_LIMITS,
 ) -> str:
     rows = _rows(value)
@@ -135,7 +134,7 @@ def render_table(
         raise RenderingError(
             "table columns could not be resolved",
             code="table_columns_unresolved",
-            hints=("provide --columns or a schema with item properties",),
+            hints=("provide explicit table columns or a schema with item properties",),
         )
 
     lines: list[str] = []

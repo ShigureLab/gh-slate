@@ -339,7 +339,6 @@ def _check_reducer(root: Path) -> None:
         "MAX_ARTIFACT_BYTES = 16 * 1024",
         "object_pairs_hook=unique_object",
         '"repository": repository_name',
-        '"schema_version": 1',
         '"target_number": number',
     ):
         if required not in source:

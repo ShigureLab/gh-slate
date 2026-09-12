@@ -7,6 +7,7 @@ from hashlib import sha256
 from typing import TYPE_CHECKING
 
 from gh_slate.cli import run
+from gh_slate.codec import MetaSnapshot, canonical_json_bytes
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -154,3 +155,13 @@ def test_local_jinja_render_requires_context_for_target_dependent_templates(
     assert captured.out == ""
     assert "jinja_undefined" in captured.err
     assert "apply --dry-run" in captured.err
+
+
+def test_local_preview_rejects_metadata_for_another_slate(tmp_path, capsys):
+    template = tmp_path / "template.j2"
+    template.write_text("{{ meta.slate.name }}")
+    metadata = tmp_path / "meta.json"
+    metadata.write_bytes(canonical_json_bytes(MetaSnapshot.local("other").to_json()))
+
+    assert run(["render", "ci", "--template", str(template), "--meta", str(metadata)]) == 2
+    assert "render_context_mismatch" in capsys.readouterr().err

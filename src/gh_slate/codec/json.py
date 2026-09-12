@@ -366,7 +366,7 @@ def _check_decimal_limit(value: Decimal, *, limits: JsonLimits, path: str) -> No
 
 
 def canonical_number(value: Decimal | int) -> str:
-    """Serialize a finite number according to the gh-slate state-v1 rule."""
+    """Serialize a finite number according to the gh-slate state rule."""
 
     if isinstance(value, bool) or not isinstance(value, (Decimal, int)):
         raise _codec_error(

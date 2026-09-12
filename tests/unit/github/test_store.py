@@ -5,13 +5,14 @@ from typing import cast
 
 import pytest
 
-from gh_slate.codec import ControllerV1, StateV1, encode_comment, render_sha256
+from gh_slate.codec import Controller, State, encode_comment, render_sha256
+from gh_slate.codec.meta import MetaSnapshot
 from gh_slate.errors import ExitCode
 from gh_slate.github.errors import GitHubReadError
 from gh_slate.github.models import GitHubActor
 from gh_slate.github.store import CommentStore
 from gh_slate.rendering import (
-    ListRendererV1,
+    jinja_descriptor,
 )
 
 _EMPTY_HASH = "0" * 64
@@ -69,17 +70,16 @@ def _body(
     name: str = "ci",
     *,
     controller: str = "ci-bot",
-    controller_id: int | None = ACTOR_ID,
+    controller_id: int = ACTOR_ID,
     visible_value: str = "ready",
 ) -> str:
-    state = StateV1(
+    state = State(
+        meta=MetaSnapshot.local(name),
         name=name,
         revision=1,
-        controller=ControllerV1(login=controller, id=controller_id),
+        controller=Controller(login=controller, id=controller_id),
         data={"status": visible_value},
-        renderer=ListRendererV1(
-            selector=".status",
-        ).to_descriptor(),
+        renderer=jinja_descriptor("{{ data | md_list }}"),
         render_sha256=render_sha256(f"- {visible_value}\n"),
     )
     return encode_comment(state, f"- {visible_value}\n").body
@@ -221,25 +221,10 @@ def test_same_login_with_a_different_actor_id_is_not_adopted() -> None:
     assert caught.value.code == "slate_not_found"
 
 
-def test_legacy_login_only_state_uses_comment_author_id_safely() -> None:
-    client = FakeClient(
-        [
-            _record(
-                1,
-                _body(controller="old-login", controller_id=None),
-                author="new-login",
-            )
-        ],
-        actor=GitHubActor(id=ACTOR_ID, login="new-login"),
-    )
-
-    assert CommentStore(client).find(Target(), "ci").comment.id == 1
-
-
 def test_forged_marker_name_cannot_relabel_stored_state() -> None:
     forged = _body(name="other").replace(
-        "<!-- gh-slate:v1 name=other ",
-        "<!-- gh-slate:v1 name=ci ",
+        "<!-- gh-slate: name=other ",
+        "<!-- gh-slate: name=ci ",
         1,
     )
     client = FakeClient([_record(1, forged)])

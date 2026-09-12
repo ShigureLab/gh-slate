@@ -13,9 +13,10 @@ import pytest
 from gh_slate.codec.comment import decode_comment
 from gh_slate.codec.hashes import canonical_state_bytes, render_sha256, state_sha256
 from gh_slate.codec.json import canonical_json_bytes, strict_loads
-from gh_slate.codec.model import MAX_REVISION, StateV1
+from gh_slate.codec.model import MAX_REVISION, State
+from gh_slate.rendering import render_state
 
-FIXTURE_ROOT = Path(__file__).resolve().parents[2] / "fixtures" / "wire" / "state-v1"
+FIXTURE_ROOT = Path(__file__).resolve().parents[2] / "fixtures" / "wire" / "state"
 MANIFEST = FIXTURE_ROOT / "manifest.json"
 ROOT_FILES = {"README.md", "manifest.json"}
 REQUIRED_FIXTURE_FILES = {
@@ -51,13 +52,13 @@ def _canonical_fixture(name: str) -> bytes:
     return stored.removesuffix(b"\n")
 
 
-def test_state_v1_fixture_files_match_the_closed_append_only_manifest() -> None:
+def test_state_fixture_files_match_the_manifest() -> None:
     manifest = _manifest()
     fixtures = manifest["fixtures"]
     assert isinstance(fixtures, dict)
     typed_fixtures = cast("dict[str, dict[str, str]]", fixtures)
 
-    assert manifest["format"] == "gh-slate/state-v1"
+    assert manifest["format"] == "gh-slate/state"
     assert {path.name for path in FIXTURE_ROOT.iterdir() if path.is_file()} == ROOT_FILES
     assert {path.name for path in FIXTURE_ROOT.iterdir() if path.is_dir()} == set(typed_fixtures)
 
@@ -77,7 +78,7 @@ def test_state_v1_fixture_files_match_the_closed_append_only_manifest() -> None:
 
 
 @pytest.mark.parametrize("fixture_name", _fixture_names())
-def test_state_v1_wire_fixture_remains_decodable_with_stable_canonical_state(
+def test_state_wire_fixture_remains_decodable_with_stable_canonical_state(
     fixture_name: str,
 ) -> None:
     fixture_dir = _fixture_dir(fixture_name)
@@ -86,7 +87,7 @@ def test_state_v1_wire_fixture_remains_decodable_with_stable_canonical_state(
     stored_comment = fixture_dir.joinpath("comment.md").read_text(encoding="utf-8")
     expected = json.loads(fixture_dir.joinpath("expected.json").read_text(encoding="utf-8"))
 
-    state = StateV1.from_json(strict_loads(canonical_fixture))
+    state = State.from_json(strict_loads(canonical_fixture))
     decoded = decode_comment(stored_comment)
 
     assert canonical_state_bytes(state) == canonical_fixture
@@ -99,6 +100,7 @@ def test_state_v1_wire_fixture_remains_decodable_with_stable_canonical_state(
     assert decoded.actual_render_sha256 == expected["render_sha256"]
     assert asdict(decoded.sizes) == expected["sizes"]
     assert decoded.drifted is False
+    assert render_state(decoded.state).markdown == visible
 
 
 @pytest.mark.parametrize("fixture_name", _fixture_names())
@@ -130,7 +132,7 @@ def test_full_types_fixture_preserves_the_type_and_presence_matrix() -> None:
     assert state.revision == MAX_REVISION
     assert state.data_schema is not None
     assert state.data_schema.document
-    assert state.renderer.configuration["options"]
+    assert state.renderer.config["source"]
     assert data["unicode"] == "雪 · café · 👩‍💻"
     assert data["bool_true"] is True
     assert data["bool_false"] is False

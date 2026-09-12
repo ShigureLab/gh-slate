@@ -158,9 +158,7 @@ def test_apply_builds_a_validated_create_transaction_request(
     assert request.data == {"status": "ready"}
     assert request.data_schema is not None
     assert request.renderer is not None
-    assert request.renderer.kind == "jinja"
-    assert request.renderer.version == 2
-    assert request.renderer.configuration == {"source": "# {{ meta.slate.name }}\n\n{{ data.status }}"}
+    assert request.renderer.config == {"source": "# {{ meta.slate.name }}\n\n{{ data.status }}"}
     assert transaction.reader.calls == []
 
 

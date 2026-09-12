@@ -8,14 +8,12 @@ from typing import TYPE_CHECKING, cast
 import pytest
 
 from gh_slate.codec import (
-    ControllerV1,
+    Controller,
     MetaSnapshot,
-    RendererDescriptorV1,
-    SchemaSnapshotV1,
-    StateV1,
+    RendererDescriptor,
+    SchemaSnapshot,
+    State,
     decode_comment,
-    encode_comment,
-    render_sha256,
 )
 from gh_slate.errors import ExitCode, GhSlateError
 from gh_slate.github.apply import (
@@ -28,8 +26,6 @@ from gh_slate.github.models import GitHubActor
 from gh_slate.github.target import ResolvedTarget
 from gh_slate.github.write import GhWriteOutcomeUnknown, GhWriteTimeout
 from gh_slate.rendering import (
-    ListRendererV1,
-    SlateContext,
     jinja_descriptor,
     materialize_comment,
     render_state,
@@ -58,7 +54,7 @@ ACTOR_ID = 101
 OTHER_ACTOR_ID = 202
 
 
-def _renderer() -> RendererDescriptorV1:
+def _renderer() -> RendererDescriptor:
     return jinja_descriptor("- {{ data.status if data.status is defined else none }}")
 
 
@@ -67,15 +63,15 @@ def _body(
     *,
     revision: int = 1,
     controller: str = "ci-bot",
-    controller_id: int | None = ACTOR_ID,
-    renderer: RendererDescriptorV1 | None = None,
-    schema: SchemaSnapshotV1 | None = None,
+    controller_id: int = ACTOR_ID,
+    renderer: RendererDescriptor | None = None,
+    schema: SchemaSnapshot | None = None,
     page_url: str = ISSUE_URL,
 ) -> str:
     descriptor = _renderer() if renderer is None else renderer
-    state = StateV1(
+    state = State(
         name="ci",
-        format="gh-slate/state-v2",
+        format="gh-slate/state",
         meta=MetaSnapshot.from_json(
             {
                 "host": HOST,
@@ -95,47 +91,15 @@ def _body(
             }
         ),
         revision=revision,
-        controller=ControllerV1(login=controller, id=controller_id),
+        controller=Controller(login=controller, id=controller_id),
         data={"status": status},
         data_schema=schema,
         renderer=descriptor,
         render_sha256=EMPTY_HASH,
     )
-    context = SlateContext(
-        name="ci",
-        repository=REPOSITORY,
-        number=NUMBER,
-        url=page_url,
-    )
     return materialize_comment(
         state,
-        slate=context,
     ).encoded.body
-
-
-def _legacy_body() -> str:
-    visible = "old\n"
-    state = StateV1(
-        name="ci",
-        revision=1,
-        controller=ControllerV1(login="ci-bot", id=ACTOR_ID),
-        data={"status": "old"},
-        renderer=RendererDescriptorV1(kind="jinja", version=1, config={"source": "{{ data.status }}"}),
-        render_sha256=render_sha256(visible),
-    )
-    return encode_comment(state, visible).body
-
-
-def test_legacy_update_requires_explicit_definition_and_never_runs_old_template():
-    remote = FakeGitHub(comments=[_record(100, _legacy_body())])
-    with pytest.raises(GhSlateError) as error:
-        _apply(remote, data={"status": "new"})
-    assert error.value.code == "state_migration_required"
-    assert remote.write_calls == []
-    migrated = _apply(remote, renderer=jinja_descriptor("{{ data.status }}"), if_revision=1)
-    assert migrated.revision == 2
-    assert _stored(remote).data == {"status": "old"}
-    assert _stored(remote).meta is not None
 
 
 def _record(
@@ -334,7 +298,7 @@ def test_create_uses_canonical_target_metadata_and_exactly_one_post() -> None:
     assert remote.write_calls[0][3] == HOST
     decoded = decode_comment(cast("str", remote.comments[0]["body"]))
     assert unescape(decoded.visible_markdown) == f"{REPOSITORY}#{NUMBER} {PULL_URL}\n"
-    assert decoded.state.controller == ControllerV1(
+    assert decoded.state.controller == Controller(
         login="ci-bot",
         id=ACTOR_ID,
     )
@@ -380,7 +344,7 @@ def test_update_reuses_renderer_schema_and_controller_then_patches_once() -> Non
     assert decoded.state.data == {"status": "new"}
     assert decoded.state.data_schema == schema
     assert decoded.state.renderer == _renderer()
-    assert decoded.state.controller == ControllerV1(
+    assert decoded.state.controller == Controller(
         login="ci-bot",
         id=ACTOR_ID,
     )
@@ -415,29 +379,7 @@ def test_update_survives_login_rename_and_refreshes_controller_metadata() -> Non
     assert result.action == "updated"
     assert [call[0] for call in remote.write_calls] == ["PATCH"]
     decoded = decode_comment(cast("str", remote.comments[0]["body"]))
-    assert decoded.state.controller == ControllerV1(
-        login="new-login",
-        id=ACTOR_ID,
-    )
-
-
-def test_legacy_login_only_state_is_upgraded_on_the_next_write() -> None:
-    remote = FakeGitHub(
-        comments=[
-            _record(
-                7,
-                _body(controller="old-login", controller_id=None),
-                author="new-login",
-            )
-        ],
-        actor_login="new-login",
-    )
-
-    result = _apply(remote, mode="update")
-
-    assert result.action == "updated"
-    decoded = decode_comment(cast("str", remote.comments[0]["body"]))
-    assert decoded.state.controller == ControllerV1(
+    assert decoded.state.controller == Controller(
         login="new-login",
         id=ACTOR_ID,
     )
@@ -559,7 +501,7 @@ def test_reserved_marker_from_renderer_is_rejected_before_post_or_patch(
         _apply(
             remote,
             mode=mode,
-            renderer=jinja_descriptor("<!-- gh-slate:v1 forged -->"),
+            renderer=jinja_descriptor("<!-- gh-slate: forged -->"),
         )
 
     assert caught.value.code == "duplicate_marker"
@@ -659,10 +601,7 @@ def test_comment_id_url_mismatch_fails_before_any_write() -> None:
 
 
 def test_renderer_failure_and_missing_create_renderer_write_nothing() -> None:
-    invalid = RendererDescriptorV1(
-        kind="unknown",
-        version=1,
-    )
+    invalid = RendererDescriptor(config={})
     remote = FakeGitHub()
     with pytest.raises(GhSlateError):
         _apply(
@@ -678,7 +617,7 @@ def test_renderer_failure_and_missing_create_renderer_write_nothing() -> None:
 
 @pytest.mark.parametrize(
     "failure",
-    ["jinja", "legacy_renderer", "schema", "size"],
+    ["jinja", "schema", "size"],
 )
 def test_full_pipeline_failures_happen_before_any_write(
     failure: str,
@@ -699,14 +638,6 @@ def test_full_pipeline_failures_happen_before_any_write(
         remote = FakeGitHub()
         changes = {
             "renderer": jinja_descriptor("{{ data.missing }}"),
-        }
-    elif failure == "legacy_renderer":
-        remote = FakeGitHub()
-        changes = {
-            "data": {"jobs": [{"name": "a"}, {"name": "b"}]},
-            "renderer": ListRendererV1(
-                selector=".jobs[]",
-            ).to_descriptor(),
         }
     else:
         remote = FakeGitHub()
@@ -1143,17 +1074,16 @@ def test_request_rejects_invalid_controller_and_revision(
 
 
 @pytest.mark.parametrize(("url", "kind"), [(ISSUE_URL, "issue"), (PULL_URL, "pull_request")])
-def test_v2_meta_snapshot_create_noop_and_explicit_v1_migration(url: str, kind: str) -> None:
+def test_meta_snapshot_create_and_noop(url: str, kind: str) -> None:
     github = FakeGitHub(target_html_url=url)
-    descriptor = jinja_descriptor("{{ meta.target.kind }} #{{ meta.target.number }}: {{ data.status }}", version=2)
+    descriptor = jinja_descriptor("{{ meta.target.kind }} #{{ meta.target.number }}: {{ data.status }}")
     created = apply(
         ApplyRequest(target=TARGET, name="ci", renderer=descriptor, data={"status": "pass"}),
         reader=github,
         writer=github,
     )
     stored = decode_comment(cast("str", github.comments[0]["body"]))
-    assert stored.state.format == "gh-slate/state-v2"
-    assert stored.state.meta is not None
+    assert stored.state.format == "gh-slate/state"
     assert stored.state.meta.value["target"] == {"kind": kind, "number": NUMBER, "id": "I_example", "url": url}
     assert unescape(render_state(stored.state).markdown) == f"{kind} #42: pass\n"
     unchanged = apply(ApplyRequest(target=TARGET, name="ci", data={"status": "pass"}), reader=github, writer=github)
@@ -1161,20 +1091,10 @@ def test_v2_meta_snapshot_create_noop_and_explicit_v1_migration(url: str, kind: 
     assert unchanged.revision == created.revision == 1
     assert len(github.write_calls) == 1
 
-    legacy = FakeGitHub(comments=[_record(100, _legacy_body(), page_url=url)], target_html_url=url)
-    migrated = apply(ApplyRequest(target=TARGET, name="ci", renderer=descriptor), reader=legacy, writer=legacy)
-    upgraded = decode_comment(cast("str", legacy.comments[0]["body"]))
-    assert migrated.revision == 2
-    assert upgraded.state.data == {"status": "old"}
-    assert upgraded.state.meta is not None
-    assert len(legacy.comments) == 1
 
-
-def test_v2_rejects_copied_target_identity_without_writing() -> None:
+def test_rejects_copied_target_identity_without_writing() -> None:
     github = FakeGitHub()
-    apply(
-        ApplyRequest(target=TARGET, name="ci", renderer=jinja_descriptor("ok", version=2)), reader=github, writer=github
-    )
+    apply(ApplyRequest(target=TARGET, name="ci", renderer=jinja_descriptor("ok")), reader=github, writer=github)
     github.target_node_id = "I_different"
     github.write_calls.clear()
     with pytest.raises(ApplyError) as error:
@@ -1183,15 +1103,15 @@ def test_v2_rejects_copied_target_identity_without_writing() -> None:
     assert github.write_calls == []
 
 
-def test_v2_snapshot_reproduction_does_not_need_live_metadata() -> None:
+def test_snapshot_reproduction_does_not_need_live_metadata() -> None:
     github = FakeGitHub()
     apply(
-        ApplyRequest(target=TARGET, name="ci", renderer=jinja_descriptor("{{ meta.target.number }}", version=2)),
+        ApplyRequest(target=TARGET, name="ci", renderer=jinja_descriptor("{{ meta.target.number }}")),
         reader=github,
         writer=github,
     )
     stored = decode_comment(cast("str", github.comments[0]["body"]))
-    assert render_state(stored.state, slate=SlateContext(name="ci", number=99)).markdown == "42\n"
+    assert render_state(stored.state).markdown == "42\n"
     assert render_state(replace(stored.state, revision=99)).render_sha256 == stored.state.render_sha256
 
 
@@ -1202,7 +1122,7 @@ def _stored(remote):
 def _create(remote):
     _apply(
         remote,
-        renderer=jinja_descriptor("{{ data | compact_json }}", version=2),
+        renderer=jinja_descriptor("{{ data | compact_json }}"),
         data={"findings": {"F17": {"status": "open"}, "F18": {"status": "open"}}},
     )
     remote.write_calls.clear()
@@ -1257,7 +1177,7 @@ def test_patch_preconditions_fail_without_writing(arguments, code):
 def test_patch_cannot_create_instance():
     remote = FakeGitHub()
     with pytest.raises(GhSlateError) as error:
-        _apply(remote, patch=[], if_revision=1, renderer=jinja_descriptor("ok", version=2))
+        _apply(remote, patch=[], if_revision=1, renderer=jinja_descriptor("ok"))
     assert error.value.code == "patch_existing_required"
     assert remote.write_calls == []
 
@@ -1268,7 +1188,7 @@ def test_patch_validates_only_final_data_with_new_definition():
         remote,
         data={"old": "value"},
         data_schema={"required": ["old"]},
-        renderer=jinja_descriptor("{{ data.old }}", version=2),
+        renderer=jinja_descriptor("{{ data.old }}"),
     )
     remote.write_calls.clear()
     patch = [{"op": "remove", "path": "/old"}, {"op": "add", "path": "/new", "value": "value"}]
@@ -1280,7 +1200,7 @@ def test_patch_validates_only_final_data_with_new_definition():
         remote,
         patch=patch,
         if_revision=1,
-        renderer=jinja_descriptor("{{ data.new }}", version=2),
+        renderer=jinja_descriptor("{{ data.new }}"),
         data_schema={"required": ["new"]},
     )
     assert result.revision == 2

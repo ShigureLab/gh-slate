@@ -8,6 +8,7 @@ from decimal import Decimal
 from typing import Protocol, cast
 
 from gh_slate.codec import CodecError, decode_comment
+from gh_slate.codec.marker import MANAGED_MARKER_PREFIX, NAME_PATTERN
 from gh_slate.errors import ExitCode
 from gh_slate.github.errors import GitHubReadError
 from gh_slate.github.models import (
@@ -18,10 +19,7 @@ from gh_slate.github.models import (
 )
 from gh_slate.github.target import target_from_comment_url
 
-_MARKER_NAME = re.compile(
-    r"\A<!-- gh-slate:v[0-9]+ name="
-    r"(?P<name>[a-z0-9][a-z0-9._-]{0,63})(?: |\n)"
-)
+_MARKER_NAME = re.compile(rf"\A{re.escape(MANAGED_MARKER_PREFIX)} name=(?P<name>{NAME_PATTERN})(?: |\n)")
 
 
 class TargetLike(Protocol):
@@ -249,7 +247,7 @@ class CommentStore:
             try:
                 decoded = decode_comment(comment.body)
                 stored_controller_id = decoded.state.controller.id
-                if stored_controller_id is not None and stored_controller_id != selected_controller.id:
+                if stored_controller_id != selected_controller.id:
                     raise GitHubReadError(
                         "stored controller does not match the comment author",
                         code="controller_mismatch",

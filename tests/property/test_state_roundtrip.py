@@ -12,13 +12,14 @@ from gh_slate.codec.hashes import (
     normalize_visible_markdown,
     render_sha256,
 )
+from gh_slate.codec.meta import MetaSnapshot
 from gh_slate.codec.model import (
     JSON_SCHEMA_DIALECT_2020_12,
     MAX_REVISION,
-    ControllerV1,
-    RendererDescriptorV1,
-    SchemaSnapshotV1,
-    StateV1,
+    Controller,
+    RendererDescriptor,
+    SchemaSnapshot,
+    State,
 )
 
 SAFE_TEXT = st.text(
@@ -61,18 +62,9 @@ JSON_VALUES = st.recursive(
 )
 DATA_OBJECTS = st.dictionaries(SAFE_TEXT, JSON_VALUES, max_size=5)
 SCHEMA_DOCUMENTS = st.booleans() | st.dictionaries(SAFE_TEXT, JSON_VALUES, max_size=5)
-RENDERER_CONFIGS = st.builds(
-    lambda value, rows: {
-        "selector": ".data",
-        "options": {
-            "nested": {
-                "value": value,
-                "rows": rows,
-            }
-        },
-    },
-    JSON_VALUES,
-    st.lists(JSON_VALUES, max_size=3),
+RENDERER_CONFIGS = st.one_of(
+    st.builds(lambda text: {"source": text}, SAFE_TEXT),
+    st.builds(lambda text: {"view_by": "/outcome", "views": {"done": text}}, SAFE_TEXT),
 )
 REVISIONS = st.one_of(
     st.sampled_from((1, MAX_REVISION)),
@@ -109,18 +101,17 @@ def test_comment_round_trip_property(
     visible: str,
 ) -> None:
     data_with_number = {**data, "_required_number": required_number}
-    state = StateV1(
+    state = State(
+        meta=MetaSnapshot.local("property"),
         name="property",
         revision=revision,
-        controller=ControllerV1(login="tester", id=1),
+        controller=Controller(login="tester", id=1),
         data=data_with_number,
-        data_schema=SchemaSnapshotV1(
+        data_schema=SchemaSnapshot(
             dialect=JSON_SCHEMA_DIALECT_2020_12,
             document=schema_document,
         ),
-        renderer=RendererDescriptorV1(
-            kind="fixture",
-            version=1,
+        renderer=RendererDescriptor(
             config=renderer_config,
         ),
         render_sha256=render_sha256(visible),
@@ -134,7 +125,7 @@ def test_comment_round_trip_property(
     assert decoded.visible_markdown == normalize_visible_markdown(visible)
     assert decoded.state.revision == revision
     assert decoded.state.data_schema == state.data_schema
-    assert decoded.state.renderer.configuration == state.renderer.configuration
+    assert decoded.state.renderer.config == state.renderer.config
     assert decoded.state.data["_required_number"] == required_number
     assert decoded.drifted is False
 
@@ -148,19 +139,18 @@ def test_revision_bounds_and_non_lf_markdown_round_trip_property(
     line_ending: str,
 ) -> None:
     visible = f"heading{line_ending}body{line_ending}"
-    state = StateV1(
+    state = State(
+        meta=MetaSnapshot.local("boundaries"),
         name="boundaries",
         revision=revision,
-        controller=ControllerV1(login="tester", id=1),
+        controller=Controller(login="tester", id=1),
         data={"negative_zero": Decimal("-0")},
-        data_schema=SchemaSnapshotV1(
+        data_schema=SchemaSnapshot(
             dialect=JSON_SCHEMA_DIALECT_2020_12,
             document=True,
         ),
-        renderer=RendererDescriptorV1(
-            kind="fixture",
-            version=1,
-            config={"options": {"nested": {"empty": []}}},
+        renderer=RendererDescriptor(
+            config={"source": "{{ data | md_list }}"},
         ),
         render_sha256=render_sha256(visible),
     )

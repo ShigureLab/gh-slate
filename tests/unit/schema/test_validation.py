@@ -8,7 +8,7 @@ import pytest
 
 import gh_slate.schema.keywords as schema_keywords
 from gh_slate.codec.json import DEFAULT_JSON_LIMITS
-from gh_slate.codec.model import JSON_SCHEMA_DIALECT_2020_12, SchemaSnapshotV1
+from gh_slate.codec.model import JSON_SCHEMA_DIALECT_2020_12, SchemaSnapshot
 from gh_slate.schema.errors import SchemaError
 from gh_slate.schema.validation import (
     DEFAULT_MAX_ERRORS,
@@ -824,7 +824,7 @@ def test_replace_schema_validates_schema_before_current_data() -> None:
         },
     )
 
-    assert isinstance(snapshot, SchemaSnapshotV1)
+    assert isinstance(snapshot, SchemaSnapshot)
 
     with pytest.raises(SchemaError) as captured:
         replace_schema(

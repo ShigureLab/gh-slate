@@ -87,7 +87,6 @@ jobs:
 
           reduced = {
               "repository": repository_name,
-              "schema_version": 1,
               "target_number": number,
           }
           encoded = json.dumps(

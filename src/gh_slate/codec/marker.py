@@ -13,7 +13,6 @@ from gh_slate.codec.limits import (
 )
 from gh_slate.codec.text import utf8_size
 
-MARKER_VERSION = 1
 MARKER_ENCODING = "zlib+base64"
 MANAGED_MARKER_PREFIX = "<!-- gh-slate:"
 NAME_PATTERN = r"[a-z0-9][a-z0-9._-]{0,63}"
@@ -22,9 +21,8 @@ STATE_SHA256_PATTERN = r"[0-9a-f]{64}"
 _NAME_RE = re.compile(rf"\A{NAME_PATTERN}\Z")
 _STATE_SHA256_RE = re.compile(rf"\A{STATE_SHA256_PATTERN}\Z")
 _PAYLOAD_RE = re.compile(r"\A[A-Za-z0-9+/]+={0,2}\Z")
-_MARKER_VERSION_RE = re.compile(r"\A<!-- gh-slate:v(?P<version>[0-9]+)\b")
 _MARKER_RE = re.compile(
-    rf"\A<!-- gh-slate:v1 name=(?P<name>{NAME_PATTERN}) "
+    rf"\A<!-- gh-slate: name=(?P<name>{NAME_PATTERN}) "
     rf"encoding=zlib\+base64 state=(?P<state_sha256>{STATE_SHA256_PATTERN})\n"
     r"(?P<payload>[A-Za-z0-9+/]+={0,2})\n"
     r"-->\n\n"
@@ -82,19 +80,9 @@ class Marker:
     state_sha256: str
     payload: str
     visible: str
-    version: int = MARKER_VERSION
     encoding: str = MARKER_ENCODING
 
     def __post_init__(self) -> None:
-        if isinstance(self.version, bool) or not isinstance(self.version, int) or self.version != MARKER_VERSION:
-            raise CodecError(
-                f"unsupported marker version: {self.version}",
-                code="unsupported_marker_version",
-                details={
-                    "version": self.version,
-                    "supported_version": MARKER_VERSION,
-                },
-            )
         if self.encoding != MARKER_ENCODING:
             raise CodecError(
                 f"unsupported marker encoding: {self.encoding}",
@@ -125,7 +113,7 @@ def encode_marker(
         )
     compressed = decode_base64(marker.payload, limits=limits)
     body = (
-        f"<!-- gh-slate:v1 name={marker.name} encoding=zlib+base64 "
+        f"<!-- gh-slate: name={marker.name} encoding=zlib+base64 "
         f"state={marker.state_sha256}\n"
         f"{marker.payload}\n"
         "-->\n\n"
@@ -148,7 +136,7 @@ def parse_marker(
     *,
     limits: CodecLimits = DEFAULT_CODEC_LIMITS,
 ) -> Marker:
-    """Parse the one exact v1 marker at the beginning of a comment body."""
+    """Parse the exact marker at the beginning of a comment body."""
 
     if not isinstance(body, str):
         raise CodecError(
@@ -173,24 +161,10 @@ def parse_marker(
             code="missing_marker",
         )
 
-    version_match = _MARKER_VERSION_RE.match(body)
-    if version_match is not None:
-        marker_version = version_match.group("version")
-        if marker_version != str(MARKER_VERSION):
-            raise CodecError(
-                "unsupported marker version",
-                code="unsupported_marker_version",
-                details={
-                    "version": marker_version[:32],
-                    "version_truncated": len(marker_version) > 32,
-                    "supported_version": MARKER_VERSION,
-                },
-            )
-
     match = _MARKER_RE.fullmatch(body)
     if match is None:
         raise CodecError(
-            "comment does not contain an exact gh-slate:v1 marker",
+            "comment does not contain an exact gh-slate: marker",
             code="invalid_marker",
         )
 

@@ -5,7 +5,6 @@ from decimal import Decimal
 
 import pytest
 
-from gh_slate.codec.model import RendererDescriptorV1
 from gh_slate.rendering.errors import RenderingError
 from gh_slate.rendering.limits import (
     DEFAULT_RENDER_LIMITS,
@@ -17,85 +16,8 @@ from gh_slate.rendering.limits import (
     RenderLimits,
 )
 from gh_slate.rendering.model import (
-    ListRendererV1,
     TableColumn,
-    TableRendererV1,
-    parse_renderer_descriptor,
 )
-
-
-def test_typed_table_descriptor_round_trips_with_explicit_defaults() -> None:
-    renderer = TableRendererV1(
-        selector=".jobs",
-        columns=(
-            TableColumn(path=("name",), header="Job"),
-            TableColumn(path=("steps", 0, "status"), header="First step"),
-        ),
-    )
-
-    descriptor = renderer.to_descriptor()
-
-    assert descriptor.to_json() == {
-        "kind": "builtin-table",
-        "version": 1,
-        "selector": ".jobs",
-        "title": None,
-        "columns": [
-            {"path": ["name"], "header": "Job"},
-            {"path": ["steps", 0, "status"], "header": "First step"},
-        ],
-        "max_rows": Decimal(DEFAULT_RENDER_LIMITS.max_table_rows),
-        "missing": "—",
-    }
-    assert TableRendererV1.from_descriptor(descriptor) == renderer
-
-
-def test_legacy_string_columns_remain_renderable() -> None:
-    descriptor = RendererDescriptorV1(
-        kind="builtin-table",
-        version=1,
-        config={
-            "selector": ".jobs",
-            "columns": ["name", "passed"],
-        },
-    )
-
-    renderer = parse_renderer_descriptor(descriptor)
-
-    assert renderer == TableRendererV1(
-        selector=".jobs",
-        columns=(
-            TableColumn(path=("name",), header="name"),
-            TableColumn(path=("passed",), header="passed"),
-        ),
-    )
-    assert set(renderer.to_descriptor().configuration) == {
-        "selector",
-        "title",
-        "columns",
-        "max_rows",
-        "missing",
-    }
-
-
-def test_list_descriptor_supplies_and_serializes_v1_defaults() -> None:
-    descriptor = RendererDescriptorV1(
-        kind="builtin-list",
-        version=1,
-        config={"selector": ".changes"},
-    )
-
-    renderer = ListRendererV1.from_descriptor(descriptor)
-
-    assert renderer == ListRendererV1(selector=".changes")
-    assert renderer.to_descriptor().to_json() == {
-        "kind": "builtin-list",
-        "version": 1,
-        "selector": ".changes",
-        "title": None,
-        "max_depth": Decimal(4),
-        "max_items": Decimal(500),
-    }
 
 
 @pytest.mark.parametrize(
@@ -114,46 +36,6 @@ def test_table_column_path_is_a_bounded_typed_tuple(path: object) -> None:
 
     assert caught.value.code == "renderer_config_invalid"
     assert caught.value.details["field"] == "columns.path"
-
-
-@pytest.mark.parametrize(
-    "descriptor",
-    [
-        RendererDescriptorV1(
-            kind="builtin-table",
-            version=1,
-            config={"selector": ".", "columns": [], "surprise": True},
-        ),
-        RendererDescriptorV1(
-            kind="builtin-table",
-            version=1,
-            config={"selector": "."},
-        ),
-        RendererDescriptorV1(
-            kind="builtin-table",
-            version=1,
-            config={
-                "selector": ".",
-                "columns": [{"path": ["value"], "header": "Value", "extra": 1}],
-            },
-        ),
-        RendererDescriptorV1(
-            kind="builtin-table",
-            version=2,
-            config={"selector": ".", "columns": []},
-        ),
-        RendererDescriptorV1(
-            kind="future-renderer",
-            version=1,
-            config={"selector": "."},
-        ),
-    ],
-)
-def test_descriptor_parser_rejects_unknown_malformed_or_unsupported_versions(
-    descriptor: RendererDescriptorV1,
-) -> None:
-    with pytest.raises(RenderingError):
-        parse_renderer_descriptor(descriptor)
 
 
 @pytest.mark.parametrize(

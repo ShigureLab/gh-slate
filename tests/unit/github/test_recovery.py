@@ -6,14 +6,13 @@ from typing import TYPE_CHECKING, Literal
 import pytest
 
 from gh_slate.codec import (
-    ControllerV1,
+    Controller,
     MetaSnapshot,
-    StateV1,
+    State,
     decode_comment,
-    encode_comment,
 )
 from gh_slate.codec.marker import encode_marker, parse_marker
-from gh_slate.errors import ExitCode, GhSlateError
+from gh_slate.errors import ExitCode
 from gh_slate.github.models import GitHubActor
 from gh_slate.github.recovery import (
     DeleteRequest,
@@ -25,7 +24,7 @@ from gh_slate.github.recovery import (
 )
 from gh_slate.github.target import ResolvedTarget
 from gh_slate.github.write import GhWriteOutcomeUnknown
-from gh_slate.rendering import SlateContext, jinja_descriptor, materialize_comment
+from gh_slate.rendering import jinja_descriptor, materialize_comment
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -56,14 +55,14 @@ def _body(
     revision: int = 3,
     drifted: bool = False,
     controller_login: str = "ci-bot",
-    controller_id: int | None = ACTOR_ID,
+    controller_id: int = ACTOR_ID,
 ) -> str:
-    state = StateV1(
+    state = State(
         name="ci",
-        format="gh-slate/state-v2",
+        format="gh-slate/state",
         meta=MetaSnapshot.local("ci"),
         revision=revision,
-        controller=ControllerV1(
+        controller=Controller(
             login=controller_login,
             id=controller_id,
         ),
@@ -74,12 +73,6 @@ def _body(
     )
     body = materialize_comment(
         state,
-        slate=SlateContext(
-            name="ci",
-            repository=REPOSITORY,
-            number=NUMBER,
-            url=TARGET_URL,
-        ),
     ).encoded.body
     if not drifted:
         return body
@@ -102,18 +95,6 @@ def _corrupt_body() -> str:
             state_sha256=different_hash,
         )
     )
-
-
-def test_legacy_can_be_deleted_but_cannot_be_repaired():
-    decoded = decode_comment(_body())
-    legacy = replace(decoded.state, format="gh-slate/state-v1", meta=None)
-    remote = FakeGitHub(comments=[_record(encode_comment(legacy, decoded.visible_markdown).body)])
-    with pytest.raises(GhSlateError) as error:
-        repair(RepairRequest(target=TARGET, name="ci", if_revision=3, from_state=True), reader=remote, writer=remote)
-    assert error.value.code == "state_migration_required"
-    assert remote.write_calls == []
-    result = delete(DeleteRequest(target=TARGET, name="ci", confirm="ci"), reader=remote, writer=remote)
-    assert result.action == "deleted"
 
 
 def _record(
@@ -315,7 +296,7 @@ def test_repair_selects_a_renamed_controller_by_stable_id() -> None:
     assert result.action == "repaired"
     assert [call[0] for call in remote.write_calls] == ["PATCH"]
     assert decode_comment(str(remote.comments[0]["body"])).state.controller == (
-        ControllerV1(login="old-login", id=ACTOR_ID)
+        Controller(login="old-login", id=ACTOR_ID)
     )
 
 
