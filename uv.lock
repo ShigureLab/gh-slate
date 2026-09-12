@@ -40,6 +40,7 @@ source = { editable = "." }
 dependencies = [
     { name = "jinja2" },
     { name = "jq" },
+    { name = "jsonpatch" },
     { name = "jsonpointer" },
     { name = "jsonschema" },
     { name = "referencing" },
@@ -62,6 +63,7 @@ dev = [
 requires-dist = [
     { name = "jinja2", specifier = ">=3.1.6,<3.2" },
     { name = "jq", specifier = ">=1.12,<2" },
+    { name = "jsonpatch", specifier = ">=1.33,<2" },
     { name = "jsonpointer", specifier = ">=3.1,<4" },
     { name = "jsonschema", specifier = ">=4.25,<5" },
     { name = "referencing", specifier = ">=0.36,<1" },
@@ -245,6 +247,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/da/83/c00ce9e3b6f98bf3edd005cf41c48be72d3e43e048228f69d92f89f74ebf/jq-1.12.0-pp311-pypy311_pp73-macosx_11_0_arm64.whl", hash = "sha256:2f358c74f849168798d9f56df0706a207e7228cc595cc94825ed27f55074ffd5", size = 413215, upload-time = "2026-07-10T12:36:34.297Z" },
     { url = "https://files.pythonhosted.org/packages/08/96/a89124aa73556d030a178e88312cf6025ba16524017072470068a2968087/jq-1.12.0-pp311-pypy311_pp73-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:acb27df2548e32f01c2f82f481e32b51f9ef4ee2642690f7d2053fd653109f4d", size = 413505, upload-time = "2026-07-10T12:36:35.941Z" },
     { url = "https://files.pythonhosted.org/packages/6e/3d/d828666e3d7ae3d5fd9da084e082d9ad649713d1eb7eb2cccd8ccb227c41/jq-1.12.0-pp311-pypy311_pp73-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b405cbf325c21dbefaff0c78168b2d44b66fc1f181bbfc2c37a77924b8575dec", size = 427606, upload-time = "2026-07-10T12:36:37.595Z" },
+]
+
+[[package]]
+name = "jsonpatch"
+version = "1.33"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jsonpointer" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/42/78/18813351fe5d63acad16aec57f94ec2b70a09e53ca98145589e185423873/jsonpatch-1.33.tar.gz", hash = "sha256:9fcd4009c41e6d12348b4a0ff2563ba56a2923a7dfee731d004e212e1ee5030c", size = 21699, upload-time = "2023-06-26T12:07:29.144Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/73/07/02e16ed01e04a374e644b575638ec7987ae846d25ad97bcc9945a3ee4b0e/jsonpatch-1.33-py2.py3-none-any.whl", hash = "sha256:0ae28c0cd062bbd8b8ecc26d7d164fbbea9652a1a3693f3b956c1eae5145dade", size = 12898, upload-time = "2023-06-16T21:01:28.466Z" },
 ]
 
 [[package]]

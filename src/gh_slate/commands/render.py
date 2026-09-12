@@ -65,6 +65,7 @@ def _ensure_single_stdin(args: Namespace) -> None:
         getattr(args, "schema", None),
         getattr(args, "template", None),
         getattr(args, "meta", None),
+        getattr(args, "patch", None),
     )
     if sum(source == "-" for source in sources) > 1:
         raise RenderingError(

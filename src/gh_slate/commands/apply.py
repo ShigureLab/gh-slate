@@ -10,6 +10,7 @@ from gh_slate.codec import (
     RendererDescriptorV1,
     SchemaSnapshotV1,
     canonical_json_bytes,
+    strict_loads,
     validate_slate_name,
 )
 from gh_slate.codec.json import DEFAULT_JSON_LIMITS
@@ -31,6 +32,7 @@ from gh_slate.github.lookup import ProcessTargetLookup, TargetProcess
 from gh_slate.github.process import GhProcess
 from gh_slate.github.target import resolve_target
 from gh_slate.github.write import GhWriteProcess
+from gh_slate.patching import prepare_patch
 from gh_slate.rendering import (
     ListRendererV1,
     RenderingError,
@@ -189,6 +191,15 @@ def _write_result(
 
 def run_apply(args: Namespace) -> int:
     name, data, schema, renderer = _prepare_request_parts(args)
+    patch = None
+    if args.patch is not None:
+        if args.if_revision is None:
+            raise RenderingError("--patch requires --if-revision", code="patch_revision_required")
+        if args.mode == "create":
+            raise RenderingError("--patch requires an existing slate", code="patch_existing_required")
+        patch = prepare_patch(
+            strict_loads(_read_bytes(args.patch, subject="patch", max_bytes=DEFAULT_JSON_LIMITS.max_input_bytes))
+        )
     transaction = _new_transaction()
     target = resolve_target(
         args.target,
@@ -202,6 +213,7 @@ def run_apply(args: Namespace) -> int:
         name=name,
         mode=cast("ApplyMode", args.mode),
         data=data,
+        patch=patch,
         renderer=renderer,
         data_schema=schema,
         replace_schema=args.schema is not None or args.profile is not None,
