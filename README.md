@@ -5,8 +5,7 @@ Pull Requests. A profile combines an optional JSON Schema with a Jinja template
 or several complete views. The managed comment stores data, metadata, schema,
 and all template sources, so later updates work without the original checkout.
 
-This is a pre-release implementation. See [testing](docs/testing.md) for offline
-and live acceptance evidence and the remaining release gates.
+This is a pre-release implementation.
 
 <p align="center">
    <a href="https://python.org/" target="_blank"><img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-blue?logo=python&style=flat-square"></a>
@@ -240,5 +239,4 @@ The [Actions examples](examples/actions) demonstrate current-resource refetch,
 serialization, and fork-safe reduction. gh-slate publishes ordinary comments;
 its local Markdown output can also feed a separate review workflow.
 
-See [CLI and state reference](docs/cli.md), [testing and release gates](docs/testing.md),
-and the [redesign plan](docs/redesign.md).
+Use `gh slate --help` and each subcommand's `--help` for the command reference.
