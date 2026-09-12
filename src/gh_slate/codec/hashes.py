@@ -4,7 +4,7 @@ import hashlib
 
 from gh_slate.codec.errors import CodecError
 from gh_slate.codec.json import canonical_json_bytes
-from gh_slate.codec.model import StateDraftV1, StateV1
+from gh_slate.codec.model import State, StateDraft
 
 
 def normalize_visible_markdown(markdown: str) -> str:
@@ -34,32 +34,32 @@ def render_sha256(markdown: str) -> str:
     return hashlib.sha256(rendered).hexdigest()
 
 
-def canonical_state_bytes(state: StateV1) -> bytes:
-    if not isinstance(state, StateV1):
+def canonical_state_bytes(state: State) -> bytes:
+    if not isinstance(state, State):
         raise CodecError(
-            "state_sha256 requires a StateV1",
+            "state_sha256 requires a State",
             code="invalid_state",
             details={"path": "state"},
         )
     return canonical_json_bytes(state.to_json())
 
 
-def functional_state_bytes(state: StateV1 | StateDraftV1) -> bytes:
+def functional_state_bytes(state: State | StateDraft) -> bytes:
     """Return canonical functional bytes, deliberately excluding revision."""
 
-    if isinstance(state, StateV1):
+    if isinstance(state, State):
         value = state.to_json()
         del value["revision"]
-    elif isinstance(state, StateDraftV1):
+    elif isinstance(state, StateDraft):
         value = state.to_json()
     else:
         raise CodecError(
-            "functional state requires StateV1 or StateDraftV1",
+            "functional state requires State or StateDraft",
             code="invalid_state",
             details={"path": "state"},
         )
     return canonical_json_bytes(value)
 
 
-def state_sha256(state: StateV1) -> str:
+def state_sha256(state: State) -> str:
     return hashlib.sha256(canonical_state_bytes(state)).hexdigest()

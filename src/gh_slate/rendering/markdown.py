@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import html
+import re
 import string
 from collections.abc import Mapping
 from decimal import Decimal
+from urllib.parse import urlsplit
 
 from gh_slate.codec.errors import CodecError
 from gh_slate.codec.json import canonical_json_bytes, canonical_number
 from gh_slate.rendering.errors import RenderingError
+
+
+class Markdown(str):
+    """Renderer-created Markdown; never a business-data input type."""
 
 
 class _Missing:
@@ -40,6 +47,8 @@ def code(value: str) -> str:
 
 
 def render_value(value: object, *, missing: str = "—") -> str:
+    if isinstance(value, Markdown):
+        return value
     if value is MISSING:
         return escape_markdown_text(missing)
     if value is None:
@@ -70,3 +79,51 @@ __all__ = [
     "escape_markdown_text",
     "render_value",
 ]
+
+
+def md_text(value: object) -> Markdown:
+    # Reapplying a text filter is deliberately literal, including on fragments.
+    return Markdown(escape_markdown_text(value) if isinstance(value, str) else render_value(value))
+
+
+def _text_argument(value: object, name: str) -> str:
+    if not isinstance(value, str):
+        raise RenderingError(f"{name} must be text", code="jinja_filter_invalid")
+    return value
+
+
+def md_link(label: object, url: object) -> Markdown:
+    address = _text_argument(url, "md_link URL")
+    try:
+        parsed = urlsplit(address)
+        valid = (
+            parsed.scheme in {"http", "https"}
+            and bool(parsed.netloc)
+            and parsed.username is None
+            and parsed.password is None
+            and not any(ord(char) <= 32 or ord(char) == 127 for char in address)
+        )
+    except ValueError:
+        valid = False
+    if not valid:
+        raise RenderingError("md_link requires an absolute HTTP(S) URL", code="jinja_filter_invalid")
+    attribute = html.escape(address, quote=True).replace("|", "%7C")
+    return Markdown(f'<a href="{attribute}">{md_text(label)}</a>')
+
+
+def md_code(value: object) -> Markdown:
+    return Markdown(code(_text_argument(value, "md_code value")))
+
+
+def md_codeblock(value: object, language: object = "") -> Markdown:
+    source = _text_argument(value, "md_codeblock value").replace("\r\n", "\n").replace("\r", "\n")
+    info = _text_argument(language, "md_codeblock language")
+    if re.fullmatch(r"[A-Za-z0-9_+.-]*", info) is None:
+        raise RenderingError("md_codeblock language contains invalid characters", code="jinja_filter_invalid")
+    fence = "`" * max(3, 1 + max((len(run) for run in re.findall(r"`+", source)), default=0))
+    return Markdown(f"{fence}{info}\n{source}\n{fence}")
+
+
+def md_details(value: object, summary: object) -> Markdown:
+    body = value if isinstance(value, Markdown) else md_text(value)
+    return Markdown(f"<details>\n<summary>{md_text(summary)}</summary>\n\n{body}\n\n</details>")

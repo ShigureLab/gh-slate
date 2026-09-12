@@ -24,11 +24,21 @@ from gh_slate.codec.json import (
     canonical_number,
     strict_loads,
 )
+from gh_slate.codec.meta import MetaSnapshot
 from gh_slate.codec.text import utf8_size
 from gh_slate.rendering.errors import RenderingError
 from gh_slate.rendering.limits import DEFAULT_RENDER_LIMITS, RenderLimits
 from gh_slate.rendering.list import render_list
-from gh_slate.rendering.markdown import compact_json
+from gh_slate.rendering.markdown import (
+    Markdown,
+    compact_json,
+    escape_markdown_text,
+    md_code,
+    md_codeblock,
+    md_details,
+    md_link,
+    md_text,
+)
 from gh_slate.rendering.model import (
     ListRendererV1,
     TableColumn,
@@ -116,7 +126,13 @@ class _SlateSandbox(ImmutableSandboxedEnvironment):
         return False
 
 
-_PUBLIC_FILTERS = frozenset({"compact_json", "md_list", "md_table"})
+_V2_FILTERS = {
+    "md_text": md_text,
+    "md_link": md_link,
+    "md_code": md_code,
+    "md_codeblock": md_codeblock,
+    "md_details": md_details,
+}
 _LOOP_GUARD_FILTER = "__gh_slate_loop_guard"
 _MAX_AST_DEPTH = 64
 _TARGET_CONTEXT_FIELDS = frozenset({"repository", "number", "url"})
@@ -236,6 +252,14 @@ def _finalize(value: object) -> object:
     )
 
 
+def _finalize_v2(value: object) -> object:
+    if isinstance(value, Markdown):
+        return value
+    if isinstance(value, str):
+        return escape_markdown_text(value)
+    return _finalize(value)
+
+
 def _canonical_mapping(data: object, *, subject: str) -> Mapping[str, object]:
     try:
         value = strict_loads(canonical_json_bytes(data))
@@ -256,17 +280,20 @@ def _environment(
     limits: JinjaLimits,
     loop_budget: _LoopBudget,
     render_limits: RenderLimits,
+    *,
+    version: int = 1,
 ) -> _SlateSandbox:
     environment = _SlateSandbox(
         loader=None,
         autoescape=False,
         undefined=StrictUndefined,
-        finalize=_finalize,
+        finalize=_finalize if version == 1 else _finalize_v2,
         enable_async=False,
     )
     defined_test = environment.tests["defined"]
     undefined_test = environment.tests["undefined"]
     none_test = environment.tests["none"]
+    standard_filters = {name: environment.filters[name] for name in ("length", "dictsort")}
     environment.globals.clear()
     environment.filters.clear()
     environment.tests.clear()
@@ -317,8 +344,13 @@ def _environment(
             render_limits,
         )
 
-    environment.filters["md_table"] = md_table
-    environment.filters["md_list"] = md_list
+    environment.filters["md_table"] = (
+        md_table if version == 1 else lambda value, columns=None: Markdown(md_table(value, columns))
+    )
+    environment.filters["md_list"] = md_list if version == 1 else lambda value: Markdown(md_list(value))
+    if version == 2:
+        environment.filters.update(_V2_FILTERS)
+        environment.filters.update(standard_filters)
     return environment
 
 
@@ -327,6 +359,7 @@ def _validated_syntax_tree(
     *,
     environment: _SlateSandbox,
     limits: JinjaLimits,
+    version: int = 1,
 ) -> tuple[nodes.Template, list[nodes.Node]]:
     if not isinstance(source, str):
         raise RenderingError(
@@ -386,7 +419,9 @@ def _validated_syntax_tree(
         (
             node
             for node in all_nodes
-            if isinstance(node, nodes.Name) and node.ctx in {"param", "store"} and node.name in _RESERVED_CONTEXT_NAMES
+            if isinstance(node, nodes.Name)
+            and node.ctx in {"param", "store"}
+            and node.name in (_RESERVED_CONTEXT_NAMES if version == 1 else {"data", "meta"})
         ),
         None,
     )
@@ -397,7 +432,12 @@ def _validated_syntax_tree(
             details={"name": shadowed_context.name},
         )
     unknown_filter = next(
-        (node.name for node in all_nodes if isinstance(node, nodes.Filter) and node.name not in _PUBLIC_FILTERS),
+        (
+            node.name
+            for node in all_nodes
+            if isinstance(node, nodes.Filter)
+            and (node.name not in environment.filters or node.name == _LOOP_GUARD_FILTER)
+        ),
         None,
     )
     if unknown_filter is not None:
@@ -457,18 +497,26 @@ def render_jinja(
     *,
     data: object,
     slate: SlateContext,
+    meta: MetaSnapshot | None = None,
+    version: int = 1,
     limits: JinjaLimits = DEFAULT_JINJA_LIMITS,
     render_limits: RenderLimits = DEFAULT_RENDER_LIMITS,
 ) -> str:
     loop_budget = _LoopBudget(limits.max_loop_iterations)
-    environment = _environment(limits, loop_budget, render_limits)
+    environment = _environment(limits, loop_budget, render_limits, version=version)
     syntax_tree, _all_nodes = _validated_syntax_tree(
         source,
         environment=environment,
         limits=limits,
+        version=version,
     )
     canonical_data = _canonical_mapping(data, subject="data")
-    canonical_slate = _canonical_mapping(slate.to_mapping(), subject="slate context")
+    context = {"data": canonical_data}
+    if version == 2:
+        snapshot = MetaSnapshot.local(slate.name) if meta is None else meta
+        context["meta"] = _canonical_mapping(snapshot.to_json(), subject="meta context")
+    else:
+        context["slate"] = _canonical_mapping(slate.to_mapping(), subject="slate context")
 
     try:
         with localcontext(_JINJA_DECIMAL_CONTEXT):
@@ -482,10 +530,7 @@ def render_jinja(
             )
             chunks: list[str] = []
             output_bytes = 0
-            for chunk in template.generate(
-                data=canonical_data,
-                slate=canonical_slate,
-            ):
+            for chunk in template.generate(**context):
                 output_bytes += utf8_size(chunk, field="Jinja output")
                 output_limit = min(
                     limits.max_output_bytes,
@@ -508,6 +553,9 @@ def render_jinja(
         raise RenderingError(
             "Jinja template references an undefined value",
             code="jinja_undefined",
+            hints=("for target fields in a local preview, pass --meta FILE or use apply --dry-run",)
+            if version == 2
+            else (),
         ) from None
     except SecurityError:
         raise RenderingError(

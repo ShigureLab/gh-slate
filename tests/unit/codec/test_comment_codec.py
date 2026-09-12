@@ -216,7 +216,7 @@ def test_decode_wraps_an_extremely_long_marker_version() -> None:
 def test_decode_rejects_unknown_state_major_version_explicitly() -> None:
     state = make_state()
     state_document = state.to_json()
-    state_document["format"] = "gh-slate/state-v2"
+    state_document["format"] = "gh-slate/state-v99"
     body = encode_marker(
         Marker(
             name=state.name,

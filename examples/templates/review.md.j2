@@ -1,0 +1,11 @@
+## Review: {{ meta.slate.name }}
+
+{% if meta.target is not none %}
+{{ meta.repository.full_name | md_link(meta.target.url) }} #{{ meta.target.number }}
+{% endif %}
+
+{{ data.summary }}
+
+{{ data.checks | md_table(["check", "result"]) }}
+
+{{ data.log | md_codeblock("text") | md_details("Evidence") }}

@@ -19,7 +19,7 @@ def test_local_jinja_render_writes_only_markdown(
     data = tmp_path / "data.json"
     template = tmp_path / "slate.md.j2"
     data.write_text(json.dumps({"status": "passing"}), encoding="utf-8")
-    template.write_text("# {{ slate.name }}\n\n{{ data.status }}", encoding="utf-8")
+    template.write_text("# {{ meta.slate.name }}\n\n{{ data.status }}", encoding="utf-8")
 
     assert (
         run(
@@ -147,10 +147,10 @@ def test_local_jinja_render_requires_context_for_target_dependent_templates(
     capsys,
 ) -> None:
     template = tmp_path / "slate.md.j2"
-    template.write_text("{{ slate.url }}", encoding="utf-8")
+    template.write_text("{{ meta.target.url }}", encoding="utf-8")
 
     assert run(["render", "ci", "--template", str(template)]) == 2
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "render_context_required" in captured.err
+    assert "jinja_undefined" in captured.err
     assert "apply --dry-run" in captured.err

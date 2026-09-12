@@ -7,15 +7,16 @@ from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from gh_slate.codec import (
     ControllerV1,
+    MetaSnapshot,
     RendererDescriptorV1,
     SchemaSnapshotV1,
-    StateDraftV1,
-    StateV1,
+    State,
+    StateDraft,
     encode_comment,
     resolve_revision,
     validate_slate_name,
 )
-from gh_slate.codec.model import MAX_REVISION
+from gh_slate.codec.model import MAX_REVISION, STATE_FORMAT_V1, STATE_FORMAT_V2
 from gh_slate.errors import ExitCode, GhSlateError
 from gh_slate.github.models import GitHubActor
 from gh_slate.github.store import CommentStore
@@ -191,6 +192,7 @@ class ApplyResult:
     dry_run: bool = False
     recovered: bool = False
     markdown: str | None = None
+    meta_source: str | None = None
 
     def to_json(self) -> dict[str, object]:
         value: dict[str, object] = {
@@ -210,6 +212,8 @@ class ApplyResult:
                     "markdown": self.markdown,
                 }
             )
+        if self.meta_source is not None:
+            value["meta_source"] = self.meta_source
         if self.recovered:
             value["recovered"] = True
         return value
@@ -224,7 +228,7 @@ class _Existing:
         return self.candidate.comment
 
     @property
-    def state(self) -> StateV1:
+    def state(self) -> State:
         decoded = self.candidate.decoded
         assert decoded is not None
         return decoded.state
@@ -367,7 +371,7 @@ def _check_mode_and_revision(
 def _canonical_new_target(
     request: ApplyRequest,
     reader: ApplyReadClient,
-) -> ResolvedTarget:
+) -> tuple[ResolvedTarget, Mapping[str, object]]:
     response = reader.api_get(
         f"repos/{request.target.repository}/issues/{request.target.number}",
         hostname=request.target.host,
@@ -400,30 +404,59 @@ def _canonical_new_target(
                 "actual_number": canonical.number,
             },
         )
-    return canonical
+    return canonical, cast("Mapping[str, object]", response)
 
 
 def _canonical_context(
     request: ApplyRequest,
     reader: ApplyReadClient,
     existing: _Existing | None,
-) -> tuple[ResolvedTarget, SlateContext]:
-    canonical = (
-        _canonical_new_target(request, reader)
-        if existing is None
-        else target_from_comment_url(
-            existing.comment.url,
-            expected=request.target,
-        )
+) -> tuple[ResolvedTarget, SlateContext, MetaSnapshot | None]:
+    renderer = (
+        request.renderer if request.renderer is not None else (None if existing is None else existing.state.renderer)
     )
+    v2 = renderer is not None and renderer.kind == "jinja" and renderer.version == 2
+    meta = None
+    if existing is None or v2:
+        canonical, response = _canonical_new_target(request, reader)
+        if v2:
+            node_id = response.get("node_id")
+            if not isinstance(node_id, str) or not node_id:
+                raise ApplyError("GitHub target metadata is missing node_id", code="github_response_invalid")
+            owner, name = canonical.repository.split("/", 1)
+            repository_url = canonical.url.rsplit("/", 2)[0]
+            meta = MetaSnapshot(
+                {
+                    "host": canonical.host,
+                    "repository": {
+                        "owner": owner,
+                        "name": name,
+                        "full_name": canonical.repository,
+                        "url": repository_url,
+                    },
+                    "target": {
+                        "kind": "pull_request" if canonical.url.rsplit("/", 2)[-2] == "pull" else "issue",
+                        "number": canonical.number,
+                        "id": node_id,
+                        "url": canonical.url,
+                    },
+                    "slate": {"name": request.name},
+                }
+            )
+            if (
+                existing is not None
+                and existing.state.meta is not None
+                and (existing.state.meta.target_id != node_id or existing.state.meta.value["host"] != canonical.host)
+            ):
+                raise ApplyError(
+                    "stored metadata belongs to a different GitHub target", code="target_identity_mismatch"
+                )
+    else:
+        canonical = target_from_comment_url(existing.comment.url, expected=request.target)
     return (
         canonical,
-        SlateContext(
-            name=request.name,
-            repository=canonical.repository,
-            number=canonical.number,
-            url=canonical.url,
-        ),
+        SlateContext(name=request.name, repository=canonical.repository, number=canonical.number, url=canonical.url),
+        meta,
     )
 
 
@@ -433,7 +466,8 @@ def _desired_state(
     *,
     controller: GitHubActor,
     context: SlateContext,
-) -> tuple[StateV1, str, str, str, bool]:
+    meta: MetaSnapshot | None,
+) -> tuple[State, str, str, str, bool]:
     previous = None if existing is None else existing.state
     if previous is None:
         data = {} if request.data is None else request.data
@@ -457,6 +491,8 @@ def _desired_state(
         reuse_schema = not replacing_schema
 
     assert renderer is not None
+    if previous is not None and previous.meta is not None and meta is None:
+        raise ApplyError("a V2 slate requires a jinja@2 template", code="renderer_unsupported")
     stored_controller = ControllerV1(
         login=controller.login,
         id=controller.id,
@@ -466,10 +502,13 @@ def _desired_state(
         renderer,
         schema=schema,
         slate=context,
+        meta=meta,
     )
     stored_schema = previous.data_schema if previous is not None and reuse_schema else rendered.data_schema
-    draft = StateDraftV1(
+    draft = StateDraft(
         name=request.name,
+        format=STATE_FORMAT_V2 if meta is not None else STATE_FORMAT_V1,
+        meta=meta,
         controller=stored_controller,
         data=rendered.data,
         data_schema=stored_schema,
@@ -743,7 +782,7 @@ def _result(
     action: ApplyAction,
     request: ApplyRequest,
     canonical: ResolvedTarget,
-    state: StateV1,
+    state: State,
     state_sha256: str,
     existing: _Existing | None,
     dry_run: bool = False,
@@ -762,6 +801,7 @@ def _result(
         dry_run=dry_run,
         recovered=recovered,
         markdown=markdown if dry_run else None,
+        meta_source="github" if state.meta is not None else None,
     )
 
 
@@ -785,7 +825,7 @@ class ApplyTransaction:
             controller=controller,
         )
         _check_mode_and_revision(request, existing)
-        canonical, context = _canonical_context(
+        canonical, context, meta = _canonical_context(
             request,
             self.reader,
             existing,
@@ -795,6 +835,7 @@ class ApplyTransaction:
             existing,
             controller=controller,
             context=context,
+            meta=meta,
         )
         action: ApplyAction = "created" if existing is None else "updated"
 

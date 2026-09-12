@@ -100,6 +100,8 @@ def _view_record(
         "render_sha256": slate.decoded.expected_render_sha256,
         "actual_render_sha256": slate.decoded.actual_render_sha256,
         "schema": state.data_schema is not None,
+        "data": state.data,
+        "meta": None if state.meta is None else state.meta.to_json(),
         "renderer": {
             "kind": state.renderer.kind,
             "version": state.renderer.version,
@@ -239,7 +241,10 @@ def run_remote_render(args: Namespace) -> int:
             "render_drift",
             "rendered canonical state; the stored visible Markdown is drifted",
         )
-    sys.stdout.write(markdown)
+    if args.json:
+        _write_json({**_view_record(target, slate), "markdown": markdown, "meta_source": "stored"})
+    else:
+        sys.stdout.write(markdown)
     return 0
 
 

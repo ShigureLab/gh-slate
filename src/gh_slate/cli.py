@@ -226,6 +226,8 @@ def build_parser(*, prog: str | None = None) -> argparse.ArgumentParser:
         data_defaults_empty=True,
     )
     _add_renderer_options(render_parser)
+    render_parser.add_argument("--meta", metavar="FILE", help="local target metadata fixture; use - for stdin")
+    render_parser.add_argument("--json", action="store_true", help="emit Markdown, data, and metadata provenance")
     from gh_slate.commands.render import run_render
 
     render_parser.set_defaults(handler=run_render)

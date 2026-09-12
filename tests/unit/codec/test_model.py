@@ -212,7 +212,7 @@ def test_state_rejects_unknown_top_level_fields() -> None:
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
-        ("format", "gh-slate/state-v2", "unsupported state format"),
+        ("format", "gh-slate/state-v99", "unsupported state format"),
         ("render_sha256", "A" * 64, "lowercase 64-character"),
         ("render_sha256", "short", "lowercase 64-character"),
         ("data", [], "data must be a JSON object"),

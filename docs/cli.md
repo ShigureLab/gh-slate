@@ -101,12 +101,13 @@ and rerender it:
 - Jinja source when the renderer is Jinja;
 - revision and integrity hashes.
 
-The repository, number, and comment URL are target context rather than portable
-state. A remote rerender obtains them from the comment location and must pass
-the same `SlateContext` used for the previous render. The pure local command has
-no target, so it exposes those three fields as explicit JSON `null` values. The
-rendering API refuses to rerender a stored Jinja state without an explicit
-target context; built-in table/list renderers do not depend on it.
+V2 Jinja state also stores the exact read-only `meta` used to render: host,
+repository, target kind/number/node ID/URL, and slate name. Read, verify, and
+repair use that snapshot. Apply resolves fresh target identity through GitHub;
+copying a V2 state to a different target is rejected before writing. The older
+V1 Jinja adapter still requires a `SlateContext` from the comment location.
+The outer comment marker and compression profile remain unchanged; the inner
+`format` distinguishes `gh-slate/state-v1` and `gh-slate/state-v2`.
 
 Storing only a template path is insufficient: a later CI run may not have the
 same checkout, branch, file, or Contents API permission. A future version may
@@ -213,36 +214,44 @@ Unchanged input does not send a PATCH request.
 gh slate apply ci-summary \
   --target 42 \
   --repo owner/repo \
-  --template .github/slates/ci-summary.md.j2 \
+  --template /path/to/ci-summary.md.j2 \
   --data report.json \
   --schema report.schema.json
 ```
 
 The template is embedded as source, not retained as a local path.
 
-The template context is intentionally small:
+New direct templates use `jinja@2`, with this context:
 
 ```jinja2
 {{ data.summary.passed }}
-{{ slate.name }}
-{{ slate.repository }}
-{{ slate.number }}
-{{ slate.url }}
+{{ meta.slate.name }}
+{{ meta.repository.full_name | md_link(meta.repository.url) }}
+{{ meta.target.kind }} #{{ meta.target.number }}
+{{ meta.target.id }}
 ```
 
-Data keys are not promoted to global variables. Jinja uses an immutable sandbox,
-`StrictUndefined`, no filesystem loader, and no include/import support. It does
-not expose environment variables, tokens, network access, or arbitrary Python
-objects.
+`meta.host` is the GitHub hostname. Repository fields are `owner`, `name`,
+`full_name`, and `url`; target fields are `kind` (`issue` or `pull_request`),
+`number`, `id` (the string node ID), and `url`. No comment ID, revision, mutable
+PR head, or automatic timestamp is exposed. Analysis provenance belongs in
+`data.source`. Data cannot override metadata. For an offline fixture, see
+[the template example](../examples/templates/README.md).
 
-The v1 adapter canonicalizes the `data` object through the JSON codec before
-exposing an immutable value. It clears Jinja's default globals, filters, and
-tests, then installs only the documented filters and the minimal
-`defined`/`undefined`/`none` tests. Attribute and callable access are denied;
-includes, imports, extends, calls, macros, call blocks, multiplication, and
-power expressions are rejected from the parsed AST. Containers cannot be
-interpolated implicitly and must pass through `md_table`, `md_list`, or
-`compact_json`.
+Strings interpolate as escaped Markdown text. `md_text` explicitly requests
+text; `md_link(URL)`, `md_code`, `md_codeblock(LANGUAGE)`, and
+`md_details(SUMMARY)` construct Markdown with context-appropriate escaping.
+`md_link` accepts absolute HTTP(S) URLs. Pass helper output into `md_table` or
+`md_list` without double escaping. To display JSON in a code span, use
+`compact_json | md_code`. Containers require an explicit formatting filter.
+`length` and `dictsort` are also available.
+
+Both renderer versions canonicalize JSON inputs and use an immutable sandbox
+with `StrictUndefined`, no loader, bounded loops, and no environment variables,
+network, arbitrary calls, includes, imports, macros, or Python attributes. The
+new reserved variables are `data` and `meta`; the old `jinja@1` adapter keeps
+`data` and `slate`. An existing V1 comment continues to use its stored renderer
+until an explicit new `--template` migrates its definition and metadata.
 
 The default execution profile accepts at most 64 KiB of UTF-8 template source,
 2,000 AST nodes, a conservative 1,000-unit loop-work budget, and 48 KiB of
@@ -447,10 +456,14 @@ at the strict parser's 8 MiB source limit and then at the smaller canonical
 data/schema component limits; Jinja input is capped at 64 KiB before decoding.
 Local render also enforces the canonical renderer-component and visible-output
 limits, so a successful preview is eligible for later state materialization.
-Because a target-sensitive Jinja branch cannot be bounded using placeholder
-values, pure local render rejects templates that reference
-`slate.repository`, `slate.number`, or `slate.url`. Use `apply --dry-run` with
-the intended target to preview and validate those templates without writing.
+Local render accepts `--meta FILE` (or `-` for stdin), exclusive with remote
+target options. Its `slate.name` must match the command name. Without a fixture,
+`meta.host`, `meta.repository`, and `meta.target` are `null`; reading a missing
+target field fails with a fixture/target-preview hint. Use `apply --dry-run`
+with the intended target to preview against verified GitHub metadata. Fixtures
+are not accepted by apply. Only one data/schema/template/meta input may use stdin.
+`render --json` includes Markdown, data, meta, and `meta_source` (`fixture`,
+`local`, or `stored`). V2 apply results identify their source as `github`.
 
 `view` prints the visible Markdown by default. `--json` returns identity,
 controller, renderer, schema presence, revision, hashes, drift status, and

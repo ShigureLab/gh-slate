@@ -275,7 +275,7 @@ def _perform_api(
                 "login": state["actor"],
             }
         if endpoint == f"repos/{repository}/issues/{number}":
-            return {"html_url": state["target_url"]}
+            return {"html_url": state["target_url"], "node_id": "I_fake_target"}
         if endpoint == comments_endpoint:
             return [state["comments"]] if slurp else state["comments"]
         if endpoint.startswith(comment_route):
