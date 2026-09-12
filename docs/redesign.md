@@ -351,24 +351,24 @@ main
 此处是进入实施时的操作示例，不代表后续实现分支或远端 PR 已创建。先保持工作树干净并确认 `main` 可以快进到最新 `origin/main`。当前方案分支可以作为第 0 层被接入新栈：
 
 ```bash
-rtk proxy git fetch origin
-rtk proxy git switch main
-rtk proxy git merge --ff-only origin/main
-rtk proxy git config rerere.enabled true
-rtk proxy gh stack init --base main codex/gh-slate-redesign-plan
-rtk proxy gh stack view --json
+git fetch origin
+git switch main
+git merge --ff-only origin/main
+git config rerere.enabled true
+gh stack init --base main codex/gh-slate-redesign-plan
+gh stack view --json
 ```
 
 方案形成一个独立提交后再添加第 1 层；每层完成代码、测试、说明并按文件精确提交，才添加下一层：
 
 ```bash
-rtk proxy gh stack add codex/slate-render-context
+gh stack add codex/slate-render-context
 # 开发并提交第 1 层后：
-rtk proxy gh stack add codex/slate-profiles
+gh stack add codex/slate-profiles
 # 依次推进其余层，不预先堆出没有独立改动的 PR。
 ```
 
-需要发布栈时使用 `rtk proxy gh stack submit --auto --remote origin`。根据最终变更整理每个 PR 的标题、说明、验证证据与规定的 co-author 标记，不依赖自动标题作为最终说明。修改下层时回到对应分支提交，然后运行 `rtk proxy gh stack rebase --upstack --no-trunk`；提交上层前检查 `rtk proxy gh stack view --json`。
+需要发布栈时使用 `gh stack submit --auto --remote origin`。根据最终变更整理每个 PR 的标题、说明、验证证据与规定的 co-author 标记，不依赖自动标题作为最终说明。修改下层时回到对应分支提交，然后运行 `gh stack rebase --upstack --no-trunk`；提交上层前检查 `gh stack view --json`。
 
 合入后再按 live 状态同步和清理。现有分支的本地 tracking 与远端 head 可能不同，不直接对旧栈 force-push。
 
