@@ -245,6 +245,31 @@ Existing `jinja@1` comments retain their original `data/slate` semantics.
 Updating their data reuses that renderer. Explicitly pass a new `--template`
 using `data/meta` to migrate the same comment to V2 in one write.
 
+### Reuse a named profile
+
+Choose one TOML file with `--config FILE` or `GH_SLATE_CONFIG`. No directories
+are searched. Each profile snapshots its schema and template; relative paths
+are resolved from the config file, regardless of the calling directory.
+
+```toml
+version = 1
+
+[profiles.review]
+schema = "review.schema.json"
+template = "review.md.j2"
+```
+
+```bash
+gh slate render review --config examples/templates/boards.toml --profile review --data examples/templates/review.json
+gh slate apply review --target <ISSUE_OR_PR_URL> --config /path/to/boards.toml --profile review --data review.json
+```
+
+A later `apply --data` uses the saved definition without consulting local
+files. Pass `--profile` again to reload the definition atomically with the
+candidate data. CLI `--config` takes precedence over the environment variable;
+`--config` requires `--profile`. Profile mode rejects direct definition
+overrides such as `--template`, `--schema`, `--table`, or `--list`.
+
 ### Add or change a JSON Schema
 
 Schemas use JSON Schema draft 2020-12 and are stored with the data. `$ref`

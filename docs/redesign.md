@@ -1,6 +1,6 @@
 # gh-slate 渐进式重设计方案
 
-状态：逐层实施中，2026-09-12。第 1 层已实现：`data/meta`、V2 状态、Markdown helpers 和离线 `--meta`。配置、`--profile`、`--patch` 和多模板路由仍是后续层的目标接口。
+状态：逐层实施中，2026-09-12。第 1、2 层已实现：`data/meta`、V2 状态、Markdown helpers、离线 `--meta` 和显式配置的单模板 profile。`--patch` 和多模板路由仍是后续层的目标接口。
 
 目标是让 agent 和自动化程序依据明确的数据结构，持续维护风格一致的 GitHub 看板。agent 负责分析与业务判断；gh-slate 负责校验、选模板、渲染和发布。先沿用现有 GitHub 访问与写入流程，逐层替换实现。
 

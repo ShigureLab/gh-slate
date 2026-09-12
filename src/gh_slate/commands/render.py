@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from gh_slate.codec import MetaSnapshot, canonical_json_bytes, strict_loads, validate_slate_name
 from gh_slate.codec.json import DEFAULT_JSON_LIMITS
+from gh_slate.configuration import ProfileDefinition, load_profile
+from gh_slate.inputs import read_bytes as _read_bytes, template_source as _template_source
 from gh_slate.rendering import (
     ListRendererV1,
     RenderingError,
@@ -15,7 +16,6 @@ from gh_slate.rendering import (
     jinja_descriptor,
     render,
 )
-from gh_slate.rendering.jinja import DEFAULT_JINJA_LIMITS
 from gh_slate.schema import validate_data_json, validate_schema_json
 
 if TYPE_CHECKING:
@@ -25,6 +25,8 @@ if TYPE_CHECKING:
 _LOCAL_OPTIONS = (
     "data",
     "meta",
+    "config",
+    "profile",
     "schema",
     "template",
     "table",
@@ -38,91 +40,6 @@ _REMOTE_OPTIONS = (
     "controller",
     "host",
 )
-
-
-def _input_size_error(
-    *,
-    subject: str,
-    actual_bytes: int,
-    max_bytes: int,
-) -> RenderingError:
-    return RenderingError(
-        f"{subject} exceeds the configured input byte limit",
-        code="input_size_limit",
-        details={
-            "actual_bytes": actual_bytes,
-            "max_bytes": max_bytes,
-        },
-    )
-
-
-def _stdin_bytes(*, subject: str, max_bytes: int) -> bytes:
-    stream = getattr(sys.stdin, "buffer", sys.stdin)
-    value = stream.read(max_bytes + 1)
-    encoded = value.encode("utf-8") if isinstance(value, str) else value
-    if len(encoded) > max_bytes:
-        raise _input_size_error(
-            subject=subject,
-            actual_bytes=len(encoded),
-            max_bytes=max_bytes,
-        )
-    return encoded
-
-
-def _read_bytes(
-    location: str,
-    *,
-    subject: str,
-    max_bytes: int,
-) -> bytes:
-    if location == "-":
-        return _stdin_bytes(subject=subject, max_bytes=max_bytes)
-    try:
-        path = Path(location)
-        size = path.stat().st_size
-        if size > max_bytes:
-            raise _input_size_error(
-                subject=subject,
-                actual_bytes=size,
-                max_bytes=max_bytes,
-            )
-        with path.open("rb") as stream:
-            value = stream.read(max_bytes + 1)
-        if len(value) > max_bytes:
-            raise _input_size_error(
-                subject=subject,
-                actual_bytes=len(value),
-                max_bytes=max_bytes,
-            )
-        return value
-    except RenderingError:
-        raise
-    except OSError as error:
-        raise RenderingError(
-            f"{subject} could not be read",
-            code="input_read_failed",
-            details={
-                "path": location,
-                "error_type": type(error).__name__,
-            },
-        ) from None
-
-
-def _template_source(location: str) -> str:
-    source = _read_bytes(
-        location,
-        subject="template",
-        max_bytes=DEFAULT_JINJA_LIMITS.max_source_bytes,
-    )
-    try:
-        decoded = source.decode("utf-8", errors="strict")
-    except UnicodeDecodeError as error:
-        raise RenderingError(
-            "template is not valid UTF-8",
-            code="jinja_source_invalid",
-            details={"position": error.start},
-        ) from None
-    return decoded.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _table_columns(value: str | None) -> tuple[TableColumn, ...]:
@@ -160,12 +77,28 @@ def _has_value(args: Namespace, names: tuple[str, ...]) -> bool:
     return any(getattr(args, name, None) is not None for name in names)
 
 
+def _selected_profile(args: Namespace) -> ProfileDefinition | None:
+    name = getattr(args, "profile", None)
+    config = getattr(args, "config", None)
+    if name is None:
+        if config is not None:
+            raise RenderingError("--config requires --profile", code="renderer_option_conflict")
+        return None
+    if any(
+        getattr(args, option, None) is not None
+        for option in ("schema", "template", "table", "list", "columns", "title")
+    ):
+        raise RenderingError("--profile cannot be combined with definition overrides", code="renderer_option_conflict")
+    return load_profile(name, config=config)
+
+
 def _run_local_render(args: Namespace) -> int:
     _ensure_single_stdin(args)
     name = validate_slate_name(args.name)
-    if args.template is None and args.table is None and args.list is None:
+    profile = _selected_profile(args)
+    if profile is None and args.template is None and args.table is None and args.list is None:
         raise RenderingError(
-            "local render requires --template, --table, or --list",
+            "local render requires --profile, --template, --table, or --list",
             code="renderer_required",
         )
     if args.columns is not None and args.table is None:
@@ -190,6 +123,8 @@ def _run_local_render(args: Namespace) -> int:
         if args.schema is not None
         else None
     )
+    if profile is not None:
+        schema = profile.schema
     data_source = (
         _read_bytes(
             args.data,
@@ -201,7 +136,9 @@ def _run_local_render(args: Namespace) -> int:
     )
     data = validate_data_json(data_source, schema)
 
-    if args.template is not None:
+    if profile is not None:
+        descriptor = profile.renderer
+    elif args.template is not None:
         descriptor = jinja_descriptor(_template_source(args.template), version=2)
     elif args.table is not None:
         descriptor = TableRendererV1(
@@ -239,6 +176,7 @@ def _run_local_render(args: Namespace) -> int:
                     "meta": None if result.meta is None else result.meta.to_json(),
                     "meta_source": "fixture" if meta_file is not None else "local",
                     "renderer": {"kind": result.renderer.kind, "version": result.renderer.version},
+                    "profile": result.renderer.configuration.get("profile"),
                 }
             ).decode("utf-8")
             + "\n"

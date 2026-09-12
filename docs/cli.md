@@ -270,6 +270,39 @@ Built-in deterministic filters include:
 {{ data.metadata | compact_json }}
 ```
 
+### 4.1.1 Named profiles
+
+`--profile NAME` selects a definition in an explicit TOML `--config FILE`.
+`GH_SLATE_CONFIG` supplies a default config path only when `--config` is absent.
+There is no config discovery or merging. `--config` without `--profile` is an
+error; a normal data-only apply ignores config environment variables.
+
+```toml
+version = 1
+
+[profiles.review]
+schema = "contracts/review.json"
+template = "layouts/review.md.j2"
+```
+
+Paths are relative to the config file; absolute paths and `../` are supported.
+Environment-variable expansion and remote template loading are not performed.
+The schema is optional. The profile name, schema, and exact template source
+are stored in the comment; local file paths are not. Templates are checked at
+load time, independently of the candidate data.
+
+`--profile` is exclusive with direct `--template`, `--schema`, `--table`,
+`--list`, `--columns`, and `--title` overrides. Explicitly reloading a profile
+replaces its schema too, including clearing a previous schema if the new
+profile has none. Validation failure leaves both the old definition and data
+unchanged. Without `--profile`, updates use the saved definition even if the
+original config and template files have been removed.
+
+This layer supports a single `template`; `views` and `view_by` are rejected
+explicitly until the routing layer is available. Profile names are independent
+of remote slate names. `view --json` and local `render --json` include the
+profile name without dumping template sources.
+
 ### 4.2 Built-in table renderer
 
 For common dashboards, no template is required:
