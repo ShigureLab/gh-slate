@@ -10,7 +10,7 @@ dependencies = [
   "jsonpointer>=3.1,<4",
   "jsonschema>=4.25,<5",
   "referencing>=0.36,<1",
-  "regex>=2025.7.34,<2027",
+  "regex>=2026.9.10,<2027",
   "tomli>=2.2,<3 ; python_full_version < '3.11'",
 ]
 authors = [{ name = "Nyakku Shigure", email = "sigure.qaq@gmail.com" }]

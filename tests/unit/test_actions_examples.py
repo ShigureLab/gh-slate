@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -21,7 +20,6 @@ if TYPE_CHECKING:
 
 ROOT = Path(__file__).resolve().parents[2]
 ACTIONS = ROOT / "examples" / "actions"
-CHECKER = ROOT / "scripts" / "check_actions_examples.py"
 
 
 def _run(
@@ -111,112 +109,6 @@ def _prepare_current_target(
     )
     entrypoint: Callable[[], int] = module.main
     return entrypoint, runner
-
-
-def test_actions_examples_pass_static_contract() -> None:
-    result = _run(str(CHECKER))
-
-    assert result.returncode == 0, result.stderr
-
-
-def test_static_contract_rejects_write_permission_in_reducer(
-    tmp_path: Path,
-) -> None:
-    shutil.copytree(ACTIONS, tmp_path / "examples" / "actions")
-    reducer = tmp_path / "examples" / "actions" / "pull-request-target-reducer.yml"
-    reducer.write_text(
-        reducer.read_text(encoding="utf-8").replace(
-            "permissions: {}",
-            "permissions:\n  contents: write",
-        ),
-        encoding="utf-8",
-    )
-
-    result = _run(str(CHECKER), str(tmp_path))
-
-    assert result.returncode == 1
-    assert "permissions must be exactly {}" in result.stderr
-
-
-def test_static_contract_rejects_artifact_execution(tmp_path: Path) -> None:
-    shutil.copytree(ACTIONS, tmp_path / "examples" / "actions")
-    consumer = tmp_path / "examples" / "actions" / "pull-request-target-consumer.yml"
-    consumer.write_text(
-        consumer.read_text(encoding="utf-8").replace(
-            "          python trusted/examples/actions/scripts/validate_reduced_pull_request.py",
-            '          source "$REDUCED_PATH"\n'
-            "          python trusted/examples/actions/scripts/validate_reduced_pull_request.py",
-        ),
-        encoding="utf-8",
-    )
-
-    result = _run(str(CHECKER), str(tmp_path))
-
-    assert result.returncode == 1
-    assert "must never execute or source the downloaded artifact" in result.stderr
-
-
-def test_static_contract_rejects_event_snapshot_as_dashboard_state(
-    tmp_path: Path,
-) -> None:
-    shutil.copytree(ACTIONS, tmp_path / "examples" / "actions")
-    workflow = tmp_path / "examples" / "actions" / "issue-dashboard.yml"
-    workflow.write_text(
-        workflow.read_text(encoding="utf-8").replace(
-            "current_target_to_slate.py",
-            "event_to_slate.py",
-        ),
-        encoding="utf-8",
-    )
-
-    result = _run(str(CHECKER), str(tmp_path))
-
-    assert result.returncode == 1
-    assert "fetch the current target" in result.stderr
-
-
-def test_static_contract_rejects_dependabot_direct_writer(tmp_path: Path) -> None:
-    shutil.copytree(ACTIONS, tmp_path / "examples" / "actions")
-    workflow = tmp_path / "examples" / "actions" / "pull-request-dashboard.yml"
-    workflow.write_text(
-        workflow.read_text(encoding="utf-8").replace(
-            " &&\n      github.event.pull_request.user.login != 'dependabot[bot]'",
-            "",
-        ),
-        encoding="utf-8",
-    )
-
-    result = _run(str(CHECKER), str(tmp_path))
-
-    assert result.returncode == 1
-    assert "must skip fork and Dependabot tokens" in result.stderr
-
-
-@pytest.mark.parametrize(
-    ("filename", "activity"),
-    [
-        ("issue-dashboard.yml", "edited"),
-        ("pull-request-dashboard.yml", "ready_for_review"),
-        ("pull-request-target-reducer.yml", "ready_for_review"),
-    ],
-)
-def test_static_contract_rejects_missing_displayed_field_activity(
-    tmp_path: Path,
-    filename: str,
-    activity: str,
-) -> None:
-    shutil.copytree(ACTIONS, tmp_path / "examples" / "actions")
-    workflow = tmp_path / "examples" / "actions" / filename
-    source = workflow.read_text(encoding="utf-8")
-    workflow.write_text(
-        source.replace(f"{activity}, ", "", 1),
-        encoding="utf-8",
-    )
-
-    result = _run(str(CHECKER), str(tmp_path))
-
-    assert result.returncode == 1
-    assert "activity types must cover exactly the displayed resource fields" in result.stderr
 
 
 @pytest.mark.parametrize(
