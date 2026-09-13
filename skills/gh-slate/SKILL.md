@@ -18,11 +18,23 @@ owns encoding, validation, rendering, conflict checks, and publishing.
 
 ## Use the installed CLI
 
-Examples use the GitHub CLI extension, `gh slate`. If the Python CLI is
-installed instead, use `gh-slate` for the same commands; this is also the
-entrypoint for Windows. Use the installed command consistently.
+Choose the command prefix that matches the installation:
+
+| Installation                                                                                           | Command prefix | Platforms                            |
+| ------------------------------------------------------------------------------------------------------ | -------------- | ------------------------------------ |
+| Python CLI (`uv tool install .` from a checkout, or `uv tool install gh-slate` once published to PyPI) | `gh-slate ...` | Linux, macOS, Windows                |
+| GitHub CLI extension (`gh extension install ShigureLab/gh-slate`)                                      | `gh slate ...` | Unix environments with Bash and `uv` |
+
+Both entrypoints expose the same commands and options. Examples below use
+`gh-slate`; substitute `gh slate` when using the extension. Check the installed
+entrypoint and use it consistently. An unavailable `gh slate` command does not
+mean the standalone `gh-slate` CLI is missing.
 
 ```bash
+# Python CLI installed with uv tool:
+gh-slate --version
+
+# GitHub CLI extension installed with gh extension:
 gh slate --version
 ```
 
@@ -35,7 +47,7 @@ or mutating a target:
 
 ```bash
 gh auth status
-gh slate doctor --json
+gh-slate doctor --json
 ```
 
 ## Definitions and context
@@ -64,26 +76,26 @@ Inspect existing data and set REVISION from its revision before updates; never r
 into typed data:
 
 ```bash
-gh slate view "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --json
-gh slate state export "$NAME" --target "$TARGET" --repo "$OWNER_REPO"
+gh-slate view "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --json
+gh-slate state export "$NAME" --target "$TARGET" --repo "$OWNER_REPO"
 ```
 
 Preview a selected profile, then use the same candidate for publishing within
 the user's authorized scope:
 
 ```bash
-gh slate render "$NAME" --config boards.toml --profile review --data review.json
-gh slate render "$NAME" --template report.j2 --schema report.schema.json --data report.json --meta target.json
-gh slate apply "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --config boards.toml --profile review --data review.json --dry-run --json
-gh slate apply "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --config boards.toml --profile review --data review.json --json
+gh-slate render "$NAME" --config boards.toml --profile review --data review.json
+gh-slate render "$NAME" --template report.j2 --schema report.schema.json --data report.json --meta target.json
+gh-slate apply "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --config boards.toml --profile review --data review.json --dry-run --json
+gh-slate apply "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --config boards.toml --profile review --data review.json --json
 ```
 
 Later full snapshots need only data. Definitions are embedded and are reloaded
 only when explicitly selected, even in a new process without the original files:
 
 ```bash
-gh slate apply "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --data next.json --if-revision "$REVISION" --json
-gh slate state verify "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --json
+gh-slate apply "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --data next.json --if-revision "$REVISION" --json
+gh-slate state verify "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --json
 ```
 
 ## Partial updates
@@ -93,8 +105,8 @@ Use RFC 6902 operations on the data root. Prefer stable object keys such as
 preceding view. Patch requires that revision and an existing instance:
 
 ```bash
-gh slate apply "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --patch patch.json --if-revision "$REVISION" --dry-run --json
-gh slate apply "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --patch patch.json --if-revision "$REVISION" --json
+gh-slate apply "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --patch patch.json --if-revision "$REVISION" --dry-run --json
+gh-slate apply "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --patch patch.json --if-revision "$REVISION" --json
 ```
 
 Patch and data are mutually exclusive. A patch cannot change metadata,
@@ -120,8 +132,8 @@ treat the unknown outcome as unresolved and inspect before any later write;
 never blindly replay:
 
 ```bash
-gh slate list --target "$TARGET" --repo "$OWNER_REPO" --json
-gh slate view "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --json
+gh-slate list --target "$TARGET" --repo "$OWNER_REPO" --json
+gh-slate view "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --json
 ```
 
 Stop when the intended state is observed. If an unknown create is still absent,
@@ -133,13 +145,13 @@ Visible drift blocks normal apply. When the user wants to discard the visible
 edit, restore the saved state with the observed revision:
 
 ```bash
-gh slate repair "$NAME" --from-state --target "$TARGET" --repo "$OWNER_REPO" --if-revision "$REVISION" --json
+gh-slate repair "$NAME" --from-state --target "$TARGET" --repo "$OWNER_REPO" --if-revision "$REVISION" --json
 ```
 
 Delete when requested, using the exact name:
 
 ```bash
-gh slate delete "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --confirm "$NAME" --json
+gh-slate delete "$NAME" --target "$TARGET" --repo "$OWNER_REPO" --confirm "$NAME" --json
 ```
 
 Report the confirmed action (`created`, `updated`, `unchanged`, or recovery action),
