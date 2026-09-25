@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, fields
 from decimal import (
@@ -252,6 +253,23 @@ def _canonical_mapping(data: object, *, subject: str) -> Mapping[str, object]:
     return cast("Mapping[str, object]", value)
 
 
+def _dictsort_natural(value: object) -> list[tuple[str, object]]:
+    if not isinstance(value, Mapping):
+        raise RenderingError("dictsort_natural requires an object", code="jinja_filter_invalid")
+
+    def key(item: tuple[str, object]) -> tuple[list[tuple[int, str]], str]:
+        parts = []
+        for index, part in enumerate(re.split(r"([0-9]+)", item[0])):
+            if index % 2:
+                digits = part.lstrip("0") or "0"
+                parts.append((len(digits), digits))
+            else:
+                parts.append((0, part.casefold()))
+        return parts, item[0]
+
+    return sorted(cast("Mapping[str, object]", value).items(), key=key)
+
+
 def _environment(
     limits: JinjaLimits,
     loop_budget: _LoopBudget,
@@ -279,6 +297,7 @@ def _environment(
         }
     )
     environment.filters["compact_json"] = compact_json
+    environment.filters["dictsort_natural"] = _dictsort_natural
     environment.filters[_LOOP_GUARD_FILTER] = loop_budget.guard
 
     def md_table(value: object, columns: object = None) -> str:

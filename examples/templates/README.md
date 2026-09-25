@@ -30,6 +30,10 @@ use `md_link(URL)`, `md_code`, `md_codeblock(LANGUAGE)`, `md_details(SUMMARY)`,
 `md_table`, and `md_list` for Markdown structures. Helper output can be placed
 in table cells without double escaping. For stable object keys, Jinja's
 `dictsort` filter supports `{% for key, value in data.findings | dictsort %}`.
+For numbered keys, use `dictsort_natural` instead: `F1`, `F2`, `F10`.
+It compares ASCII digit runs numerically and text case-insensitively, breaking
+ties by the original key. Keys and values are preserved; `dictsort` retains
+its usual lexical ordering.
 
 The same files are available as an explicit single-template profile:
 

@@ -109,6 +109,53 @@ def test_rendering_is_deterministic() -> None:
 
 
 @pytest.mark.parametrize(
+    ("keys", "expected"),
+    [
+        (["F10", "F100", "F2", "F1", "F9"], ["F1", "F2", "F9", "F10", "F100"]),
+        (["item2part10", "item10part1", "item2part3"], ["item2part3", "item2part10", "item10part1"]),
+        (["f1", "F2", "F01", "F1"], ["F01", "F1", "f1", "F2"]),
+        (["zebra", "Apple", "banana"], ["Apple", "banana", "zebra"]),
+        ([], []),
+    ],
+)
+def test_natural_dictsort_renders_numeric_keys_with_their_values(keys: list[str], expected: list[str]) -> None:
+    source = "{% for id, finding in data.findings | dictsort_natural %}{{ id }}={{ finding.title }};{% endfor %}"
+    findings = {key: {"title": f"Title {key}"} for key in keys}
+
+    rendered = render_jinja(source, data={"findings": findings}, meta=slate())
+    reordered = render_jinja(source, data={"findings": dict(reversed(list(findings.items())))}, meta=slate())
+
+    assert unescape(rendered) == unescape(reordered) == "".join(f"{key}=Title {key};" for key in expected)
+
+
+def test_standard_dictsort_keeps_lexical_order() -> None:
+    rendered = render_jinja(
+        "{% for id, finding in data.findings | dictsort %}{{ id }};{% endfor %}",
+        data={"findings": {"F2": {}, "F10": {}, "F1": {}}},
+        meta=slate(),
+    )
+    assert unescape(rendered) == "F1;F10;F2;"
+
+
+@pytest.mark.parametrize("value", [None, [], "F1"])
+def test_natural_dictsort_requires_an_object(value: object) -> None:
+    with pytest.raises(RenderingError) as caught:
+        render_jinja("{{ data.findings | dictsort_natural }}", data={"findings": value}, meta=slate())
+    assert caught.value.code == "jinja_filter_invalid"
+
+
+def test_natural_dictsort_respects_loop_budget() -> None:
+    with pytest.raises(RenderingError) as caught:
+        render_jinja(
+            "{% for id, finding in data.findings | dictsort_natural %}{% endfor %}",
+            data={"findings": {"F2": {}, "F10": {}, "F1": {}}},
+            meta=slate(),
+            limits=replace(DEFAULT_JINJA_LIMITS, max_loop_iterations=2),
+        )
+    assert caught.value.code == "jinja_loop_limit"
+
+
+@pytest.mark.parametrize(
     ("precision", "rounding"),
     [(2, ROUND_DOWN), (6, ROUND_UP)],
 )
