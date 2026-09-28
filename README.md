@@ -17,7 +17,7 @@ Manage named, data-backed dashboard comments on GitHub Issues and Pull Requests.
 
 Requirements:
 
-- Python 3.10 or newer;
+- Python 3.11 or newer (including Python 3.15 and its free-threaded build);
 - `gh`, authenticated for the target host;
 - `uv` for the Python tool installation and, on supported Unix platforms, the
   repository-backed GitHub CLI extension launcher.

@@ -11,9 +11,12 @@ jobs:
   unit-test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
+        python-version: ['3.11', '3.12', '3.13', '3.14', '3.15', '3.15t']
         architecture: ['x64']
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     name: unittest - Python ${{ matrix.python-version }} on ${{ matrix.architecture }}
     steps:
       - name: Checkout
@@ -37,6 +40,23 @@ jobs:
       - name: Install dependencies
         run: |
           just ci-install
+
+      - name: Verify free-threaded runtime
+        if: endsWith(matrix.python-version, 't')
+        run: |
+          uv run --locked python - <<'PY'
+          import sys
+          import sysconfig
+
+          import jinja2
+          import jsonpatch
+          import jsonschema
+          import referencing
+          import regex
+
+          assert sysconfig.get_config_var("Py_GIL_DISABLED") == 1
+          assert not sys._is_gil_enabled(), "runtime dependencies must not enable the GIL"
+          PY
 
       - name: unit test
         run: |

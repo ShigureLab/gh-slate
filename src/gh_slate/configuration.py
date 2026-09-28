@@ -1,16 +1,11 @@
 from __future__ import annotations
 
 import os
-import sys
+import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib
 
 from gh_slate.codec import RendererDescriptor, SchemaSnapshot, canonical_json_bytes
 from gh_slate.codec.json import DEFAULT_JSON_LIMITS
