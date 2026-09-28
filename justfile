@@ -1,4 +1,4 @@
-VERSION := `uv run --locked python -c "import sys; from gh_slate import __version__ as version; sys.stdout.write(version)"`
+VERSION := `uv run python -c "import sys; from gh_slate import __version__ as version; sys.stdout.write(version)"`
 
 install:
   uv sync --all-extras --dev
@@ -45,7 +45,7 @@ clean-builds:
   rm -rf *.egg-info/
 
 ci-install:
-  uv sync --locked --all-extras --dev
+  just install
 
 ci-fmt-check:
   uv run ruff format --check --diff .
@@ -55,5 +55,5 @@ ci-lint:
   just lint
 
 ci-test:
-  uv run --locked pytest --reruns 3 --reruns-delay 1
+  uv run pytest --reruns 3 --reruns-delay 1
   just clean
