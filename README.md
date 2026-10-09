@@ -166,10 +166,44 @@ Target: {{ meta.repository.full_name | md_link(meta.target.url) }} #{{ meta.targ
 {{ data.notes | md_list }}
 ```
 
-Ordinary interpolated strings are escaped. Use `md_text`, `md_link`, `md_code`,
+Ordinary interpolated strings are escaped. Use `md_text`, `md_body`, `md_link`, `md_code`,
 `md_codeblock`, `md_table`, `md_list`, and `md_details` for composable Markdown.
 Sandbox limits bound template source, loops, output, and the complete comment.
 There is no include loader, filesystem access, or arbitrary Python call.
+
+Use `md_body` for summaries, descriptions, or evidence containing dynamic bare
+HTTP(S) URLs. The template does not need separate URL fields:
+
+```json
+{
+   "summary": "第二轮增量审查完成，结论 APPROVE（https://github.com/redai-studio/Relax/pull/425#pullrequestreview-5466052458）："
+}
+```
+
+```jinja2
+{{ data.summary | md_body }}
+{{ data.description | md_body }}
+{{ data.evidence | md_body | md_details("Evidence") }}
+```
+
+`md_body` accepts text and creates explicit links with the original URL as the
+display text, preserving its query and fragment. It reuses `md_link` validation
+and escaping; `md_link` protects its display text from GitHub's automatic PR
+reference shortening and GFM's nested email autolinks. Other HTML and Markdown
+characters remain literal. Whitespace, angle brackets, double quotes, backticks,
+and Chinese punctuation delimit URLs.
+Trailing ASCII sentence punctuation (`.,;:!?'`) and unmatched closing brackets
+stay outside the link; percent-encode punctuation that is part of an ambiguous
+URL ending. Invalid URL-like tokens and text enclosed by matching backtick runs
+are escaped inside code elements to prevent GFM from creating unintended links;
+their original text, including backticks, stays visible.
+
+This is plain-text body rendering, not arbitrary Markdown interpretation.
+Default `{{ data.summary }}` and `md_text` retain their literal escaping contract;
+`md_code` and `md_codeblock` retain code text without linkification. Existing
+templates opt in by adding `| md_body`. For an existing comment, explicitly apply
+the updated `--template FILE` or `--profile NAME`; a data-only update reuses the
+stored template.
 
 `meta` contains host, repository identity, target kind/number/node ID/URL, and
 slate name. Apply obtains it from GitHub and stores the exact render snapshot.

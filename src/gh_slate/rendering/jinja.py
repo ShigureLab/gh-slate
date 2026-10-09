@@ -32,6 +32,7 @@ from gh_slate.rendering.markdown import (
     Markdown,
     compact_json,
     escape_markdown_text,
+    md_body,
     md_code,
     md_codeblock,
     md_details,
@@ -113,6 +114,7 @@ class _SlateSandbox(ImmutableSandboxedEnvironment):
 
 _MARKDOWN_FILTERS = {
     "md_text": md_text,
+    "md_body": md_body,
     "md_link": md_link,
     "md_code": md_code,
     "md_codeblock": md_codeblock,

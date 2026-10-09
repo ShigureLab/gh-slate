@@ -1,5 +1,5 @@
 {
-   "summary": "Checks passed; symbols such as <tag>, | and `code` are literal text.",
+   "summary": "第二轮增量审查完成，结论 APPROVE（https://github.com/redai-studio/Relax/pull/425#pullrequestreview-5466052458）：Checks passed; symbols such as <tag>, | and `code` are literal text.",
    "checks": [
       { "check": "Unit tests", "result": "passed" },
       { "check": "Type checks", "result": "passed" }

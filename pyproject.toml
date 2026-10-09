@@ -47,6 +47,7 @@ dev = [
   "ruff>=0.16.10",
   "pytest>=9.1.1",
   "pytest-rerunfailures>=16.7",
+  "cmarkgfm>=2025.10.22",
 ]
 
 [tool.ruff]

@@ -22,6 +22,11 @@ class _Missing:
 
 MISSING = _Missing()
 _ASCII_PUNCTUATION = frozenset(string.punctuation)
+_BODY_TOKENS = re.compile(
+    r"(?P<code>(?<!`)(?P<ticks>`+)(?!`)[\s\S]*?(?<!`)(?P=ticks)(?!`))"
+    r'|(?P<url>(?<![A-Za-z0-9_])https?://[^\s<>"`。，、；：！？（）【】《》「」『』“”‘’…]+)',
+    re.IGNORECASE,
+)
 
 
 def compact_json(value: object) -> str:
@@ -108,7 +113,64 @@ def md_link(label: object, url: object) -> Markdown:
     if not valid:
         raise RenderingError("md_link requires an absolute HTTP(S) URL", code="jinja_filter_invalid")
     attribute = html.escape(address, quote=True).replace("|", "%7C")
-    return Markdown(f'<a href="{attribute}">{md_text(label)}</a>')
+    # A child element keeps GitHub from shortening URL labels to PR references.
+    # Isolate @ as well so GFM cannot create a nested email link in the label.
+    text = md_text(label).replace("&#64;", "<span>&#64;</span>")
+    return Markdown(f'<a href="{attribute}"><span>{text}</span></a>')
+
+
+def _body_url(address: str) -> str:
+    # Keep balanced URL brackets (including IPv6 hosts), but leave prose wrappers
+    # and sentence punctuation outside the link. Encode ambiguous URL endings.
+    unmatched = {closing: address.count(closing) - address.count(opening) for opening, closing in ("()", "[]", "{}")}
+    end = len(address)
+    while end:
+        last = address[end - 1]
+        if last in ".,;:!?'":
+            end -= 1
+        elif unmatched.get(last, 0) > 0:
+            unmatched[last] -= 1
+            end -= 1
+        else:
+            break
+    return address[:end]
+
+
+def _body_code(value: str) -> str:
+    # Real GFM code spans suppress autolinks; raw HTML <code> tags do not.
+    # Split lines to preserve newlines instead of GFM's code-span normalization.
+    lines = []
+    for line in value.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if not line:
+            lines.append("<code></code>")
+            continue
+        fence = "`" * (1 + max((len(run) for run in re.findall(r"`+", line)), default=0))
+        padded = f" {line} " if line.strip(" ") else line
+        lines.append(f"{fence}{padded}{fence}")
+    return "<br>".join(lines)
+
+
+def md_body(value: object) -> Markdown:
+    """Escape plain prose, linking validated bare HTTP(S) URLs outside backticks."""
+    source = _text_argument(value, "md_body value")
+    chunks: list[str] = []
+    offset = 0
+    for token in _BODY_TOKENS.finditer(source):
+        chunks.append(escape_markdown_text(source[offset : token.start()]))
+        text = token.group()
+        if token.group("url") is None:
+            chunks.append(_body_code(text))
+        else:
+            address = _body_url(text)
+            try:
+                chunks.append(md_link(address, address))
+            except RenderingError:
+                # An invalid token may contain an email or GitHub reference.
+                chunks.append(_body_code(address))
+            chunks.append(escape_markdown_text(text[len(address) :]))
+        offset = token.end()
+    chunks.append(escape_markdown_text(source[offset:]))
+    return Markdown("".join(chunks))
 
 
 def md_code(value: object) -> Markdown:

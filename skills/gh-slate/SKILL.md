@@ -64,8 +64,17 @@ has null host/repository/target. Store the analyzed revision and run provenance
 in `data.source`, not in live metadata. Producers decide outcomes; missing or
 unknown routed values fail rather than implying success.
 
-Ordinary strings are escaped. Use `md_text`, `md_link`, `md_code`,
+Ordinary strings are escaped. Use `md_text`, `md_body`, `md_link`, `md_code`,
 `md_codeblock`, `md_table`, `md_list`, and `md_details` to compose Markdown.
+Use `{{ data.summary | md_body }}` for free prose with dynamic bare HTTP(S)
+URLs: each validated URL becomes an explicit link preserving display text,
+query, and fragment; other text stays escaped. Chinese punctuation, trailing
+sentence punctuation, and unmatched closing brackets stay outside links.
+Percent-encode ambiguous punctuation that belongs to a URL ending. Matching
+backtick runs and invalid URL-like tokens stay literal in code elements.
+Default interpolation and `md_text` keep literal semantics; code fields should
+use `md_code` or `md_codeblock`. For an existing comment, pass the updated
+`--template` or `--profile` explicitly; a data-only update keeps its stored template.
 Templates and schemas are public inside the managed comment. Use trusted default-branch
 sources in privileged workflows and never embed credentials or private logs.
 
