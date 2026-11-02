@@ -41,9 +41,9 @@ gh-slate = "gh_slate.__main__:main"
 
 [dependency-groups]
 dev = [
-  "hypothesis>=6.170.13",
+  "hypothesis>=6.170.14",
   "pyyaml>=6.0.3,<7",
-  "ty>=0.0.94",
+  "ty>=0.0.95",
   "ruff>=0.17.3",
   "pytest>=9.2.0",
   "pytest-rerunfailures>=16.7",
